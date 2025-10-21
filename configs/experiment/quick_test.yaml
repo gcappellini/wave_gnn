@@ -1,0 +1,24 @@
+# Quick test experiment configuration
+# Usage: python main.py experiment=quick_test
+
+defaults:
+  - override /dataset: default
+  - override /model: gcn
+  - override /training: fast
+
+# Override settings for quick testing
+experiment:
+  name: "quick_test"
+  seed: 42
+
+dataset:
+  num_graphs: 20
+  batch_size: 4
+
+model:
+  hidden_channels: 32
+  dropout: 0.3
+
+training:
+  epochs: 10
+  log_interval: 2

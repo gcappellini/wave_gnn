@@ -1,0 +1,15 @@
+# Deep GCN Model with Residual Formulation
+# This model predicts CHANGES (Δu, Δv) instead of absolute values
+
+in_channels: 3
+hidden_channels: [64, 128, 64]
+out_channels: 2
+conv_types: ["GCN", "GCN", "GCN"]
+final_layer_type: "Linear"
+activation: "relu"
+dropout: 0.1
+block: "res+"
+use_bn: true
+gat_heads: 4
+cheb_K: 3
+residual: true  # KEY: Predict changes (Δu, Δv) instead of absolute (u, v)

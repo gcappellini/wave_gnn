@@ -1,0 +1,22 @@
+# Main configuration file
+defaults:
+  - dataset: default
+  - model: simple_gen
+  - training: default
+  - _self_
+
+# Experiment settings
+experiment:
+  name: "gcn_string_wave"
+  seed: 42
+  device: "cuda"  # "cuda" or "cpu"
+  output_dir: "./outputs"
+  save_dir: "./checkpoints"
+
+# Hydra settings
+hydra:
+  run:
+    dir: ./outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  sweep:
+    dir: ./multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    subdir: ${hydra.job.num}

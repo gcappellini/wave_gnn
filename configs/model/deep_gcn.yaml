@@ -1,0 +1,13 @@
+# Deep GCN Model configuration
+in_channels: 3
+hidden_channels: [64, 64, 64]
+out_channels: 2
+conv_types: ["GCN", "GCN", "GCN"]
+final_layer_type: "Linear"
+activation: "relu"
+dropout: 0.1
+block: "res+"
+use_bn: true
+gat_heads: 4
+cheb_K: 3
+residual: false  # Set to true to predict changes (Δu, Δv) instead of absolute values

@@ -1,0 +1,25 @@
+# Training configuration
+epochs: 20
+learning_rate: 0.005
+weight_decay: 1.0e-5
+optimizer: "adam"  # "adam", "sgd", etc.
+
+# Loss weights
+loss:
+  w1_PI: 1.0  # weight for displacement loss
+  w2_PI: 1.0  # weight for velocity loss
+  use_rk4: true
+  w1_rk4: 10.0
+  w2_rk4: 100.0
+  use_gn_solver: false
+
+# Logging
+log_interval: 5  # log every N epochs
+save_best: true
+checkpoint_path: "best_model.pt"
+
+# Early stopping
+early_stopping:
+  enabled: false
+  patience: 10
+  min_delta: 1.0e-6

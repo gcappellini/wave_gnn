@@ -1,0 +1,8 @@
+# GCN Model configuration
+in_channels: 3
+hidden_channels: 64
+out_channels: 2
+layer_types: "GCN"  # "GCN" or "Linear" or list like ["GCN", "GCN", "Linear"]
+final_layer_type: "Linear"  # "GCN" or "Linear"
+activation: "relu"  # "relu" or "tanh"
+dropout: 0.5
