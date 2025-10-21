@@ -258,7 +258,14 @@ def build_laplacian_matrix(N, dx):
     # (enforced in update function instead)
 
     L = sp.coo_matrix((data, (row, col)), shape=(N, N))
-    return L.tocsr()  # Convert to CSR for efficient multiplication
+    
+    # Convert to PyTorch sparse tensor for CUDA support
+    L_coo = L.tocoo()
+    indices = torch.LongTensor(np.vstack([L_coo.row, L_coo.col]))
+    values = torch.FloatTensor(L_coo.data)
+    L_torch = torch.sparse_coo_tensor(indices, values, torch.Size(L_coo.shape))
+    
+    return L_torch  # Return PyTorch sparse tensor instead of scipy CSR
 
 
 def membranedisplacement(coords, t, t_f=1, amp=0.003, x0=0.5, y0=0.5, sign=-1, loc=None, num_terms=4, seed=None):
@@ -441,8 +448,18 @@ class WaveGNN1D:
         Returns:
             laplacian: Discrete Laplacian, shape (N,)
         """
-        # Simple sparse matrix multiplication
-        laplacian = self.L @ u
+        # Check if L is PyTorch sparse tensor or scipy sparse matrix
+        if torch.is_tensor(self.L):
+            # PyTorch sparse matrix multiplication
+            if not torch.is_tensor(u):
+                u = torch.from_numpy(u).float()
+            # Ensure u is on same device as L
+            u = u.to(self.L.device)
+            laplacian = torch.sparse.mm(self.L, u.unsqueeze(1)).squeeze(1)
+            laplacian = laplacian.cpu().numpy()
+        else:
+            # Original scipy sparse matrix multiplication
+            laplacian = self.L @ u
         
         # Enforce boundary conditions (Laplacian is zero at boundaries)
         laplacian[0] = 0.0
