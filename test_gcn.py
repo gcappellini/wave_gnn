@@ -94,7 +94,7 @@ def stringforce(coords, t, t_f, f_min=-3, x_f_1=0.2, x_f_2=0.8):
     return f
 
 
-def simulate_wave(gnn, data, t_f, dt=0.01, gt=True, scaler=None):
+def simulate_wave(gnn, data, t_f, dt=0.01, gt=True, scaler=None, device=None):
     """
     Simulate 2D wave equation using GNN with integrated time stepping.
     
@@ -105,6 +105,7 @@ def simulate_wave(gnn, data, t_f, dt=0.01, gt=True, scaler=None):
         dt: Time step
         gt: Whether to compute ground truth solution
         scaler: DataScaler for input/output scaling (optional)
+        device: torch.device to use for computation (default: None, auto-detect from gnn)
         
     Returns:
         t_history: Time points
@@ -114,6 +115,15 @@ def simulate_wave(gnn, data, t_f, dt=0.01, gt=True, scaler=None):
         u_gt: Ground truth positions (if gt=True)
         v_gt: Ground truth velocities (if gt=True)
     """
+    # Detect device from model if not provided
+    if device is None:
+        device = next(gnn.parameters()).device
+    
+    # Move data to device
+    data = data.to(device)
+    if hasattr(data, 'laplacian') and torch.is_tensor(data.laplacian):
+        data.laplacian = data.laplacian.to(device)
+    
     # Initialize node features
     t = 0.0
     
@@ -163,17 +173,18 @@ def simulate_wave(gnn, data, t_f, dt=0.01, gt=True, scaler=None):
         t += dt
         t_history[step] = t
 
-        u_history[step] = features[:, 0].detach().numpy()
-        v_history[step] = features[:, 1].detach().numpy()
+        u_history[step] = features[:, 0].detach().cpu().numpy()
+        v_history[step] = features[:, 1].detach().cpu().numpy()
         f_history[step] = stringforce(data.coords, t, t_f)
         if gt:
-            u_gt[step] = features_gt[:, 0].detach().numpy()
-            v_gt[step] = features_gt[:, 1].detach().numpy()
+            u_gt[step] = features_gt[:, 0].detach().cpu().numpy()
+            v_gt[step] = features_gt[:, 1].detach().cpu().numpy()
 
-        # Update force for next iteration
-        features = torch.stack([features[:, 0], features[:, 1], torch.Tensor(f_history[step].flatten())], dim=1)
+        # Update force for next iteration (move to device)
+        f_tensor = torch.tensor(f_history[step].flatten(), dtype=torch.float32, device=device)
+        features = torch.stack([features[:, 0], features[:, 1], f_tensor], dim=1)
         if gt:
-            features_gt = torch.stack([features_gt[:, 0], features_gt[:, 1], torch.Tensor(f_history[step].flatten())], dim=1)
+            features_gt = torch.stack([features_gt[:, 0], features_gt[:, 1], f_tensor], dim=1)
 
     if gt:
         return t_history, u_history, v_history, f_history, u_gt, v_gt
@@ -250,7 +261,7 @@ def test_model(cfg, model_path, output_dir, scaler_path=None):
     log.info("Running simulation...")
     start_time = datetime.now()
     t_history, u_history, v_history, f_history, u_gt, v_gt = simulate_wave(
-        gcn, initial_graph, T, dt=cfg.dataset.dt, gt=True, scaler=scaler
+        gcn, initial_graph, T, dt=cfg.dataset.dt, gt=True, scaler=scaler, device=device
     )
     end_time = datetime.now()
     elapsed = end_time - start_time
@@ -321,15 +332,21 @@ if __name__ == "__main__":
 
     T = 10.0       # total time
 
+    # Setup device
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Using device: {device}")
+
     # Load trained GCN model (expects best_model.pt in the working directory)
-    gcn, ckpt = load_best_model()
+    gcn, ckpt = load_best_model(device=device)
     initial_graph = create_graph(zeros=True)
     nodes, elements = initial_graph.nodes, initial_graph.elements
 
     # Run simulation
     print("Running simulation...")
     start_time = datetime.now()
-    t_history, u_history, v_history, f_history, u_gt, v_gt = simulate_wave(gcn, initial_graph, T, gt=True)
+    t_history, u_history, v_history, f_history, u_gt, v_gt = simulate_wave(
+        gcn, initial_graph, T, gt=True, device=device
+    )
     end_time = datetime.now()
     print(f"Simulation complete: {len(t_history)} time steps in {end_time - start_time}")
     print(f"Each step = one GNN forward pass")

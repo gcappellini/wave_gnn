@@ -22,6 +22,7 @@ from train import train_model
 from test_gcn import test_model
 from dataset import create_dataset
 from plot import plot_features_2d
+import pickle
 
 log = logging.getLogger(__name__)
 
@@ -120,6 +121,14 @@ def main(cfg: DictConfig):
     log.info(f"Best validation PDE MSE: {metrics['best_val_pde']:.6e}")
     if scaler is not None:
         log.info("✓ Data scaling was enabled during training")
+    # scaler_path = save_dir / "scaler.pkl"
+    # if scaler_path.exists():
+    #     with open(scaler_path, 'rb') as f:
+    #         scaler = pickle.load(f)
+    #     log.info(f"Scaler loaded from {scaler_path}")
+    # else:
+    #     scaler = None
+    #     log.warning(f"No scaler found at {scaler_path}")
     
     # Test model
     log.info("\n" + "=" * 50)
