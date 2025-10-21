@@ -5,108 +5,8 @@ from torch_geometric.loader import DataLoader
 import subprocess
 from dataset import create_dataset, WaveGNN1D, build_laplacian_matrix, DeepGCN
 from scaler import DataScaler
+from adaptive_weights import create_adaptive_weights_from_config
 from datetime import datetime
-
-# class SimpleGCN(nn.Module):
-#     """
-#     Configurable GCN/MLP hybrid.
-
-#     Args:
-#         in_channels (int): input feature dim
-#         hidden_channels (int or list[int]): hidden dims for each hidden layer
-#         out_channels (int): output dim
-#         layer_types (list[str] or str): layer types for hidden layers ('Linear' or 'GCN').
-#             If a single string is given it will be repeated for all hidden layers.
-#         final_layer_type (str): type for final layer ('Linear' or 'GCN')
-#         activation (str or callable): 'tanh' or 'relu' or a callable that maps tensor->tensor
-#         dropout (float): dropout probability applied after each hidden layer (0 disables)
-#     """
-#     def __init__(
-#         self,
-#         in_channels,
-#         hidden_channels,
-#         out_channels,
-#         layer_types="GCN",
-#         final_layer_type="Linear",
-#         activation="tanh",
-#         dropout=0.0,
-#     ):
-#         super().__init__()
-
-#         # Normalize hidden_channels to a list
-#         if isinstance(hidden_channels, int):
-#             hidden_sizes = [hidden_channels]
-#         else:
-#             hidden_sizes = list(hidden_channels)
-
-#         n_hidden = len(hidden_sizes)
-
-#         # Normalize layer_types to list of length n_hidden
-#         if isinstance(layer_types, str):
-#             layer_types = [layer_types] * n_hidden
-#         if len(layer_types) != n_hidden:
-#             raise ValueError("len(layer_types) must match number of hidden layers")
-
-#         # Activation function
-#         if callable(activation):
-#             self.activation = activation
-#         elif activation == "tanh":
-#             self.activation = torch.tanh
-#         elif activation == "relu":
-#             self.activation = F.relu
-#         else:
-#             raise ValueError("activation must be 'tanh', 'relu', or a callable")
-
-#         self.dropout = float(dropout)
-
-#         # Build layers: hidden layers then final layer
-#         layers = []
-#         prev_dim = in_channels
-#         for i, hid in enumerate(hidden_sizes):
-#             ltype = layer_types[i].lower()
-#             if ltype == "linear":
-#                 layers.append(Linear(prev_dim, hid))
-#             elif ltype == "gcn" or ltype == "gcnconv":
-#                 layers.append(GCNConv(prev_dim, hid))
-#             else:
-#                 raise ValueError("Unsupported layer type: " + str(layer_types[i]))
-#             prev_dim = hid
-
-#         # final layer
-#         ft = final_layer_type.lower()
-#         if ft == "linear":
-#             layers.append(Linear(prev_dim, out_channels))
-#         elif ft == "gcn" or ft == "gcnconv":
-#             layers.append(GCNConv(prev_dim, out_channels))
-#         else:
-#             raise ValueError("Unsupported final layer type: " + str(final_layer_type))
-
-#         self.layers = nn.ModuleList(layers)
-
-    # def forward(self, x, edge_index=None, bc_mask=None, ):
-    #     """
-    #     x: node features (N, F)
-    #     edge_index: required for GCNConv layers
-    #     bc_mask: boolean mask of boundary nodes to zero-out at the end
-    #     """
-    #     for i, layer in enumerate(self.layers):
-    #         if isinstance(layer, GCNConv):
-    #             if edge_index is None:
-    #                 raise RuntimeError("edge_index is required for GCNConv layers")
-    #             x = layer(x, edge_index)
-    #         else:
-    #             x = layer(x)
-
-    #         # apply activation+dropout after every layer except the last
-    #         if i < len(self.layers) - 1:
-    #             x = self.activation(x)
-    #             if self.dropout and self.training:
-    #                 x = F.dropout(x, p=self.dropout, training=True)
-
-    #     x = x.clone()
-    #     x[bc_mask] = 0.0
-
-    #     return x
 
 def rk4_loss(interior_mask, input, output, laplacian, dt=0.01, c=1.0, k=1.0, w1=1.0, w2=1.0):
         """
@@ -209,12 +109,24 @@ def physics_informed_loss(interior_mask, input, output, laplacian, dt=0.01, c=1.
 
     return loss, float(loss_1.detach().item()), float(loss_2.detach().item())
 
-def train_physics(batch, model, optimizer, device, cfg, rk4=True):
+def train_physics(batch, model, optimizer, device, cfg, rk4=True, adaptive_weights=None):
     """Train on a batched Data object (several graphs concatenated by DataLoader).
 
     We iterate over graphs inside the batch, build per-graph Laplacian, compute PDE residual
     on interior nodes and enforce BCs as hard constraints by zeroing outputs at bc nodes
     (model.bc_mask should be set to batch.bc_mask before forward).
+    
+    Args:
+        batch: Batched graph data
+        model: Neural network model
+        optimizer: Optimizer
+        device: Device (CPU/GPU)
+        cfg: Configuration object
+        rk4: Whether to use RK4 loss
+        adaptive_weights: AdaptiveLossWeights instance (optional)
+    
+    Returns:
+        Tuple of (total_loss, loss_1_PI, loss_2_PI, loss_1_rk4, loss_2_rk4)
     """
     model.train()
     optimizer.zero_grad()
@@ -241,13 +153,25 @@ def train_physics(batch, model, optimizer, device, cfg, rk4=True):
         
         out_sub = model_sub(data.x.to(device), data.edge_index.to(device), data.bc_mask.to(device))
 
+        # Get weights (from adaptive weighting or config)
+        if adaptive_weights is not None:
+            w1_PI = adaptive_weights.get_weight('PI_loss1')
+            w2_PI = adaptive_weights.get_weight('PI_loss2')
+            w1_rk4 = adaptive_weights.get_weight('RK4_loss1')
+            w2_rk4 = adaptive_weights.get_weight('RK4_loss2')
+        else:
+            w1_PI = cfg.training.loss.w1_PI
+            w2_PI = cfg.training.loss.w2_PI
+            w1_rk4 = cfg.training.loss.w1_rk4
+            w2_rk4 = cfg.training.loss.w2_rk4
+
         loss_tensor, loss_1_val, loss_2_val = physics_informed_loss(
             interior_mask,
             data.x.to(device),
             out_sub,
             L,
-            w1=cfg.training.loss.w1_PI,
-            w2=cfg.training.loss.w2_PI,
+            w1=w1_PI,
+            w2=w2_PI,
         )
         if rk4:
             loss_rk4, loss_1_rk4, loss_2_rk4 = rk4_loss(
@@ -255,8 +179,8 @@ def train_physics(batch, model, optimizer, device, cfg, rk4=True):
                 data.x.to(device),
                 out_sub,
                 L,
-            w1=cfg.training.loss.w1_rk4,
-            w2=cfg.training.loss.w2_rk4,
+            w1=w1_rk4,
+            w2=w2_rk4,
             )
         else:
             loss_rk4 = torch.tensor(0.0, device=device)
@@ -424,6 +348,15 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
     else:
         raise NotImplementedError(f"Optimizer {cfg.training.optimizer} not implemented")
 
+    # Setup adaptive loss weights if enabled
+    adaptive_weights = create_adaptive_weights_from_config(cfg)
+    if adaptive_weights is not None:
+        log.info("=" * 50)
+        log.info("Adaptive loss weighting enabled")
+        log.info(f"Strategy: {cfg.training.loss.adaptive.strategy}")
+        log.info(f"Initial weights: {adaptive_weights.get_weights()}")
+        log.info("=" * 50)
+
     # Setup GN solver if enabled
     gn_solver = None
     if cfg.training.loss.use_gn_solver:
@@ -444,6 +377,8 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
         epoch_loss = 0.0
         epoch_loss_1 = 0.0
         epoch_loss_2 = 0.0
+        epoch_loss_1_rk4 = 0.0
+        epoch_loss_2_rk4 = 0.0
         nbatches = 0
         
         for batch in train_loader:
@@ -458,21 +393,40 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
             
             loss, loss_1, loss_2, loss_1_rk4, loss_2_rk4 = train_physics(
                 batch, model, optimizer, device, cfg,
-                rk4=cfg.training.loss.use_rk4
+                rk4=cfg.training.loss.use_rk4,
+                adaptive_weights=adaptive_weights
             )
             epoch_loss += loss
             epoch_loss_1 += loss_1
             epoch_loss_2 += loss_2
+            epoch_loss_1_rk4 += loss_1_rk4
+            epoch_loss_2_rk4 += loss_2_rk4
             nbatches += 1
+
+        # Compute average losses for this epoch
+        avg_loss = epoch_loss / max(1, nbatches)
+        avg_loss_1 = epoch_loss_1 / max(1, nbatches)
+        avg_loss_2 = epoch_loss_2 / max(1, nbatches)
+        avg_loss_1_rk4 = epoch_loss_1_rk4 / max(1, nbatches)
+        avg_loss_2_rk4 = epoch_loss_2_rk4 / max(1, nbatches)
+
+        # Update adaptive weights based on current loss values
+        if adaptive_weights is not None:
+            loss_dict = {
+                'PI_loss1': avg_loss_1,
+                'PI_loss2': avg_loss_2,
+            }
+            if cfg.training.loss.use_rk4:
+                loss_dict['RK4_loss1'] = avg_loss_1_rk4
+                loss_dict['RK4_loss2'] = avg_loss_2_rk4
+            
+            adaptive_weights.update(epoch, loss_dict)
 
         # Evaluate on validation set (with scaling if enabled)
         if scaler is not None:
             metrics = evaluate_loader_with_scaling(val_loader, model, device, scaler)
         else:
             metrics = evaluate_loader(val_loader, model, device)
-
-        avg_loss = epoch_loss / max(1, nbatches)
-        avg_loss_1 = epoch_loss_1 / max(1, nbatches)
         avg_loss_2 = epoch_loss_2 / max(1, nbatches)
         avg_loss_1_rk4 = loss_1_rk4 / max(1, nbatches)
         avg_loss_2_rk4 = loss_2_rk4 / max(1, nbatches)
@@ -491,6 +445,10 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
                     'config': cfg,
                     'scaling_enabled': cfg.dataset.scaling.enabled,
                 }
+                # Save adaptive weights state if enabled
+                if adaptive_weights is not None:
+                    ckpt['adaptive_weights_state'] = adaptive_weights.state_dict()
+                
                 torch.save(ckpt, save_path)
                 # log.info(f"✓ New best model saved (epoch={epoch}, val PDE MSE={val_pde:.3e})")
             else:
@@ -498,11 +456,20 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
 
         # Logging
         if epoch % cfg.training.log_interval == 0 or epoch == 1:
-            log.info(
+            # Build log message with current weights if adaptive
+            log_msg = (
                 f"Epoch {epoch:03d} | "
-                f"Train {avg_loss:.3e} | PI1 {avg_loss_1:.3e} | PI2 {avg_loss_2:.3e} | RK4_1 {avg_loss_1_rk4:.3e} | RK4_2 {avg_loss_2_rk4:.3e} | "
+                f"Train {avg_loss:.3e} | PI1 {avg_loss_1:.3e} | PI2 {avg_loss_2:.3e} | "
+                f"RK4_1 {avg_loss_1_rk4:.3e} | RK4_2 {avg_loss_2_rk4:.3e} | "
                 f"Val {metrics['pde_mse']:.3e} | PI1 {metrics['loss_1']:.3e} | PI2 {metrics['loss_2']:.3e}"
             )
+            if adaptive_weights is not None and epoch % (cfg.training.log_interval * 2) == 0:
+                weights = adaptive_weights.get_weights()
+                log_msg += f"\n        Weights: PI1={weights['PI_loss1']:.2e}, PI2={weights['PI_loss2']:.2e}"
+                if 'RK4_loss1' in weights:
+                    log_msg += f", RK4_1={weights['RK4_loss1']:.2e}, RK4_2={weights['RK4_loss2']:.2e}"
+            
+            log.info(log_msg)
         
         # Early stopping
         if cfg.training.early_stopping.enabled and patience_counter >= cfg.training.early_stopping.patience:

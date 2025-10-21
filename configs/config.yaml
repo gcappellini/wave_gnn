@@ -1,8 +1,8 @@
 # Main configuration file
 defaults:
-  - dataset: default
-  - model: simple_gen
-  - training: default
+  - dataset: current_dataset
+  - model: current_model
+  - training: current_training
   - _self_
 
 # Experiment settings

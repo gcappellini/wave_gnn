@@ -1,0 +1,34 @@
+# Training configuration with adaptive loss weighting (equal initialization)
+# This config equalizes all loss terms at epoch 1, then keeps them fixed
+
+epochs: 50
+learning_rate: 0.005
+weight_decay: 1.0e-5
+optimizer: "adam"
+
+# Loss weights (will be adjusted by adaptive weighting)
+loss:
+  w1_PI: 1.0  # Initial weight for displacement loss
+  w2_PI: 1.0  # Initial weight for velocity loss
+  use_rk4: true
+  w1_rk4: 1.0  # Initial weight for RK4 displacement loss
+  w2_rk4: 1.0  # Initial weight for RK4 velocity loss
+  use_gn_solver: false
+  
+  # Adaptive loss weighting - ENABLED
+  adaptive:
+    enabled: true
+    strategy: "equal_init"  # Equalize all losses at epoch 1, then keep fixed
+    ema_alpha: 0.9  # Not used for 'equal_init' strategy
+    update_frequency: 1
+
+# Logging
+log_interval: 5
+save_best: true
+checkpoint_path: "best_model.pt"
+
+# Early stopping
+early_stopping:
+  enabled: false
+  patience: 10
+  min_delta: 1.0e-6

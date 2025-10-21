@@ -6,8 +6,8 @@ conv_types: ["GEN", "GEN","GEN", "GEN","GEN", "GEN","GEN", "GEN","GEN", "GEN"]
 final_layer_type: "Linear"
 activation: "relu"
 dropout: 0.1
-block: "plain"
+block: "plain" # works only plain, the other stucks (dense makes dimensional issues, res and res+ explode)
 use_bn: true
 gat_heads: 4
 cheb_K: 3
-residual: true  # Predict changes (Δu, Δv) instead of absolute values
+residual: false  # works only false

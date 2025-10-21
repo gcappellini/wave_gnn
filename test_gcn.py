@@ -269,25 +269,38 @@ def test_model(cfg, model_path, output_dir, scaler_path=None):
     savemat(str(matlab_file), {'pinn_data': pinn_data})
     log.info(f"MATLAB data saved to {matlab_file}")
 
+    # # Generate plots
+    # histories = np.array([u_history, v_history, f_history])
+    # plot_file = figures_dir / "gcn_string_pred.png"
+    
+    # plot_features_2d(
+    #     nodes,  
+    #     histories,
+    #     output_file=str(plot_file)
+    # )
+    # # Generate error plots
+    # errors = np.array([np.abs(u_history - u_gt), np.abs(v_history - v_gt)])
+    # plot_file2 = figures_dir / "errs_string_pred.png"
+    
+    # plot_features_2d(
+    #     nodes,  
+    #     errors,
+    #     output_file=str(plot_file2)
+    # )
+    # log.info(f"Plot saved to {plot_file} and {plot_file2}")
+
     # Generate plots
-    histories = np.array([u_history, v_history, f_history])
+    histories = np.array([u_history, v_history, f_history, u_gt, v_gt, np.abs(u_history - u_gt)])
     plot_file = figures_dir / "gcn_string_pred.png"
     
     plot_features_2d(
         nodes,  
         histories,
-        output_file=str(plot_file)
+        output_file=str(plot_file),
+        feature_names=['Deformation', 'Velocity', 'Force', 'GT Deformation', 'GT Velocity', 'Deformation Error']
     )
-    # Generate error plots
-    errors = np.array([np.abs(u_history - u_gt), np.abs(v_history - v_gt)])
-    plot_file2 = figures_dir / "errs_string_pred.png"
-    
-    plot_features_2d(
-        nodes,  
-        errors,
-        output_file=str(plot_file2)
-    )
-    log.info(f"Plot saved to {plot_file} and {plot_file2}")
+
+    log.info(f"Plot saved to {plot_file}")
     
     test_results = {
         'num_timesteps': len(t_history),

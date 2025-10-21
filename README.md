@@ -98,6 +98,31 @@ Control input/output normalization:
 # Enable standard normalization (z-score) - recommended
 python main.py dataset.scaling.enabled=true dataset.scaling.method=standard
 
+# Min-max normalization
+python main.py dataset.scaling.enabled=true dataset.scaling.method=minmax
+
+# Disable scaling (default)
+python main.py dataset.scaling.enabled=false
+```
+
+See [SCALING_GUIDE.md](SCALING_GUIDE.md) for details.
+
+### Adaptive Loss Weighting
+
+Automatically balance multiple loss terms during training:
+```bash
+# Use equal initialization (equalizes all losses at epoch 1)
+python main.py training=adaptive_equal_init
+
+# Use EMA strategy (continuous adaptation)
+python main.py training=adaptive_ema
+
+# Compare strategies
+python main.py -m training=default,adaptive_equal_init,adaptive_ema
+```
+
+See [ADAPTIVE_WEIGHTS_GUIDE.md](ADAPTIVE_WEIGHTS_GUIDE.md) for comprehensive documentation.
+
 # Use min-max scaling
 python main.py dataset.scaling.enabled=true dataset.scaling.method=minmax
 
@@ -163,10 +188,14 @@ python main.py -m experiment.seed=1,2,3,4,5
 - `epochs`: Number of training epochs
 - `learning_rate`: Learning rate for optimizer
 - `weight_decay`: L2 regularization weight
-- `loss.w1`: Weight for displacement loss
-- `loss.w2`: Weight for velocity loss
+- `loss.w1_PI`: Weight for displacement loss (physics-informed)
+- `loss.w2_PI`: Weight for velocity loss (physics-informed)
+- `loss.w1_rk4`: Weight for RK4 displacement loss
+- `loss.w2_rk4`: Weight for RK4 velocity loss
 - `loss.use_rk4`: Enable RK4 loss term
 - `loss.use_gn_solver`: Enable GN solver loss term
+- `loss.adaptive.enabled`: Enable adaptive loss weighting
+- `loss.adaptive.strategy`: Weighting strategy ('equal_init', 'equal_init_ema', 'ema', 'fixed')
 - `log_interval`: Logging frequency (epochs)
 - `early_stopping.enabled`: Enable early stopping
 - `early_stopping.patience`: Patience for early stopping

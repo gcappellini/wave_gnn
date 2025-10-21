@@ -125,7 +125,6 @@ def main(cfg: DictConfig):
     log.info("\n" + "=" * 50)
     log.info("TESTING MODEL")
     log.info("=" * 50)
-    scaler = 0
 
     test_results, test_metrics = test_model(
         cfg=cfg,

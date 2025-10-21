@@ -12,7 +12,7 @@ def plot_features_2d(
     histories,
     feature_names=['Deformation', 'Velocity', 'Force'],
     output_file='features.png',
-    figsize=(12, 4),
+    figsize=None,
     colormaps=None,
     show_colorbar=True,
     dpi=150,
@@ -20,6 +20,7 @@ def plot_features_2d(
 ):
     """
     Plot full 2D distributions (space vs time) for each feature.
+    Automatically arranges subplots in rows of 3 when more than 3 features.
 
     Parameters
     ----------
@@ -31,8 +32,8 @@ def plot_features_2d(
         Names for each feature. If None, uses 'Feature 1', 'Feature 2', etc.
     output_file : str, default='features.png'
         Output filename for the figure
-    figsize : tuple, default=(12, 4)
-        Figure size as (width, height)
+    figsize : tuple, optional
+        Figure size as (width, height). If None, auto-computed based on layout.
     colormaps : list of str, optional
         Colormap for each feature. If None, all use 'viridis'
     show_colorbar : bool, default=True
@@ -52,9 +53,19 @@ def plot_features_2d(
     elif len(colormaps) != n_features:
         raise ValueError("Number of colormaps must match number of features")
 
+    # Calculate grid layout: max 3 columns per row
+    n_cols = min(3, n_features)
+    n_rows = int(np.ceil(n_features / n_cols))
+    
+    # Auto-compute figure size if not provided
+    if figsize is None:
+        # Base width per subplot (4 inches) and height (3.5 inches)
+        figsize = (n_cols * 4, n_rows * 3.5)
+
     # Create figure and axes
-    fig, axes = plt.subplots(1, n_features, figsize=figsize, squeeze=False)
-    axes = axes[0]
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize, squeeze=False)
+    # Flatten axes for easy indexing
+    axes = axes.flatten()
 
     # Convert time steps to seconds
     time_end = (n_timesteps - 1) * dt
@@ -78,10 +89,14 @@ def plot_features_2d(
         axes[i].set_yticklabels([f"{t:.3f}" for t in time_ticks])
         if show_colorbar:
             fig.colorbar(im, ax=axes[i], orientation='vertical', shrink=0.8)
+    
+    # Hide unused subplots if n_features < total grid size
+    for i in range(n_features, len(axes)):
+        axes[i].axis('off')
 
     plt.tight_layout()
     plt.savefig(output_file, dpi=dpi, bbox_inches='tight')
     plt.close(fig)
 
-    print(f"Saved static 2D feature map as '{output_file}'")
+    print(f"Saved static 2D feature map with {n_features} features ({n_rows}x{n_cols} layout) as '{output_file}'")
 
