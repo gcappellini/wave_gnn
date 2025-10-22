@@ -51,7 +51,7 @@ def setup_directories(cfg: DictConfig):
     return output_dir, save_dir
 
 
-def create_and_save_dataset(cfg: DictConfig, output_dir: Path):
+def create_and_save_dataset(cfg: DictConfig, output_dir: Path, plot_dataset=True):
     """Create dataset and save it for reproducibility."""
     log.info("=" * 50)
     log.info("CREATING DATASET")
@@ -70,10 +70,11 @@ def create_and_save_dataset(cfg: DictConfig, output_dir: Path):
     train_set = dataset[:n_train]
     val_set = dataset[n_train:]
 
-    # plot_path = output_dir / "figures/training_dataset.png"
-    # visual_train_set = np.array([data.x.numpy() for data in train_set]).transpose(2, 0, 1)
-    # plot_features_2d(dataset[0].coords, visual_train_set, output_file=str(plot_path))
-    # log.info(f"Training dataset visualization saved to {plot_path}")
+    if plot_dataset:
+        plot_path = output_dir / "figures/training_dataset.png"
+        visual_train_set = np.array([data.x.numpy() for data in train_set]).transpose(2, 0, 1)
+        plot_features_2d(dataset[0].coords, visual_train_set, output_file=str(plot_path))
+        log.info(f"Training dataset visualization saved to {plot_path}")
     
     log.info(f"  - Training samples: {len(train_set)}")
     log.info(f"  - Validation samples: {len(val_set)}")

@@ -566,9 +566,10 @@ def create_dataset(num_graphs=64, cfg=None):
     dataset = []
     for i in range(num_graphs):
         # vary seed so graphs are different
-        data = rollout_graph(seed=1000 + i, cfg=cfg)
+        # data = rollout_graph(seed=1000 + i, cfg=cfg)
+        data = create_graph(seed=1000 + i, cfg=cfg)
 
-        dataset.extend(data)
+        dataset.append(data)
     return dataset
 
 def rollout_graph(seed, num_steps=200, dt=0.01, cfg=None):

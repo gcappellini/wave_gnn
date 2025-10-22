@@ -1,8 +1,8 @@
 # Main configuration file
 defaults:
-  - dataset: current_dataset
-  - model: current_model
-  - training: current_training
+  - dataset: fast_dataset
+  - model: fast_model
+  - training: fast_training
   - _self_
 
 # Experiment settings
