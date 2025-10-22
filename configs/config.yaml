@@ -23,6 +23,6 @@ hydra:
 
 # Run settings
 run:
-  train: False
+  train: True
   plot_dataset: True
 

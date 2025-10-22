@@ -1,8 +1,8 @@
 # Deep GCN Model configuration
 in_channels: 3
-hidden_channels: [64, 128, 256, 512]
+hidden_channels: [4, 8, 16, 32]
 out_channels: 2
-conv_types: ["GEN", "GEN","GEN", "GEN"]
+conv_types: ["GEN","GEN","GEN", "GEN"]
 final_layer_type: "Linear"
 activation: "relu"
 dropout: 0.1
@@ -10,7 +10,7 @@ block: "plain" # recommended with heterogeneous dims; residual variants need equ
 use_bn: true
 gat_heads: 4
 cheb_K: 3
-residual: false  # works only false
+residual: true  # works only false
 
 # Global pooling settings
 # Set use_global_pooling=true to enable pooling. Choose where to apply it:

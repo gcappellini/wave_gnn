@@ -1,5 +1,5 @@
 # Training configuration
-epochs: 30
+epochs: 1000
 learning_rate: 0.005
 weight_decay: 1.0e-5
 optimizer: "adam"  # "adam", "sgd", etc.
@@ -33,5 +33,5 @@ checkpoint_path: "best_model.pt"
 # Early stopping
 early_stopping:
   enabled: true
-  patience: 10
+  patience: 50
   min_delta: 1.0e-6
