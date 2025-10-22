@@ -1,0 +1,30 @@
+# Dataset configuration
+num_graphs: 10 #original 50
+num_steps: 6
+dt: 0.01
+train_ratio: 0.8
+batch_size: 4  # Reduced from 32 to fit 8 training samples
+shuffle: true
+drop_last: false  # Allow incomplete batches
+
+# Physics parameters
+wave_speed: 1.0  # c
+damping: 1.0     # k
+
+# Mesh parameters
+num_nodes: 100
+domain_length: 1.0
+
+# Force parameters
+force:
+  margin: 0.1
+  sign: -1.0
+  location: "casual"  # "casual" or fixed coordinates
+  forcing_type: "middle"  # "casual", "start", "middle", "end". NOT IMPLEMENTED YET
+
+# Data scaling
+scaling:
+  enabled: false
+  method: "standard"  # "standard" (z-score) or "minmax"
+  per_feature: true   # Scale each feature independently
+  epsilon: 1.0e-8     # Small value to prevent division by zero
