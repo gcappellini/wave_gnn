@@ -1,5 +1,5 @@
 # Dataset configuration
-num_graphs: 20
+num_graphs: 20000
 num_steps: 6
 dt: 0.01
 train_ratio: 0.8
@@ -24,7 +24,7 @@ force:
 
 # Data scaling
 scaling:
-  enabled: true
+  enabled: false
   method: "standard"  # "standard" (z-score) or "minmax"
   per_feature: true   # Scale each feature independently
   epsilon: 1.0e-8     # Small value to prevent division by zero

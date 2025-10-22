@@ -138,7 +138,7 @@ class DataScaler:
         device = x.device if is_tensor else None
         
         if is_tensor:
-            x = x.cpu().numpy()
+            x = x.detach().cpu().numpy()
         
         if self.method == 'standard':
             x_scaled = (x - self.input_mean) / self.input_std
@@ -225,12 +225,25 @@ class DataScaler:
         device = y_scaled.device if is_tensor else None
         
         if is_tensor:
-            y_scaled = y_scaled.detach().cpu().numpy()
+            y_scaled_np = y_scaled.detach().cpu().numpy()
+        else:
+            y_scaled_np = y_scaled
+        
+        # Check for extreme values before inverse transform
+        if np.abs(y_scaled_np).max() > 100:
+            log.warning(f"Extremely large scaled values detected (max: {np.abs(y_scaled_np).max():.3e}). "
+                       f"This may cause numerical overflow during inverse transform.")
         
         if self.method == 'standard':
-            y = y_scaled * self.output_std + self.output_mean
+            y = y_scaled_np * self.output_std + self.output_mean
         elif self.method == 'minmax':
-            y = y_scaled * (self.output_max - self.output_min) + self.output_min
+            y = y_scaled_np * (self.output_max - self.output_min) + self.output_min
+        
+        # Clip extreme values to prevent overflow (safety measure)
+        max_safe_value = 1e10  # Adjust based on your domain
+        if np.abs(y).max() > max_safe_value:
+            log.warning(f"Clipping extreme values in inverse transform! Max: {np.abs(y).max():.3e}")
+            y = np.clip(y, -max_safe_value, max_safe_value)
         
         if is_tensor:
             y = torch.tensor(y, dtype=torch.float32, device=device)

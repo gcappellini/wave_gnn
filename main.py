@@ -128,7 +128,7 @@ def main(cfg: DictConfig):
         log.info(f"Skipping training. Using existing model at {best_model_path}")
         # Load scaler if it exists
         scaler_path = save_dir / "scaler.pkl"
-        if scaler_path.exists():
+        if cfg.dataset.scaling.enabled:
             with open(scaler_path, 'rb') as f:
                 scaler = pickle.load(f)
             log.info(f"Scaler loaded from {scaler_path}")

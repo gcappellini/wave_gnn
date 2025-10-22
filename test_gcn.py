@@ -162,16 +162,25 @@ def simulate_wave(gnn, data, t_f, dt=0.01, gt=True, scaler=None, device=None):
     for step in range(1, num_steps):
         # Apply scaling if provided
         if scaler is not None:
+            # Scale directly using tensor API; keeps device and avoids explicit numpy round-trip
             features_scaled = scaler.transform_input(features)
-            preds_scaled = gnn(features_scaled, data.edge_index, data.bc_mask)
-            # Inverse transform predictions back to original space
-            features = scaler.inverse_transform_output(preds_scaled)
+            preds = gnn(features_scaled, data.edge_index, data.bc_mask)
+
+            # Check for numerical instability
+            preds_np = preds.detach().cpu().numpy()
+            if np.isnan(preds_np).any() or np.isinf(preds_np).any():
+                print(f"WARNING: Numerical instability at step {step}!")
+                print(f"  NaN count: {np.isnan(preds_np).sum()}")
+                print(f"  Inf count: {np.isinf(preds_np).sum()}")
+                print(f"  Features range: [{preds_np.min():.3e}, {preds_np.max():.3e}]")
+                break
+
             # Keep the force component from input (not predicted)
-            features = torch.stack([features[:, 0], features[:, 1], features_scaled[:, 2]], dim=1)
+            # features = torch.stack([preds[:, 0], preds[:, 1], features_scaled[:, 2]], dim=1)
         else:
             features = gnn(features, data.edge_index, data.bc_mask)
             # Keep the force component from input
-            features = torch.stack([features[:, 0], features[:, 1], features[:, 2]], dim=1)
+            # features = torch.stack([features[:, 0], features[:, 1], features[:, 2]], dim=1)
         
         if gt:
             features_gt = gn.forward(features_gt)
@@ -273,26 +282,6 @@ def test_model(cfg, model_path, output_dir, scaler_path=None):
 
     savemat(str(matlab_file), {'pinn_data': pinn_data})
     log.info(f"MATLAB data saved to {matlab_file}")
-
-    # # Generate plots
-    # histories = np.array([u_history, v_history, f_history])
-    # plot_file = figures_dir / "gcn_string_pred.png"
-    
-    # plot_features_2d(
-    #     nodes,  
-    #     histories,
-    #     output_file=str(plot_file)
-    # )
-    # # Generate error plots
-    # errors = np.array([np.abs(u_history - u_gt), np.abs(v_history - v_gt)])
-    # plot_file2 = figures_dir / "errs_string_pred.png"
-    
-    # plot_features_2d(
-    #     nodes,  
-    #     errors,
-    #     output_file=str(plot_file2)
-    # )
-    # log.info(f"Plot saved to {plot_file} and {plot_file2}")
 
     # Generate plots
     histories = np.array([u_history, v_history, f_history, u_gt, v_gt, np.abs(u_history - u_gt)])

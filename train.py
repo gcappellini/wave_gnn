@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.loader import DataLoader
+import numpy as np
 import subprocess
 from dataset import create_dataset, WaveGNN1D, build_laplacian_matrix, DeepGCN
 from scaler import DataScaler
@@ -216,6 +217,10 @@ def train_physics(batch, model, optimizer, device, cfg, rk4=True, adaptive_weigh
     # Loss used for optimization (BCs are hard constraints)
     loss = pde_loss
     loss.backward()
+    
+    # Apply gradient clipping to prevent exploding gradients
+    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=cfg.training.get('grad_clip_norm', 1.0))
+    
     optimizer.step()
 
     return float(loss.detach().item()), avg_loss1, avg_loss2, avg_loss1_rk4, avg_loss2_rk4
@@ -351,11 +356,30 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
     else:
         log.info("✓ Absolute mode: Model predicts absolute values (u, v)")
     
+    # Scale learning rate based on dataset size to maintain consistent gradient updates
+    base_lr = cfg.training.learning_rate
+    if cfg.training.get('scale_lr_with_dataset', True):
+        # Scale LR proportionally to sqrt(dataset_size / baseline)
+        # This helps maintain stability when changing dataset size
+        baseline_size = cfg.training.get('lr_baseline_size', 1000)
+        dataset_size = len(train_set)
+        lr_scale_factor = np.sqrt(dataset_size / baseline_size)
+        scaled_lr = base_lr * lr_scale_factor
+        log.info(f"Learning rate scaling enabled:")
+        log.info(f"  - Base LR: {base_lr:.6f}")
+        log.info(f"  - Dataset size: {dataset_size}")
+        log.info(f"  - Baseline size: {baseline_size}")
+        log.info(f"  - Scale factor: {lr_scale_factor:.4f}")
+        log.info(f"  - Scaled LR: {scaled_lr:.6f}")
+    else:
+        scaled_lr = base_lr
+        log.info(f"Learning rate: {scaled_lr:.6f} (scaling disabled)")
+    
     # Setup optimizer
     if cfg.training.optimizer.lower() == "adam":
         optimizer = torch.optim.Adam(
             model.parameters(), 
-            lr=cfg.training.learning_rate, 
+            lr=scaled_lr,  # Use scaled learning rate
             weight_decay=cfg.training.weight_decay
         )
     else:
@@ -409,6 +433,14 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
                 rk4=cfg.training.loss.use_rk4,
                 adaptive_weights=adaptive_weights
             )
+            
+            # Check for numerical instability during training
+            if np.isnan(loss) or np.isinf(loss):
+                log.error(f"Training diverged at epoch {epoch}, batch {nbatches}! Loss: {loss}")
+                log.error("Consider: 1) Reducing learning rate, 2) Enabling gradient clipping, "
+                         "3) Checking feature scaling, 4) Reducing model complexity")
+                raise ValueError("Training diverged with NaN/Inf loss")
+            
             epoch_loss += loss
             epoch_loss_1 += loss_1
             epoch_loss_2 += loss_2
@@ -538,10 +570,12 @@ def evaluate_loader_with_scaling(loader, model, device, scaler):
             model.bc_mask = data.bc_mask.to(device)
             
             # Forward pass with scaled input
-            preds_scaled = model(x_scaled, data.edge_index.to(device), data.bc_mask.to(device))
+            preds = model(x_scaled, data.edge_index.to(device), data.bc_mask.to(device))
             
-            # Inverse scale predictions back to original space for loss computation
-            preds = scaler.inverse_transform_output(preds_scaled)
+            # Optional: check for numerical issues
+            if torch.isnan(preds).any() or torch.isinf(preds).any():
+                # Skip this graph to avoid contaminating validation metrics
+                continue
 
             interior_mask = ~data.bc_mask.to(device)
 

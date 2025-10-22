@@ -1,8 +1,13 @@
 # Training configuration
 epochs: 1000
-learning_rate: 0.005
+learning_rate: 0.01
 weight_decay: 1.0e-5
 optimizer: "adam"  # "adam", "sgd", etc.
+
+# Numerical stability
+grad_clip_norm: 1.0  # Gradient clipping max norm (prevents exploding gradients)
+scale_lr_with_dataset: true  # Automatically scale LR based on dataset size
+lr_baseline_size: 1000  # Baseline dataset size for LR scaling (adjust to your typical num_graphs)
 
 # Loss weights
 loss:
