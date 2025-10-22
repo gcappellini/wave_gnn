@@ -18,7 +18,7 @@ residual: false  # works only false
 #  - "middle": encoder-decoder with pooling bottleneck → node-level output with global context
 use_global_pooling: true
 pooling_position: middle   # middle | end
-pooling_type: attention         # mean | max | sum | attention
+pooling_type: mean         # mean | max | sum | attention
 
 # Encoder-decoder split (used when pooling_position: middle)
 # If encoder_layers is null, it defaults to half of hidden_layers (here: 4)

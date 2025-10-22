@@ -20,3 +20,9 @@ hydra:
   sweep:
     dir: ./multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}
     subdir: ${hydra.job.num}
+
+# Run settings
+run:
+  train: False
+  plot_dataset: True
+

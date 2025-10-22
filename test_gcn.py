@@ -16,8 +16,8 @@ def load_best_model(path='./best_model.pt', device=None, model_cls=None, model_k
     Args:
         path: path to checkpoint (default 'best_model.pt')
         device: torch device or None to auto-select
-        model_cls: optional model class to instantiate; if None, will import SimpleGCN from train_gcn
-        model_kwargs: kwargs to pass to model constructor (defaults to in=3, hidden=64, out=2)
+        model_cls: optional model class to instantiate; if None, will import DeepGCN from dataset
+        model_kwargs: kwargs to pass to model constructor (optional, will use saved config if available)
 
     Returns:
         model (torch.nn.Module), checkpoint (dict)
@@ -33,10 +33,17 @@ def load_best_model(path='./best_model.pt', device=None, model_cls=None, model_k
             from dataset import DeepGCN as DefaultModel
             model_cls = DefaultModel
         except Exception:
-            raise ImportError("Could not import DeepGCN from test. Please pass model_cls or ensure test.DeepGCN is importable.")
+            raise ImportError("Could not import DeepGCN from dataset. Please pass model_cls or ensure dataset.DeepGCN is importable.")
 
+    # Use saved model_config if available (from newer checkpoints), otherwise fall back to model_kwargs
     if model_kwargs is None:
-        model_kwargs = {'in_channels': 3, 'hidden_channels': 128, 'out_channels': 2, 'dropout': 0.5}
+        if 'model_config' in ckpt:
+            model_kwargs = ckpt['model_config']
+        else:
+            # Fallback for old checkpoints without model_config
+            model_kwargs = {'in_channels': 3, 'hidden_channels': 128, 'out_channels': 2, 'dropout': 0.5}
+            print("Warning: Checkpoint doesn't contain 'model_config'. Using default architecture.")
+            print("If loading fails, please provide model_kwargs manually or retrain with updated train.py")
 
     model = model_cls(**model_kwargs).to(device)
     model.load_state_dict(ckpt['model_state_dict'])
@@ -230,25 +237,12 @@ def test_model(cfg, model_path, output_dir, scaler_path=None):
     else:
         device = torch.device("cpu")
     
-    # Load trained GCN model
+    # Load trained GCN model (uses saved model_config from checkpoint)
     log.info(f"Loading model from {model_path}")
     gcn, ckpt = load_best_model(
         path=model_path,
-        device=device,
-        model_kwargs={
-            'in_channels': cfg.model.in_channels,
-            'hidden_channels': cfg.model.hidden_channels,
-            'out_channels': cfg.model.out_channels,
-            'conv_types': cfg.model.conv_types,
-            'final_layer_type': cfg.model.final_layer_type,
-            'activation': cfg.model.activation,
-            'dropout': cfg.model.dropout,
-            'block': cfg.model.block,
-            'use_bn': cfg.model.use_bn,
-            'gat_heads': cfg.model.gat_heads,
-            'cheb_K': cfg.model.cheb_K,
-            'residual': cfg.model.get('residual', False)
-        }
+        device=device
+        # model_kwargs automatically loaded from checkpoint's model_config
     )
     
     if cfg.model.get('residual', False):

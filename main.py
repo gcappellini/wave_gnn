@@ -103,33 +103,39 @@ def main(cfg: DictConfig):
     log.info(f"Configuration saved to {config_path}")
     
     # Create dataset
-    train_set, val_set = create_and_save_dataset(cfg, output_dir)
+    train_set, val_set = create_and_save_dataset(cfg, output_dir, plot_dataset=cfg.run.plot_dataset)
     
-    # Train model
-    log.info("\n" + "=" * 50)
-    log.info("TRAINING MODEL")
-    log.info("=" * 50)
-    
-    best_model_path = save_dir / cfg.training.checkpoint_path
-    model, metrics, scaler = train_model(
-        cfg=cfg,
-        train_set=train_set,
-        val_set=val_set,
-        save_path=str(best_model_path)
-    )
-    
-    log.info(f"Training completed. Best model saved to {best_model_path}")
-    log.info(f"Best validation PDE MSE: {metrics['best_val_pde']:.6e}")
-    if scaler is not None:
-        log.info("✓ Data scaling was enabled during training")
-    # scaler_path = save_dir / "scaler.pkl"
-    # if scaler_path.exists():
-    #     with open(scaler_path, 'rb') as f:
-    #         scaler = pickle.load(f)
-    #     log.info(f"Scaler loaded from {scaler_path}")
-    # else:
-    #     scaler = None
-    #     log.warning(f"No scaler found at {scaler_path}")
+    if cfg.run.train:
+        # Train model
+        log.info("\n" + "=" * 50)
+        log.info("TRAINING MODEL")
+        log.info("=" * 50)
+        
+        best_model_path = save_dir / cfg.training.checkpoint_path
+        model, metrics, scaler = train_model(
+            cfg=cfg,
+            train_set=train_set,
+            val_set=val_set,
+            save_path=str(best_model_path)
+        )
+        
+        log.info(f"Training completed. Best model saved to {best_model_path}")
+        log.info(f"Best validation PDE MSE: {metrics['best_val_pde']:.6e}")
+        if scaler is not None:
+            log.info("✓ Data scaling was enabled during training")
+    else:
+        best_model_path = save_dir / cfg.training.checkpoint_path
+        log.info(f"Skipping training. Using existing model at {best_model_path}")
+        # Load scaler if it exists
+        scaler_path = save_dir / "scaler.pkl"
+        if scaler_path.exists():
+            with open(scaler_path, 'rb') as f:
+                scaler = pickle.load(f)
+            log.info(f"Scaler loaded from {scaler_path}")
+        else:
+            scaler = None
+            log.warning(f"No scaler found at {scaler_path}")
+        metrics = {}
     
     # Test model
     log.info("\n" + "=" * 50)

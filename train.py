@@ -330,7 +330,20 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
         block=cfg.model.block,
         use_bn=cfg.model.use_bn,
         residual=cfg.model.get('residual', False),  # Default to False for backward compatibility
+        # Global pooling / encoder-decoder options (all optional for backward compatibility)
+        use_global_pooling=cfg.model.get('use_global_pooling', False),
+        pooling_position=cfg.model.get('pooling_position', 'end'),
+        pooling_type=cfg.model.get('pooling_type', 'mean'),
+        encoder_layers=cfg.model.get('encoder_layers', None),
+        decoder_channels=cfg.model.get('decoder_channels', None),
+        graph_output_dim=cfg.model.get('graph_output_dim', None),
     ).to(device)
+    # Safety note: This trainer expects node-level outputs. If pooling at end is enabled,
+    # the model will return graph-level outputs which will break the physics losses.
+    if getattr(model, 'use_global_pooling', False) and getattr(model, 'pooling_position', 'end') == 'end':
+        log.warning("Model is configured with pooling_position='end' (graph-level output). "
+                    "This training loop expects node-level outputs. Consider setting "
+                    "pooling_position='middle' or use_global_pooling=False.")
     
     log.info(f"Model architecture: {model}")
     if cfg.model.get('residual', False):
@@ -444,6 +457,27 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
                     'val_pde': val_pde,
                     'config': cfg,
                     'scaling_enabled': cfg.dataset.scaling.enabled,
+                    # Save complete model architecture for easy loading
+                    'model_config': {
+                        'in_channels': cfg.model.in_channels,
+                        'hidden_channels': cfg.model.hidden_channels,
+                        'out_channels': cfg.model.out_channels,
+                        'conv_types': cfg.model.conv_types,
+                        'final_layer_type': cfg.model.final_layer_type,
+                        'activation': cfg.model.activation,
+                        'dropout': cfg.model.dropout,
+                        'block': cfg.model.block,
+                        'use_bn': cfg.model.use_bn,
+                        'gat_heads': cfg.model.gat_heads,
+                        'cheb_K': cfg.model.cheb_K,
+                        'residual': cfg.model.get('residual', False),
+                        'use_global_pooling': cfg.model.get('use_global_pooling', False),
+                        'pooling_position': cfg.model.get('pooling_position', 'end'),
+                        'pooling_type': cfg.model.get('pooling_type', 'mean'),
+                        'encoder_layers': cfg.model.get('encoder_layers', None),
+                        'decoder_channels': cfg.model.get('decoder_channels', None),
+                        'graph_output_dim': cfg.model.get('graph_output_dim', None),
+                    }
                 }
                 # Save adaptive weights state if enabled
                 if adaptive_weights is not None:

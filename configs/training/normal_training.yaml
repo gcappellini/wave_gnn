@@ -1,22 +1,22 @@
 # Training configuration
-epochs: 20
+epochs: 30
 learning_rate: 0.005
 weight_decay: 1.0e-5
 optimizer: "adam"  # "adam", "sgd", etc.
 
 # Loss weights
 loss:
-  w1_PI: 1.649e+00  # weight for displacement loss
-  w2_PI: 5.531e+00  # weight for velocity loss
+  w1_PI: 1.0e+00  # weight for displacement loss
+  w2_PI: 1.0e+00  # weight for velocity loss
   use_rk4: true
-  w1_rk4: 1.651e+00
-  w2_rk4: 1.470e-01
+  w1_rk4: 1.0e+00
+  w2_rk4: 1.0e+00
   use_gn_solver: false
   
   # Adaptive loss weighting
   adaptive:
     enabled: true  # Enable adaptive weighting
-    strategy: "ema"  # Options: 'equal_init', 'equal_init_ema', 'ema', 'fixed'
+    strategy: "equal_init_ema"  # Options: 'equal_init', 'equal_init_ema', 'ema', 'fixed'
     ema_alpha: 0.8  # Exponential moving average coefficient (0.8 = 80% old, 20% new)
     update_frequency: 1  # Update weights every N epochs
     # Strategy descriptions:

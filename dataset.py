@@ -6,7 +6,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.nn import (
     GCNConv, GENConv, SAGEConv, GATConv, GATv2Conv, 
-    GINConv, EdgeConv, TransformerConv, ChebConv, DeepGCNLayer
+    GINConv, EdgeConv, TransformerConv, ChebConv, DeepGCNLayer,
+    global_mean_pool, global_max_pool, global_add_pool
 )
 from torch.nn import Linear, Sequential, ReLU
 from torch_geometric.data import Data
@@ -32,6 +33,12 @@ class DeepGCN(nn.Module):
         gat_heads (int): number of attention heads for GAT/GATv2/Transformer (default: 4)
         cheb_K (int): filter size for ChebConv (default: 3)
         residual (bool): if True, predict changes (Δu, Δv) instead of absolute values (default: False)
+        use_global_pooling (bool): if True, apply global pooling to get graph-level representation (default: False)
+        pooling_type (str): type of global pooling ('mean', 'max', 'sum', 'attention') (default: 'mean')
+        graph_output_dim (int): dimension of graph-level output after pooling (default: None, uses out_channels)
+        pooling_position (str): where to apply pooling - 'end' (after all layers) or 'middle' (encoder-decoder) (default: 'end')
+        encoder_layers (int): number of layers before pooling when pooling_position='middle' (default: None, uses half)
+        decoder_channels (list[int]): hidden dims for decoder layers after pooling (default: None, mirrors encoder)
     """
     def __init__(
         self,
@@ -46,11 +53,20 @@ class DeepGCN(nn.Module):
         cheb_K=3,
         in_channels=3,
         out_channels=2,
-        residual=False
+        residual=False,
+        use_global_pooling=False,
+        pooling_type="mean",
+        graph_output_dim=None,
+        pooling_position="end",
+        encoder_layers=None,
+        decoder_channels=None
     ):
         super().__init__()
         
         self.residual = residual  # Whether to predict changes or absolute values
+        self.use_global_pooling = use_global_pooling
+        self.pooling_type = pooling_type.lower()
+        self.pooling_position = pooling_position.lower()
         
         # Normalize hidden_channels to a list
         if isinstance(hidden_channels, int):
@@ -93,35 +109,163 @@ class DeepGCN(nn.Module):
         else:
             self.input_proj = None
         
-        # Build hidden layers using DeepGCNLayer
-        self.layers = nn.ModuleList()
-        prev_dim = hidden_sizes[0] if self.input_proj else in_channels
-        
-        for i, hid in enumerate(hidden_sizes):
-            ctype = conv_types[i].upper()
+        # Determine encoder-decoder split if using middle pooling
+        if self.use_global_pooling and self.pooling_position == "middle":
+            # Split layers into encoder and decoder
+            if encoder_layers is None:
+                # Default: use half the layers as encoder
+                self.n_encoder_layers = n_hidden // 2
+            else:
+                self.n_encoder_layers = min(encoder_layers, n_hidden)
             
-            # Create the convolution layer based on type
-            conv = self._create_conv_layer(ctype, prev_dim, hid)
+            # Build encoder layers
+            self.encoder_layers = nn.ModuleList()
+            prev_dim = hidden_sizes[0] if self.input_proj else in_channels
             
-            # Wrap in DeepGCNLayer
-            deep_layer = DeepGCNLayer(
-                conv=conv,
-                norm=nn.BatchNorm1d(hid) if use_bn else None,
-                act=act_module,
-                block=block,
-                dropout=dropout,
-            )
-            self.layers.append(deep_layer)
-            prev_dim = hid
-        
-        # Final layer (no skip connection or activation on output)
-        ft = final_layer_type.upper()
-        if ft == "LINEAR":
-            self.final_layer = Linear(prev_dim, out_channels)
+            for i in range(self.n_encoder_layers):
+                hid = hidden_sizes[i]
+                ctype = conv_types[i].upper()
+                conv = self._create_conv_layer(ctype, prev_dim, hid)
+                # Use 'plain' block when feature dims change to avoid pre-norm mismatch
+                layer_block = block
+                norm_dim = hid
+                if block != "plain" and prev_dim != hid:
+                    layer_block = "plain"
+                # For residual-style blocks, normalization happens pre-conv → use prev_dim
+                if layer_block != "plain":
+                    norm_dim = prev_dim
+                deep_layer = DeepGCNLayer(
+                    conv=conv,
+                    norm=nn.BatchNorm1d(norm_dim) if use_bn else None,
+                    act=act_module,
+                    block=layer_block,
+                    dropout=dropout,
+                )
+                self.encoder_layers.append(deep_layer)
+                prev_dim = hid
+            
+            # Store encoder output dimension
+            self.encoder_output_dim = prev_dim
+            
+            # Graph pooling dimension
+            if graph_output_dim is None:
+                self.graph_dim = self.encoder_output_dim
+            else:
+                self.graph_dim = graph_output_dim
+                
+            # Attention for pooling if needed
+            if self.pooling_type == "attention":
+                self.attention_weights = Linear(self.encoder_output_dim, 1)
+            
+            # Optional projection after pooling
+            if graph_output_dim is not None and graph_output_dim != self.encoder_output_dim:
+                self.graph_projection = Linear(self.encoder_output_dim, graph_output_dim)
+            else:
+                self.graph_projection = None
+            
+            # Build decoder layers
+            self.decoder_layers = nn.ModuleList()
+            
+            # Determine decoder architecture
+            if decoder_channels is None:
+                # Default: mirror encoder in reverse
+                decoder_sizes = list(reversed(hidden_sizes[:self.n_encoder_layers]))
+            else:
+                decoder_sizes = list(decoder_channels)
+            
+            # First decoder layer takes graph features and broadcasts to nodes
+            # Input: graph_dim (broadcasted to each node)
+            prev_dim = self.graph_dim
+            
+            for i, hid in enumerate(decoder_sizes):
+                # Use remaining conv_types or default to first type
+                ctype_idx = self.n_encoder_layers + i
+                if ctype_idx < len(conv_types):
+                    ctype = conv_types[ctype_idx].upper()
+                else:
+                    ctype = conv_types[0].upper()
+                
+                conv = self._create_conv_layer(ctype, prev_dim, hid)
+                # Use 'plain' block when feature dims change
+                layer_block = block
+                norm_dim = hid
+                if block != "plain" and prev_dim != hid:
+                    layer_block = "plain"
+                if layer_block != "plain":
+                    norm_dim = prev_dim
+                deep_layer = DeepGCNLayer(
+                    conv=conv,
+                    norm=nn.BatchNorm1d(norm_dim) if use_bn else None,
+                    act=act_module,
+                    block=layer_block,
+                    dropout=dropout,
+                )
+                self.decoder_layers.append(deep_layer)
+                prev_dim = hid
+            
+            # Final output layer
+            ft = final_layer_type.upper()
+            if ft == "LINEAR":
+                self.final_layer = Linear(prev_dim, out_channels)
+            else:
+                self.final_layer = self._create_conv_layer(ft, prev_dim, out_channels)
+            self.final_layer_type = ft
+            
         else:
-            self.final_layer = self._create_conv_layer(ft, prev_dim, out_channels)
-        
-        self.final_layer_type = ft
+            # Standard architecture: all layers, optional pooling at end
+            self.encoder_layers = None
+            self.decoder_layers = None
+            
+            # Build hidden layers using DeepGCNLayer
+            self.layers = nn.ModuleList()
+            prev_dim = hidden_sizes[0] if self.input_proj else in_channels
+            
+            for i, hid in enumerate(hidden_sizes):
+                ctype = conv_types[i].upper()
+                
+                # Create the convolution layer based on type
+                conv = self._create_conv_layer(ctype, prev_dim, hid)
+                
+                # Wrap in DeepGCNLayer
+                layer_block = block
+                norm_dim = hid
+                if block != "plain" and prev_dim != hid:
+                    layer_block = "plain"
+                if layer_block != "plain":
+                    norm_dim = prev_dim
+                deep_layer = DeepGCNLayer(
+                    conv=conv,
+                    norm=nn.BatchNorm1d(norm_dim) if use_bn else None,
+                    act=act_module,
+                    block=layer_block,
+                    dropout=dropout,
+                )
+                self.layers.append(deep_layer)
+                prev_dim = hid
+            
+            # Final layer (no skip connection or activation on output)
+            ft = final_layer_type.upper()
+            if ft == "LINEAR":
+                self.final_layer = Linear(prev_dim, out_channels)
+            else:
+                self.final_layer = self._create_conv_layer(ft, prev_dim, out_channels)
+            
+            self.final_layer_type = ft
+            
+            # Global pooling setup (only for 'end' position)
+            if self.use_global_pooling and self.pooling_position == "end":
+                # Determine the dimension after pooling
+                pool_dim = out_channels
+                
+                # Attention-based pooling requires learnable parameters
+                if self.pooling_type == "attention":
+                    self.attention_weights = Linear(pool_dim, 1)
+                
+                # Optional graph-level output projection
+                if graph_output_dim is not None:
+                    self.graph_projection = Linear(pool_dim, graph_output_dim)
+                else:
+                    self.graph_projection = None
     
     def _create_conv_layer(self, conv_type, in_dim, out_dim):
         """Create a convolution layer based on the specified type."""
@@ -172,7 +316,44 @@ class DeepGCN(nn.Module):
                 f"Options: GCN, GEN, SAGE, GAT, GATv2, GIN, Edge, Transformer, Cheb"
             )
     
-    def forward(self, x, edge_index, bc_mask):
+    def global_pooling(self, x, batch=None):
+        """
+        Apply global pooling to aggregate node features into graph-level representation.
+        
+        Args:
+            x: Node features [num_nodes, feature_dim]
+            batch: Batch vector [num_nodes] indicating which graph each node belongs to.
+                   If None, assumes all nodes belong to a single graph.
+                   
+        Returns:
+            pooled: Graph-level features [num_graphs, feature_dim] or [1, feature_dim]
+        """
+        if batch is None:
+            # Single graph: create a batch vector of all zeros
+            batch = torch.zeros(x.size(0), dtype=torch.long, device=x.device)
+        
+        if self.pooling_type == "mean":
+            pooled = global_mean_pool(x, batch)
+        elif self.pooling_type == "max":
+            pooled = global_max_pool(x, batch)
+        elif self.pooling_type == "sum":
+            pooled = global_add_pool(x, batch)
+        elif self.pooling_type == "attention":
+            # Attention-based pooling: learn importance weights for each node
+            attention_scores = self.attention_weights(x)  # [num_nodes, 1]
+            attention_scores = F.softmax(attention_scores, dim=0)  # Softmax over nodes
+            
+            # Weighted sum
+            pooled = global_add_pool(x * attention_scores, batch)
+        else:
+            raise ValueError(
+                f"Unsupported pooling type: {self.pooling_type}. "
+                f"Options: mean, max, sum, attention"
+            )
+        
+        return pooled
+    
+    def forward(self, x, edge_index, bc_mask, batch=None, return_pooled=False):
         """
         Forward pass.
         
@@ -180,10 +361,19 @@ class DeepGCN(nn.Module):
             x: Node features [num_nodes, in_channels] - typically [u, v, f]
             edge_index: Graph connectivity [2, num_edges]
             bc_mask: Boolean mask for boundary conditions
+            batch: Batch vector [num_nodes] for multi-graph batching (optional)
+            return_pooled: If True and use_global_pooling=True, returns both node and graph features
             
         Returns:
-            If residual=False: [u_next, v_next] (absolute values)
-            If residual=True: [Δu, Δv] (changes), which are added to current [u, v]
+            If use_global_pooling=False or return_pooled=False:
+                x: Node-level output [num_nodes, out_channels]
+                   If residual=False: [u_next, v_next] (absolute values)
+                   If residual=True: [Δu, Δv] (changes), which are added to current [u, v]
+            
+            If use_global_pooling=True and return_pooled=True:
+                (x, pooled): Tuple of node-level and graph-level outputs
+                
+            If pooling_position='middle': Always returns node-level output
         """
         # Store input for residual connection
         if self.residual:
@@ -195,15 +385,50 @@ class DeepGCN(nn.Module):
         if self.input_proj is not None:
             x = self.input_proj(x)
         
-        # Pass through hidden layers
-        for layer in self.layers:
-            x = layer(x, edge_index)
-        
-        # Final layer
-        if self.final_layer_type == "LINEAR":
-            x = self.final_layer(x)
+        # Branch based on architecture
+        if self.use_global_pooling and self.pooling_position == "middle":
+            # Encoder-decoder with pooling in middle
+            
+            # ENCODER: Process through encoder layers
+            for layer in self.encoder_layers:
+                x = layer(x, edge_index)
+            
+            # POOLING: Aggregate to graph-level
+            graph_features = self.global_pooling(x, batch)
+            
+            # Optional projection after pooling
+            if self.graph_projection is not None:
+                graph_features = self.graph_projection(graph_features)
+            
+            # DECODER: Broadcast graph features back to nodes
+            if batch is None:
+                # Single graph: broadcast to all nodes
+                num_nodes = x.shape[0]
+                x = graph_features.expand(num_nodes, -1)
+            else:
+                # Multiple graphs: broadcast to nodes of each graph
+                x = graph_features[batch]  # Index graph features by batch assignment
+            
+            # Process through decoder layers
+            for layer in self.decoder_layers:
+                x = layer(x, edge_index)
+            
+            # Final layer
+            if self.final_layer_type == "LINEAR":
+                x = self.final_layer(x)
+            else:
+                x = self.final_layer(x, edge_index)
+                
         else:
-            x = self.final_layer(x, edge_index)
+            # Standard architecture: pass through all layers
+            for layer in self.layers:
+                x = layer(x, edge_index)
+            
+            # Final layer
+            if self.final_layer_type == "LINEAR":
+                x = self.final_layer(x)
+            else:
+                x = self.final_layer(x, edge_index)
         
         # If residual mode, add predicted changes to current state
         if self.residual:
@@ -220,6 +445,18 @@ class DeepGCN(nn.Module):
         
         # Apply boundary conditions
         x[bc_mask] = 0.0
+        
+        # Apply global pooling at end if enabled
+        if self.use_global_pooling and self.pooling_position == "end":
+            pooled = self.global_pooling(x, batch)
+            # Optional projection after pooling
+            if self.graph_projection is not None:
+                pooled = self.graph_projection(pooled)
+            
+            if return_pooled:
+                return x, pooled
+            else:
+                return pooled
         
         return x
     
@@ -566,7 +803,6 @@ def create_dataset(num_graphs=64, cfg=None):
     dataset = []
     for i in range(num_graphs):
         # vary seed so graphs are different
-        # data = rollout_graph(seed=1000 + i, cfg=cfg)
         data = create_graph(seed=1000 + i, cfg=cfg)
 
         dataset.append(data)
