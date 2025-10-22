@@ -1,8 +1,8 @@
 # Deep GCN Model configuration
 in_channels: 3
-hidden_channels: [128, 128, 128, 128, 128, 128, 128, 128, 128, 128]
+hidden_channels: [128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128]
 out_channels: 2
-conv_types: ["GEN", "GEN","GEN", "GEN","GEN", "GEN","GEN", "GEN","GEN", "GEN"]
+conv_types: ["GEN", "GEN", "GEN", "GEN", "GEN", "GEN", "GEN", "GEN", "GEN", "GEN", "GEN", "GEN", "GEN", "GEN", "GEN", "GEN", "GEN", "GEN", "GEN", "GEN", "GEN", "GEN", "GEN", "GEN", "GEN", "GEN", "GEN", "GEN", "GEN", "GEN", "GEN", "GEN", "GEN", "GEN", "GEN", "GEN", "GEN", "GEN", "GEN", "GEN"]
 final_layer_type: "Linear"
 activation: "relu"
 dropout: 0.1
