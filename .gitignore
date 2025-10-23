@@ -39,6 +39,7 @@ matlab/
 # Jupyter
 .ipynb_checkpoints/
 *.ipynb
+!main_ssh.ipynb
 
 # Logs
 *.log
