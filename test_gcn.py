@@ -5,7 +5,6 @@ import torch
 from dataset import create_graph, WaveGNN1D
 from plot import plot_features_2d
 from omegaconf import OmegaConf
-from scaler import DataScaler
 from pathlib import Path
 
 
@@ -44,9 +43,15 @@ def load_best_model(path='./best_model.pt', device=None, model_cls=None, model_k
             model_kwargs = {'in_channels': 3, 'hidden_channels': 128, 'out_channels': 2, 'dropout': 0.5}
             print("Warning: Checkpoint doesn't contain 'model_config'. Using default architecture.")
             print("If loading fails, please provide model_kwargs manually or retrain with updated train.py")
+    
+    # Ensure new skip connection parameters have defaults for backward compatibility
+    if 'use_ed_skip' not in model_kwargs:
+        model_kwargs['use_ed_skip'] = False
+    if 'ed_skip_type' not in model_kwargs:
+        model_kwargs['ed_skip_type'] = 'concat'
 
     model = model_cls(**model_kwargs).to(device)
-    model.load_state_dict(ckpt['model_state_dict'])
+    model.load_state_dict(ckpt['model_state_dict'], strict=False)
     model.eval()
 
     return model, ckpt
@@ -101,7 +106,7 @@ def stringforce(coords, t, t_f, f_min=-3, x_f_1=0.2, x_f_2=0.8):
     return f
 
 
-def simulate_wave(gnn, data, t_f, dt=0.01, gt=True, scaler=None, device=None):
+def simulate_wave(gnn, data, t_f, dt=0.01, gt=True, device=None):
     """
     Simulate 2D wave equation using GNN with integrated time stepping.
     
@@ -111,7 +116,6 @@ def simulate_wave(gnn, data, t_f, dt=0.01, gt=True, scaler=None, device=None):
         t_f: Final simulation time
         dt: Time step
         gt: Whether to compute ground truth solution
-        scaler: DataScaler for input/output scaling (optional)
         device: torch.device to use for computation (default: None, auto-detect from gnn)
         
     Returns:
@@ -160,27 +164,10 @@ def simulate_wave(gnn, data, t_f, dt=0.01, gt=True, scaler=None, device=None):
     
     # Time integration loop
     for step in range(1, num_steps):
-        # Apply scaling if provided
-        if scaler is not None:
-            # Scale directly using tensor API; keeps device and avoids explicit numpy round-trip
-            features_scaled = scaler.transform_input(features)
-            preds = gnn(features_scaled, data.edge_index, data.bc_mask)
 
-            # Check for numerical instability
-            preds_np = preds.detach().cpu().numpy()
-            if np.isnan(preds_np).any() or np.isinf(preds_np).any():
-                print(f"WARNING: Numerical instability at step {step}!")
-                print(f"  NaN count: {np.isnan(preds_np).sum()}")
-                print(f"  Inf count: {np.isinf(preds_np).sum()}")
-                print(f"  Features range: [{preds_np.min():.3e}, {preds_np.max():.3e}]")
-                break
-
-            # Keep the force component from input (not predicted)
-            # features = torch.stack([preds[:, 0], preds[:, 1], features_scaled[:, 2]], dim=1)
-        else:
-            features = gnn(features, data.edge_index, data.bc_mask)
-            # Keep the force component from input
-            # features = torch.stack([features[:, 0], features[:, 1], features[:, 2]], dim=1)
+        features = gnn(features, data.edge_index, data.bc_mask)
+        # Keep the force component from input
+        # features = torch.stack([features[:, 0], features[:, 1], features[:, 2]], dim=1)
         
         if gt:
             features_gt = gn.forward(features_gt)
@@ -208,7 +195,7 @@ def simulate_wave(gnn, data, t_f, dt=0.01, gt=True, scaler=None, device=None):
         return t_history, u_history, v_history, f_history, None, None
 
 
-def test_model(cfg, model_path, output_dir, scaler_path=None):
+def test_model(cfg, model_path, output_dir):
     """
     Test the trained model and generate visualizations.
     
@@ -216,7 +203,6 @@ def test_model(cfg, model_path, output_dir, scaler_path=None):
         cfg: Hydra configuration object
         model_path: Path to the saved model checkpoint
         output_dir: Directory to save test outputs
-        scaler_path: Path to the saved scaler (optional)
         
     Returns:
         test_results: Dictionary containing test metrics and output paths
@@ -228,14 +214,6 @@ def test_model(cfg, model_path, output_dir, scaler_path=None):
     output_dir = Path(output_dir)
     figures_dir = output_dir / "figures"
     figures_dir.mkdir(exist_ok=True)
-    
-    # Load scaler if provided
-    scaler = None
-    if scaler_path is not None and Path(scaler_path).exists():
-        scaler = DataScaler.load(scaler_path)
-        log.info(f"✓ Scaler loaded from {scaler_path}")
-    else:
-        log.info("No scaler used (scaling was disabled during training)")
     
     # Simulation parameters
     T = 10.0  # total time
@@ -264,7 +242,7 @@ def test_model(cfg, model_path, output_dir, scaler_path=None):
     log.info("Running simulation...")
     start_time = datetime.now()
     t_history, u_history, v_history, f_history, u_gt, v_gt = simulate_wave(
-        gcn, initial_graph, T, dt=cfg.dataset.dt, gt=True, scaler=scaler, device=device
+        gcn, initial_graph, T, dt=cfg.dataset.dt, gt=True, device=device
     )
     end_time = datetime.now()
     elapsed = end_time - start_time

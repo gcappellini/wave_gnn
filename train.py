@@ -5,7 +5,6 @@ from torch_geometric.loader import DataLoader
 import numpy as np
 import subprocess
 from dataset import create_dataset, WaveGNN1D, build_laplacian_matrix, DeepGCN
-from scaler import DataScaler
 from adaptive_weights import create_adaptive_weights_from_config
 from datetime import datetime
 
@@ -277,7 +276,6 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
     Returns:
         model: Trained model
         metrics: Dictionary containing training metrics
-        scaler: DataScaler object (or None if scaling disabled)
     """
     import logging
     from pathlib import Path
@@ -304,23 +302,6 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
         shuffle=False
     )
 
-    # Setup data scaler if enabled
-    scaler = None
-    if cfg.dataset.scaling.enabled:
-        log.info("=" * 50)
-        log.info("Setting up data scaling...")
-        scaler = DataScaler(
-            method=cfg.dataset.scaling.method,
-            per_feature=cfg.dataset.scaling.per_feature,
-            epsilon=cfg.dataset.scaling.epsilon
-        )
-        scaler.fit(train_loader, input_indices=None, output_indices=[0, 1])
-        
-        # Save scaler alongside model
-        scaler_path = Path(save_path).parent / "scaler.pkl"
-        scaler.save(scaler_path)
-        log.info(f"Scaler saved to {scaler_path}")
-        log.info("=" * 50)
 
     # Build model
     sample = train_set[0]
@@ -342,6 +323,8 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
         encoder_layers=cfg.model.get('encoder_layers', None),
         decoder_channels=cfg.model.get('decoder_channels', None),
         graph_output_dim=cfg.model.get('graph_output_dim', None),
+        use_ed_skip=cfg.model.get('use_ed_skip', False),
+        ed_skip_type=cfg.model.get('ed_skip_type', 'concat'),
     ).to(device)
     # Safety note: This trainer expects node-level outputs. If pooling at end is enabled,
     # the model will return graph-level outputs which will break the physics losses.
@@ -419,14 +402,6 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
         nbatches = 0
         
         for batch in train_loader:
-            # Apply input scaling if enabled
-            if scaler is not None:
-                batch_list = batch.to_data_list()
-                for data in batch_list:
-                    data.x = scaler.transform_input(data.x)
-                # Reconstruct batch
-                from torch_geometric.data import Batch
-                batch = Batch.from_data_list(batch_list)
             
             loss, loss_1, loss_2, loss_1_rk4, loss_2_rk4 = train_physics(
                 batch, model, optimizer, device, cfg,
@@ -467,11 +442,8 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
             
             adaptive_weights.update(epoch, loss_dict)
 
-        # Evaluate on validation set (with scaling if enabled)
-        if scaler is not None:
-            metrics = evaluate_loader_with_scaling(val_loader, model, device, scaler)
-        else:
-            metrics = evaluate_loader(val_loader, model, device)
+        # Evaluate on validation set
+        metrics = evaluate_loader(val_loader, model, device)
         avg_loss_2 = epoch_loss_2 / max(1, nbatches)
         avg_loss_1_rk4 = loss_1_rk4 / max(1, nbatches)
         avg_loss_2_rk4 = loss_2_rk4 / max(1, nbatches)
@@ -546,11 +518,11 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
     end_time = datetime.now()
     log.info(f"Total training time: {end_time - start_time}")
     
-    return model, {'best_val_pde': best_pde, 'final_epoch': epoch}, scaler
+    return model, {'best_val_pde': best_pde, 'final_epoch': epoch}
 
 
 @torch.no_grad()
-def evaluate_loader_with_scaling(loader, model, device, scaler):
+def evaluate_loader_with_scaling(loader, model, device):
     """Evaluate model with input/output scaling."""
     model.eval()
     total_loss = 0.0
@@ -566,11 +538,10 @@ def evaluate_loader_with_scaling(loader, model, device, scaler):
             L = data.laplacian
 
             # Scale input
-            x_scaled = scaler.transform_input(data.x.to(device))
             model.bc_mask = data.bc_mask.to(device)
             
             # Forward pass with scaled input
-            preds = model(x_scaled, data.edge_index.to(device), data.bc_mask.to(device))
+            preds = model(data.x.to(device), data.edge_index.to(device), data.bc_mask.to(device))
             
             # Optional: check for numerical issues
             if torch.isnan(preds).any() or torch.isinf(preds).any():

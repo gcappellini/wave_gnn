@@ -1,16 +1,17 @@
 # Deep GCN Model configuration
 in_channels: 3
-hidden_channels: [4, 8, 16, 32]
+hidden_channels: [32, 64, 128, 256]
+# hidden_channels: [64, 128, 256, 512]
 out_channels: 2
 conv_types: ["GEN","GEN","GEN", "GEN"]
 final_layer_type: "Linear"
 activation: "relu"
-dropout: 0.1
-block: "plain" # recommended with heterogeneous dims; residual variants need equal in/out dims
+dropout: 0.2
+block: "res" # recommended with heterogeneous dims; residual variants need equal in/out dims
 use_bn: true
 gat_heads: 4
 cheb_K: 3
-residual: true  # works only false
+residual: true 
 
 # Global pooling settings
 # Set use_global_pooling=true to enable pooling. Choose where to apply it:
@@ -29,3 +30,8 @@ decoder_channels: null
 
 # Optional bottleneck dimension after pooling. If null, uses encoder output dim (here: 512)
 graph_output_dim: null
+
+# Encoder-decoder skip connections (only for pooling_position: middle)
+# Adds U-Net style skip connections from encoder node features to decoder input
+use_ed_skip: true  # Set to true to enable skip connections
+ed_skip_type: concat  # "concat" (concatenate) or "add" (elementwise addition)

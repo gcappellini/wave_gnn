@@ -150,6 +150,10 @@ class AdaptiveLossWeights:
             # Clamp to reasonable range
             new_weight = np.clip(new_weight, self.min_weight, self.max_weight)
             self.weights[name] = new_weight
+        weighted_loss = {name: self.weights[name] * loss_values[name] for name in loss_values.keys()}
+        total_weighted_loss = sum(weighted_loss.values())
+        self.weights = {name: self.weights[name] / (total_weighted_loss + self.eps)
+                        for name in loss_values.keys()}
         
         log.info(f"Equalized weights at epoch 1:")
         for name in self.loss_names:

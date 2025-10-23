@@ -1,4 +1,0 @@
-feature encoding
-rk4 solo su un termine
-dynamic weighting
-print a batch

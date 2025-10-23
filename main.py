@@ -112,7 +112,7 @@ def main(cfg: DictConfig):
         log.info("=" * 50)
         
         best_model_path = save_dir / cfg.training.checkpoint_path
-        model, metrics, scaler = train_model(
+        model, metrics = train_model(
             cfg=cfg,
             train_set=train_set,
             val_set=val_set,
@@ -121,20 +121,9 @@ def main(cfg: DictConfig):
         
         log.info(f"Training completed. Best model saved to {best_model_path}")
         log.info(f"Best validation PDE MSE: {metrics['best_val_pde']:.6e}")
-        if scaler is not None:
-            log.info("✓ Data scaling was enabled during training")
     else:
         best_model_path = save_dir / cfg.training.checkpoint_path
         log.info(f"Skipping training. Using existing model at {best_model_path}")
-        # Load scaler if it exists
-        scaler_path = save_dir / "scaler.pkl"
-        if cfg.dataset.scaling.enabled:
-            with open(scaler_path, 'rb') as f:
-                scaler = pickle.load(f)
-            log.info(f"Scaler loaded from {scaler_path}")
-        else:
-            scaler = None
-            log.warning(f"No scaler found at {scaler_path}")
         metrics = {}
     
     # Test model
@@ -145,8 +134,7 @@ def main(cfg: DictConfig):
     test_results, test_metrics = test_model(
         cfg=cfg,
         model_path=str(best_model_path),
-        output_dir=str(output_dir),
-        scaler_path=str(save_dir / "scaler.pkl") if scaler is not None else None
+        output_dir=str(output_dir)
     )
     
     log.info("Testing completed.")

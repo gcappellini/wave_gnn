@@ -39,6 +39,8 @@ class DeepGCN(nn.Module):
         pooling_position (str): where to apply pooling - 'end' (after all layers) or 'middle' (encoder-decoder) (default: 'end')
         encoder_layers (int): number of layers before pooling when pooling_position='middle' (default: None, uses half)
         decoder_channels (list[int]): hidden dims for decoder layers after pooling (default: None, mirrors encoder)
+        use_ed_skip (bool): if True, add skip connections from encoder node features to decoder input (middle pooling only)
+        ed_skip_type (str): 'concat' to concatenate features, 'add' to add (with optional projection)
     """
     def __init__(
         self,
@@ -59,7 +61,9 @@ class DeepGCN(nn.Module):
         graph_output_dim=None,
         pooling_position="end",
         encoder_layers=None,
-        decoder_channels=None
+        decoder_channels=None,
+        use_ed_skip=False,
+        ed_skip_type="concat",
     ):
         super().__init__()
         
@@ -67,6 +71,10 @@ class DeepGCN(nn.Module):
         self.use_global_pooling = use_global_pooling
         self.pooling_type = pooling_type.lower()
         self.pooling_position = pooling_position.lower()
+        
+        # Encoder-Decoder skip connections (only applicable when pooling_position='middle')
+        self.use_ed_skip = bool(use_ed_skip)
+        self.ed_skip_type = str(ed_skip_type).lower()
         
         # Normalize hidden_channels to a list
         if isinstance(hidden_channels, int):
@@ -173,9 +181,11 @@ class DeepGCN(nn.Module):
             else:
                 decoder_sizes = list(decoder_channels)
             
-            # First decoder layer takes graph features and broadcasts to nodes
-            # Input: graph_dim (broadcasted to each node)
-            prev_dim = self.graph_dim
+            # First decoder layer input dimension (graph features, plus optional skip)
+            if self.use_ed_skip and self.pooling_position == "middle" and self.ed_skip_type == "concat":
+                prev_dim = self.graph_dim + self.encoder_output_dim
+            else:
+                prev_dim = self.graph_dim
             
             for i, hid in enumerate(decoder_sizes):
                 # Use remaining conv_types or default to first type
@@ -353,9 +363,10 @@ class DeepGCN(nn.Module):
         
         return pooled
     
-    def forward(self, x, edge_index, bc_mask, batch=None, return_pooled=False):
+    def forward(self, x, edge_index, bc_mask, batch=None, return_pooled=False, 
+                u_scale=0.04, v_scale=0.08, f_scale=3):
         """
-        Forward pass.
+        Forward pass with input/output scaling.
         
         Args:
             x: Node features [num_nodes, in_channels] - typically [u, v, f]
@@ -363,6 +374,9 @@ class DeepGCN(nn.Module):
             bc_mask: Boolean mask for boundary conditions
             batch: Batch vector [num_nodes] for multi-graph batching (optional)
             return_pooled: If True and use_global_pooling=True, returns both node and graph features
+            u_scale: Scaling factor for u (Um), if None no scaling is applied
+            v_scale: Scaling factor for v (Vm), if None no scaling is applied
+            f_scale: Scaling factor for f (fm), if None no scaling is applied
             
         Returns:
             If use_global_pooling=False or return_pooled=False:
@@ -375,15 +389,24 @@ class DeepGCN(nn.Module):
                 
             If pooling_position='middle': Always returns node-level output
         """
-        # Store input for residual connection
+        # Apply input scaling: translate from [-scale, scale] to [-1, 1]
+        x_scaled = x.clone()
+        if u_scale is not None:
+            x_scaled[:, 0] = x[:, 0] / (2 * u_scale)
+        if v_scale is not None:
+            x_scaled[:, 1] = x[:, 1] / (2 * v_scale)
+        if f_scale is not None and x.shape[1] > 2:
+            x_scaled[:, 2] = x[:, 2] / (2 * f_scale)
+        
+        # Store input for residual connection (use scaled values)
         if self.residual:
             # Extract current u and v (first 2 channels)
-            u_current = x[:, 0:1]  # Keep dimension for broadcasting
-            v_current = x[:, 1:2]
+            u_current = x_scaled[:, 0:1]  # Keep dimension for broadcasting
+            v_current = x_scaled[:, 1:2]
         
         # Input projection if needed
         if self.input_proj is not None:
-            x = self.input_proj(x)
+            x_scaled = self.input_proj(x_scaled)
         
         # Branch based on architecture
         if self.use_global_pooling and self.pooling_position == "middle":
@@ -391,10 +414,13 @@ class DeepGCN(nn.Module):
             
             # ENCODER: Process through encoder layers
             for layer in self.encoder_layers:
-                x = layer(x, edge_index)
+                x_scaled = layer(x_scaled, edge_index)
+            
+            # Save encoder node-level features for skip connection
+            encoder_node_feats = x_scaled
             
             # POOLING: Aggregate to graph-level
-            graph_features = self.global_pooling(x, batch)
+            graph_features = self.global_pooling(x_scaled, batch)
             
             # Optional projection after pooling
             if self.graph_projection is not None:
@@ -403,62 +429,81 @@ class DeepGCN(nn.Module):
             # DECODER: Broadcast graph features back to nodes
             if batch is None:
                 # Single graph: broadcast to all nodes
-                num_nodes = x.shape[0]
-                x = graph_features.expand(num_nodes, -1)
+                num_nodes = x_scaled.shape[0]
+                x_scaled = graph_features.expand(num_nodes, -1)
             else:
                 # Multiple graphs: broadcast to nodes of each graph
-                x = graph_features[batch]  # Index graph features by batch assignment
+                x_scaled = graph_features[batch]  # Index graph features by batch assignment
+            
+            # Apply encoder-decoder skip connection, if enabled
+            if self.use_ed_skip and self.pooling_position == "middle":
+                if self.ed_skip_type == "concat":
+                    x_scaled = torch.cat([x_scaled, encoder_node_feats], dim=1)
+                elif self.ed_skip_type == "add":
+                    if x_scaled.size(1) != encoder_node_feats.size(1):
+                        if not hasattr(self, "ed_align"):
+                            self.ed_align = Linear(encoder_node_feats.size(1), x_scaled.size(1))
+                        encoder_node_feats = self.ed_align(encoder_node_feats)
+                    x_scaled = x_scaled + encoder_node_feats
+                else:
+                    raise ValueError(f"Unsupported ed_skip_type: {self.ed_skip_type}")
             
             # Process through decoder layers
             for layer in self.decoder_layers:
-                x = layer(x, edge_index)
+                x_scaled = layer(x_scaled, edge_index)
             
             # Final layer
             if self.final_layer_type == "LINEAR":
-                x = self.final_layer(x)
+                x_scaled = self.final_layer(x_scaled)
             else:
-                x = self.final_layer(x, edge_index)
+                x_scaled = self.final_layer(x_scaled, edge_index)
                 
         else:
             # Standard architecture: pass through all layers
             for layer in self.layers:
-                x = layer(x, edge_index)
+                x_scaled = layer(x_scaled, edge_index)
             
             # Final layer
             if self.final_layer_type == "LINEAR":
-                x = self.final_layer(x)
+                x_scaled = self.final_layer(x_scaled)
             else:
-                x = self.final_layer(x, edge_index)
+                x_scaled = self.final_layer(x_scaled, edge_index)
         
         # If residual mode, add predicted changes to current state
         if self.residual:
-            # x contains [Δu, Δv]
-            delta_u = x[:, 0:1]
-            delta_v = x[:, 1:2]
+            # x_scaled contains [Δu, Δv] in scaled space
+            delta_u = x_scaled[:, 0:1]
+            delta_v = x_scaled[:, 1:2]
             
             # Add to current state: u_next = u_current + Δu
             u_next = u_current + delta_u
             v_next = v_current + delta_v
             
             # Combine back
-            x = torch.cat([u_next, v_next], dim=1)
+            x_scaled = torch.cat([u_next, v_next], dim=1)
+        
+        # Apply output scaling: translate from [-1, 1] back to [-scale, scale]
+        if u_scale is not None:
+            x_scaled[:, 0] = x_scaled[:, 0] * (2 * u_scale)
+        if v_scale is not None:
+            x_scaled[:, 1] = x_scaled[:, 1] * (2 * v_scale)
         
         # Apply boundary conditions
-        x[bc_mask] = 0.0
+        x_scaled[bc_mask] = 0.0
         
         # Apply global pooling at end if enabled
         if self.use_global_pooling and self.pooling_position == "end":
-            pooled = self.global_pooling(x, batch)
+            pooled = self.global_pooling(x_scaled, batch)
             # Optional projection after pooling
             if self.graph_projection is not None:
                 pooled = self.graph_projection(pooled)
             
             if return_pooled:
-                return x, pooled
+                return x_scaled, pooled
             else:
                 return pooled
         
-        return x
+        return x_scaled
     
 def build_laplacian_matrix(N, dx):
     """
