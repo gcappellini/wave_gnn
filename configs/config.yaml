@@ -28,6 +28,6 @@ run:
 # Plot settings
 plot:
   plot_dataset: False
-  load_gt: False
+  load_gt: True
   look_up_every: 100  # Frequency of look-up during testing (set to None to disable)
 

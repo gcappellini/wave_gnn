@@ -253,11 +253,6 @@ def test_model(cfg, model_path, output_dir):
     elapsed = end_time - start_time
     log.info(f"Simulation complete: {len(t_history)} time steps in {elapsed}")
     log.info(f"Each step = one GNN forward pass")
-    # # Save ground truth data to npz file
-    # npz_file = "./ground_truth.npz"
-    # np.savez(str(npz_file), t_history=t_history, u_gt=u_gt, v_gt=v_gt, f_gt =f_history)
-    # log.info(f"Ground truth data saved to {npz_file}")
-
 
     # Save results to .mat file
     matlab_dir = output_dir / "matlab"
@@ -271,8 +266,24 @@ def test_model(cfg, model_path, output_dir):
     savemat(str(matlab_file), {'pinn_data': pinn_data})
     log.info(f"MATLAB data saved to {matlab_file}")
 
+    # Downsample u_history, v_history to match u_gt, v_gt length if different
+    if len(u_history) != len(u_gt):
+        # Compute downsampling ratio (must be integer)
+        ratio = len(u_history) // len(u_gt)
+        log.info(f"Downsampling predictions by factor {ratio} to match ground truth time steps")
+        u_history_ds = u_history[::ratio][:len(u_gt)]  # Take every ratio-th element
+        v_history_ds = v_history[::ratio][:len(u_gt)]
+        f_history_ds = f_history[::ratio][:len(u_gt)]
+    else:
+        u_history_ds = u_history
+        v_history_ds = v_history
+        f_history_ds = f_history
+    
+    # Compute error on matching time steps
+    u_error = np.abs(u_history_ds - u_gt)
+    
     # Generate plots
-    histories = np.array([u_history, v_history, f_history, u_gt, v_gt, np.abs(u_history - u_gt)])
+    histories = np.array([u_history_ds, v_history_ds, f_history_ds, u_gt, v_gt, u_error])
 
     # Extract timestamp from hydra run directory
     try:
@@ -303,8 +314,8 @@ def test_model(cfg, model_path, output_dir):
     }
 
     test_metrics = {
-        'u_mae': float(np.mean(np.abs(u_history - u_gt))),
-        'v_mae': float(np.mean(np.abs(v_history - v_gt))),
+        'u_mae': float(np.mean(np.abs(u_history_ds - u_gt))),
+        'v_mae': float(np.mean(np.abs(v_history_ds - v_gt))),
     }
     
     return test_results, test_metrics
