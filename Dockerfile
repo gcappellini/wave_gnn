@@ -1,4 +1,4 @@
-FROM nvidia/cuda:12.1.0-base-ubuntu22.04
+FROM nvidia/cuda:11.8.0-base-ubuntu22.04
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
@@ -22,12 +22,12 @@ COPY requirements.txt /app/
 # Upgrade pip
 RUN pip3 install --no-cache-dir --upgrade pip setuptools wheel
 
-# Install PyTorch with CUDA support
+# Install PyTorch with CUDA support (CUDA 11.8 is compatible with driver 535)
 RUN pip3 install --no-cache-dir \
     torch==2.1.0 \
     torchvision==0.16.0 \
     torchaudio==2.1.0 \
-    --index-url https://download.pytorch.org/whl/cu121
+    --index-url https://download.pytorch.org/whl/cu118
 
 # Install PyTorch Geometric and its dependencies
 RUN pip3 install --no-cache-dir \
@@ -36,7 +36,7 @@ RUN pip3 install --no-cache-dir \
     torch-sparse \
     torch-cluster \
     torch-spline-conv \
-    -f https://data.pyg.org/whl/torch-2.1.0+cu121.html
+    -f https://data.pyg.org/whl/torch-2.1.0+cu118.html
 
 # Install remaining dependencies from requirements.txt
 RUN pip3 install --no-cache-dir -r requirements.txt
