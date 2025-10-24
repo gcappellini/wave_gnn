@@ -5,6 +5,7 @@ import torch
 from dataset import create_graph, WaveGNN1D
 from plot import plot_features_2d
 from omegaconf import OmegaConf
+from hydra.core.hydra_config import HydraConfig
 from pathlib import Path
 
 
@@ -24,8 +25,7 @@ def load_best_model(path='./best_model.pt', device=None, model_cls=None, model_k
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    ckpt = torch.load(path, map_location=device)
-    # ckpt = torch.load(path, map_location=device, weights_only=True)
+    ckpt = torch.load(path, map_location=device, weights_only=False)
 
     if model_cls is None:
         try:
@@ -106,7 +106,7 @@ def stringforce(coords, t, t_f, f_min=-3, x_f_1=0.2, x_f_2=0.8):
     return f
 
 
-def simulate_wave(gnn, data, t_f, dt=0.01, gt=True, device=None):
+def simulate_wave(gnn, data, t_f, cfg, device=None, load_gt=False):
     """
     Simulate 2D wave equation using GNN with integrated time stepping.
     
@@ -137,6 +137,8 @@ def simulate_wave(gnn, data, t_f, dt=0.01, gt=True, device=None):
     
     # Initialize node features
     t = 0.0
+    dt = cfg.dataset.dt
+    look_up_every = cfg.plot.look_up_every
     
     # Storage
     num_steps = int(t_f / dt) + 1
@@ -144,34 +146,33 @@ def simulate_wave(gnn, data, t_f, dt=0.01, gt=True, device=None):
     u_history = np.zeros((num_steps, data.x[:, 0].shape[0]))
     v_history = np.zeros((num_steps, data.x[:, 0].shape[0]))
     f_history = np.zeros((num_steps, data.x[:, 0].shape[0]))
-    if gt:
-        u_gt = np.zeros((num_steps, data.x[:, 0].shape[0]))
-        v_gt = np.zeros((num_steps, data.x[:, 0].shape[0]))
-        gn = WaveGNN1D(data.laplacian)
-    
+
     # Store initial condition
     t_history[0] = t
     u_history[0] = data.x[:, 0].cpu().numpy()
     v_history[0] = data.x[:, 1].cpu().numpy()
     f_history[0] = data.x[:, 2].cpu().numpy()
-    if gt:
+    features = data.x
+
+    if load_gt:
+        gt_data = np.load('./ground_truth.npz')
+        u_gt = gt_data['u_gt']
+        v_gt = gt_data['v_gt']
+        # f_history = gt_data['f_gt']
+        # t_history = gt_data['t_history']
+    else:
+        u_gt = np.zeros((num_steps, data.x[:, 0].shape[0]))
+        v_gt = np.zeros((num_steps, data.x[:, 0].shape[0]))
+        gn = WaveGNN1D(data.laplacian, cfg.dataset.wave_speed, cfg.dataset.damping, cfg.dataset.dt)
         u_gt[0] = data.x[:, 0].cpu().numpy()
         v_gt[0] = data.x[:, 1].cpu().numpy()
-
-    features = data.x
-    if gt:
         features_gt = data.x.clone()
-    
+
     # Time integration loop
     for step in range(1, num_steps):
 
         features = gnn(features, data.edge_index, data.bc_mask)
-        # Keep the force component from input
-        # features = torch.stack([features[:, 0], features[:, 1], features[:, 2]], dim=1)
-        
-        if gt:
-            features_gt = gn.forward(features_gt)
-        
+    
         # Store
         t += dt
         t_history[step] = t
@@ -179,20 +180,24 @@ def simulate_wave(gnn, data, t_f, dt=0.01, gt=True, device=None):
         u_history[step] = features[:, 0].detach().cpu().numpy()
         v_history[step] = features[:, 1].detach().cpu().numpy()
         f_history[step] = stringforce(data.coords, t, t_f)
-        if gt:
-            u_gt[step] = features_gt[:, 0].detach().cpu().numpy()
-            v_gt[step] = features_gt[:, 1].detach().cpu().numpy()
 
         # Update force for next iteration (move to device)
         f_tensor = torch.tensor(f_history[step].flatten(), dtype=torch.float32, device=device)
         features = torch.stack([features[:, 0], features[:, 1], f_tensor], dim=1)
-        if gt:
-            features_gt = torch.stack([features_gt[:, 0], features_gt[:, 1], f_tensor], dim=1)
 
-    if gt:
-        return t_history, u_history, v_history, f_history, u_gt, v_gt
-    else:
-        return t_history, u_history, v_history, f_history, None, None
+        if not load_gt:
+            features_gt = gn.forward(features_gt)
+            u_gt[step] = features_gt[:, 0].detach().cpu().numpy()
+            v_gt[step] = features_gt[:, 1].detach().cpu().numpy()
+
+        features_gt = torch.stack([torch.tensor(u_gt[step], dtype=torch.float32, device=device), torch.tensor(v_gt[step], dtype=torch.float32, device=device), f_tensor], dim=1)
+
+        if look_up_every and step % look_up_every == 0:
+            print("looking up at step", step)
+            features = features_gt.clone()
+
+    return t_history, u_history, v_history, f_history, u_gt, v_gt
+
 
 
 def test_model(cfg, model_path, output_dir):
@@ -242,12 +247,17 @@ def test_model(cfg, model_path, output_dir):
     log.info("Running simulation...")
     start_time = datetime.now()
     t_history, u_history, v_history, f_history, u_gt, v_gt = simulate_wave(
-        gcn, initial_graph, T, dt=cfg.dataset.dt, gt=True, device=device
+        gcn, initial_graph, T, cfg, device=device, load_gt=cfg.plot.load_gt
     )
     end_time = datetime.now()
     elapsed = end_time - start_time
     log.info(f"Simulation complete: {len(t_history)} time steps in {elapsed}")
     log.info(f"Each step = one GNN forward pass")
+    # # Save ground truth data to npz file
+    # npz_file = "./ground_truth.npz"
+    # np.savez(str(npz_file), t_history=t_history, u_gt=u_gt, v_gt=v_gt, f_gt =f_history)
+    # log.info(f"Ground truth data saved to {npz_file}")
+
 
     # Save results to .mat file
     matlab_dir = output_dir / "matlab"
@@ -263,11 +273,22 @@ def test_model(cfg, model_path, output_dir):
 
     # Generate plots
     histories = np.array([u_history, v_history, f_history, u_gt, v_gt, np.abs(u_history - u_gt)])
-    plot_file = figures_dir / "gcn_string_pred.png"
+
+    # Extract timestamp from hydra run directory
+    try:
+        hydra_cfg = HydraConfig.get()
+        run_dir = Path(hydra_cfg.runtime.output_dir)
+        timestamp = run_dir.name  # e.g., "2024-01-15_14-30-45"
+    except:
+        # Fallback if HydraConfig is not available (e.g., running outside Hydra)
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    
+    plot_file = figures_dir / f"gcn_string_pred_{timestamp}.png"
     
     plot_features_2d(
         nodes,  
         histories,
+        dt=cfg.dataset.dt,
         output_file=str(plot_file),
         feature_names=['Deformation', 'Velocity', 'Force', 'GT Deformation', 'GT Velocity', 'Deformation Error']
     )
@@ -293,41 +314,3 @@ if __name__ == "__main__":
 
     T = 10.0       # total time
 
-    # Setup device
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Using device: {device}")
-
-    # Load trained GCN model (expects best_model.pt in the working directory)
-    gcn, ckpt = load_best_model(device=device)
-    initial_graph = create_graph(zeros=True)
-    nodes, elements = initial_graph.nodes, initial_graph.elements
-
-    # Run simulation
-    print("Running simulation...")
-    start_time = datetime.now()
-    t_history, u_history, v_history, f_history, u_gt, v_gt = simulate_wave(
-        gcn, initial_graph, T, gt=True, device=device
-    )
-    end_time = datetime.now()
-    print(f"Simulation complete: {len(t_history)} time steps in {end_time - start_time}")
-    print(f"Each step = one GNN forward pass")
-    print()
-
-    # Save results to .mat file
-    matlab_times = np.linspace(0, T, num=100)
-    indices = [np.argmin(np.abs(t_history - t)) for t in matlab_times]
-    pinn_data = u_history[indices]
-    pinn_data = pinn_data
-
-    # pinn_data = pinn_data.swapaxes(1, 2)  # Transpose to match MATLAB's column-major order
-    savemat('/Users/guglielmocappellini/Desktop/research/code/pinns-wave/wave-gnn/1_gcn_string/matlab/data_gcn.mat', {
-        'pinn_data': pinn_data
-    })
-
-    histories = np.array([u_history, v_history, f_history])
-
-    plot_features_2d(
-    nodes,  
-    histories,
-    output_file='./figures/gcn_string_pred.png'
-    )

@@ -10,13 +10,16 @@ import matplotlib.pyplot as plt
 def plot_features_2d(
     nodes,
     histories,
+    dt,
     feature_names=['Deformation', 'Velocity', 'Force'],
     output_file='features.png',
     figsize=None,
     colormaps=None,
     show_colorbar=True,
     dpi=150,
-    dt =0.01
+    xlabel='Space (x)',
+    ylabel='Time (s)',
+    ylabel_as_int=False,
 ):
     """
     Plot full 2D distributions (space vs time) for each feature.
@@ -40,6 +43,12 @@ def plot_features_2d(
         Whether to show colorbars for each subplot
     dpi : int, default=150
         Resolution of the saved figure
+    xlabel : str, default='Space (x)'
+        Label for the x-axis
+    ylabel : str, default='Time (s)'
+        Label for the y-axis
+    ylabel_as_int : bool, default=False
+        If True, display y-axis values as integers
     """
     n_features, n_timesteps, n_nodes = histories.shape
 
@@ -82,11 +91,14 @@ def plot_features_2d(
             cmap=colormaps[i]
         )
         axes[i].set_title(feature_names[i])
-        axes[i].set_xlabel("Space (x)")
-        axes[i].set_ylabel("Time (s)")
-        # Set y-ticks in seconds
+        axes[i].set_xlabel(xlabel)
+        axes[i].set_ylabel(ylabel)
+        # Set y-ticks in seconds or integers
         axes[i].set_yticks(time_ticks)
-        axes[i].set_yticklabels([f"{t:.3f}" for t in time_ticks])
+        if ylabel_as_int:
+            axes[i].set_yticklabels([f"{int(t)}" for t in time_ticks])
+        else:
+            axes[i].set_yticklabels([f"{t:.3f}" for t in time_ticks])
         if show_colorbar:
             fig.colorbar(im, ax=axes[i], orientation='vertical', shrink=0.8)
     
@@ -99,4 +111,3 @@ def plot_features_2d(
     plt.close(fig)
 
     print(f"Saved static 2D feature map with {n_features} features ({n_rows}x{n_cols} layout) as '{output_file}'")
-

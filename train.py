@@ -8,7 +8,7 @@ from dataset import create_dataset, WaveGNN1D, build_laplacian_matrix, DeepGCN
 from adaptive_weights import create_adaptive_weights_from_config
 from datetime import datetime
 
-def rk4_loss(interior_mask, input, output, laplacian, dt=0.01, c=1.0, k=1.0, w1=1.0, w2=1.0):
+def rk4_loss(interior_mask, input, output, laplacian, dt, c, k, w1, w2):
         """
         Node update function using RK4 time integration.
         
@@ -68,7 +68,7 @@ def rk4_loss(interior_mask, input, output, laplacian, dt=0.01, c=1.0, k=1.0, w1=
 
         return loss, float(loss_1.detach().item()), float(loss_2.detach().item())
 
-def gn_loss(interior_mask, input, output, laplacian, gn_solver, dt=0.01, c=1.0, k=1.0, w1=1.0, w2=1.0):
+def gn_loss(interior_mask, input, output, laplacian, gn_solver, dt, c, k, w1, w2):
     """Compute loss term based on gn solver prediction.
     """
     output_gn = gn_solver.forward(input)
@@ -84,7 +84,7 @@ def gn_loss(interior_mask, input, output, laplacian, gn_solver, dt=0.01, c=1.0, 
 
     return loss, float(loss_1.detach().item()), float(loss_2.detach().item())
 
-def physics_informed_loss(interior_mask, input, output, laplacian, dt=0.01, c=1.0, k=1.0, w1=1.0, w2=1.0):
+def physics_informed_loss(interior_mask, input, output, laplacian, dt, c, k, w1, w2):
     """Train step using physics-informed loss:
 
     Loss = MSE( L u - f ) on interior nodes
@@ -170,6 +170,9 @@ def train_physics(batch, model, optimizer, device, cfg, rk4=True, adaptive_weigh
             data.x.to(device),
             out_sub,
             L,
+            dt=cfg.dataset.dt,
+            c=cfg.dataset.wave_speed,
+            k=cfg.dataset.damping,
             w1=w1_PI,
             w2=w2_PI,
         )
@@ -179,8 +182,11 @@ def train_physics(batch, model, optimizer, device, cfg, rk4=True, adaptive_weigh
                 data.x.to(device),
                 out_sub,
                 L,
-            w1=w1_rk4,
-            w2=w2_rk4,
+                dt=cfg.dataset.dt,
+                c=cfg.dataset.wave_speed,
+                k=cfg.dataset.damping,
+                w1=w1_rk4,
+                w2=w2_rk4,
             )
         else:
             loss_rk4 = torch.tensor(0.0, device=device)
@@ -195,8 +201,9 @@ def train_physics(batch, model, optimizer, device, cfg, rk4=True, adaptive_weigh
             loss2_rk4 = 0.0
         loss1_sum += loss_1_val
         loss2_sum += loss_2_val
-        loss1_rk4 += loss_1_rk4
-        loss2_rk4 += loss_2_rk4
+        if rk4:
+            loss1_rk4 += loss_1_rk4
+            loss2_rk4 += loss_2_rk4
 
     # After iterating all graphs in the batch, compute mean PDE loss tensor
     if pde_loss_count > 0:
@@ -226,12 +233,13 @@ def train_physics(batch, model, optimizer, device, cfg, rk4=True, adaptive_weigh
 
 
 @torch.no_grad()
-def evaluate_loader(loader, model, device):
+def evaluate_loader(loader, model, device, cfg):
     model.eval()
     total_loss = 0.0
     total_loss_1 = 0.0
     total_loss_2 = 0.0
     total_graphs = 0
+
 
     for batch in loader:
         data_list = batch.to_data_list()
@@ -249,7 +257,12 @@ def evaluate_loader(loader, model, device):
                 interior_mask,
                 data.x.to(device),
                 preds,
-                L
+                L,
+                dt=cfg.dataset.dt,
+                c=cfg.dataset.wave_speed,
+                k=cfg.dataset.damping,
+                w1=cfg.training.loss.w1_PI,
+                w2=cfg.training.loss.w2_PI
             )
 
             total_loss += float(loss.detach().item())
@@ -377,15 +390,6 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
         log.info(f"Initial weights: {adaptive_weights.get_weights()}")
         log.info("=" * 50)
 
-    # Setup GN solver if enabled
-    gn_solver = None
-    if cfg.training.loss.use_gn_solver:
-        N = cfg.dataset.num_nodes
-        dx = cfg.dataset.domain_length / (N - 1)
-        L = build_laplacian_matrix(N, dx)
-        gn_solver = WaveGNN1D(L, c=cfg.dataset.wave_speed, k=cfg.dataset.damping, dt=cfg.dataset.dt)
-        log.info("GN solver enabled")
-
     epochs = cfg.training.epochs
     best_pde = float('inf')
     patience_counter = 0
@@ -443,7 +447,7 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
             adaptive_weights.update(epoch, loss_dict)
 
         # Evaluate on validation set
-        metrics = evaluate_loader(val_loader, model, device)
+        metrics = evaluate_loader(val_loader, model, device, cfg)
         avg_loss_2 = epoch_loss_2 / max(1, nbatches)
         avg_loss_1_rk4 = loss_1_rk4 / max(1, nbatches)
         avg_loss_2_rk4 = loss_2_rk4 / max(1, nbatches)
@@ -568,73 +572,6 @@ def evaluate_loader_with_scaling(loader, model, device):
     return {"pde_mse": avg_loss, "loss_1": avg_loss_1, "loss_2": avg_loss_2}
 
 
-def main():
-    """Legacy main function for backward compatibility."""
-    # Create a dataset of many graphs and use graph-level batching
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    dataset = create_dataset(num_graphs=100)
-    # simple split: train/val
-    n_train = int(0.8 * len(dataset))
-    train_set = dataset[:n_train]
-    val_set = dataset[n_train:]
-
-    train_loader = DataLoader(train_set, batch_size=8, drop_last=True, shuffle=True)
-    val_loader = DataLoader(val_set, batch_size=8, drop_last=True, shuffle=False)
-
-    # build model
-    sample = dataset[0]
-    model = SimpleGCN(in_channels=sample.x.size(1), hidden_channels=64, out_channels=2, layer_types='GCN', final_layer_type='Linear', activation='relu', dropout=0.5).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.005, weight_decay=1e-5)
-
-    N = 100
-    dx = 1.0 / (N - 1)
-    L = build_laplacian_matrix(N, dx)
-    gn_solver = WaveGNN1D(L)
-
-    epochs = 50
-    best_pde = float('inf')
-
-    for epoch in range(1, epochs + 1):
-        epoch_loss = 0.0
-        epoch_loss_1 = 0.0
-        epoch_loss_2 = 0.0
-        nbatches = 0
-        for batch in train_loader:
-            loss, loss_1, loss_2 = train_physics(batch, model, optimizer, device, gn_solver, rk4=False)
-            epoch_loss += loss
-            epoch_loss_1 += loss_1
-            epoch_loss_2 += loss_2
-            nbatches += 1
-
-        metrics = evaluate_loader(val_loader, model, device)
-
-        avg_loss = epoch_loss / max(1, nbatches)
-        avg_loss_1 = epoch_loss_1 / max(1, nbatches)
-        avg_loss_2 = epoch_loss_2 / max(1, nbatches)
-
-        # Save model when validation PDE MSE improves
-        val_pde = metrics.get("pde_mse", float('nan'))
-        if not (isinstance(val_pde, float) and (val_pde != val_pde)):  # check not NaN
-            if val_pde < best_pde:
-                best_pde = val_pde
-                ckpt = {
-                    'epoch': epoch,
-                    'model_state_dict': model.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'val_pde': val_pde,
-                }
-                save_path = "best_model.pt"
-                torch.save(ckpt, save_path)
-                # print(f"Saved new best model to {save_path} (epoch={epoch}, val PDE MSE={val_pde:.3e})")
-
-        if epoch % 5 == 0 or epoch == 1:
-            print(f"Epoch {epoch:03d} | Train loss {avg_loss:.3e} | Loss_1 {avg_loss_1:.3e} | Loss_2 {avg_loss_2:.3e} | Val {metrics['pde_mse']:.3e} | Loss_1 {metrics['loss_1']:.3e} | Loss_2 {metrics['loss_2']:.3e}")
-
-    print(f"Best validation PDE MSE seen: {best_pde:.6e}")
-
 
 if __name__ == "__main__":
-    # subprocess.run(["python", "test_dataset.py"])
-    main()
-    # subprocess.run(["python", "test_gcn.py"])
+    train_model()

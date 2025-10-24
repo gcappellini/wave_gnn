@@ -276,6 +276,67 @@ class DeepGCN(nn.Module):
                     self.graph_projection = Linear(pool_dim, graph_output_dim)
                 else:
                     self.graph_projection = None
+        
+        # Initialize weights after construction
+        self.reset_parameters()
+    
+    def reset_parameters(self):
+        """
+        Initialize all learnable parameters using Xavier uniform initialization.
+        This is crucial for training stability, especially with higher dropout rates.
+        
+        Xavier/Glorot initialization maintains variance through layers by scaling
+        weights based on fan-in and fan-out. For ReLU activations, Kaiming 
+        initialization is sometimes preferred, but Xavier works well for most cases.
+        """
+        # Initialize input projection
+        if self.input_proj is not None:
+            nn.init.xavier_uniform_(self.input_proj.weight, gain=1.0)
+            if self.input_proj.bias is not None:
+                nn.init.zeros_(self.input_proj.bias)
+        
+        # Initialize encoder-decoder architecture layers
+        if hasattr(self, 'encoder_layers') and self.encoder_layers is not None:
+            for layer in self.encoder_layers:
+                if hasattr(layer, 'reset_parameters'):
+                    layer.reset_parameters()  # DeepGCNLayer has its own reset
+        
+        if hasattr(self, 'decoder_layers') and self.decoder_layers is not None:
+            for layer in self.decoder_layers:
+                if hasattr(layer, 'reset_parameters'):
+                    layer.reset_parameters()
+        
+        # Initialize standard architecture layers
+        if hasattr(self, 'layers'):
+            for layer in self.layers:
+                if hasattr(layer, 'reset_parameters'):
+                    layer.reset_parameters()
+        
+        # Initialize skip fusion projection (encoder-decoder skip connections)
+        if self.use_ed_skip and hasattr(self, 'ed_align'):
+            nn.init.xavier_uniform_(self.ed_align.weight, gain=1.0)
+            if self.ed_align.bias is not None:
+                nn.init.zeros_(self.ed_align.bias)
+        
+        # Initialize final layer
+        if hasattr(self.final_layer, 'reset_parameters'):
+            self.final_layer.reset_parameters()
+        elif isinstance(self.final_layer, Linear):
+            nn.init.xavier_uniform_(self.final_layer.weight, gain=1.0)
+            if self.final_layer.bias is not None:
+                nn.init.zeros_(self.final_layer.bias)
+        
+        # Initialize global pooling components
+        if self.use_global_pooling:
+            if hasattr(self, 'attention_weights'):
+                nn.init.xavier_uniform_(self.attention_weights.weight, gain=1.0)
+                if self.attention_weights.bias is not None:
+                    nn.init.zeros_(self.attention_weights.bias)
+            
+            if hasattr(self, 'graph_projection') and self.graph_projection is not None:
+                nn.init.xavier_uniform_(self.graph_projection.weight, gain=1.0)
+                if self.graph_projection.bias is not None:
+                    nn.init.zeros_(self.graph_projection.bias)
     
     def _create_conv_layer(self, conv_type, in_dim, out_dim):
         """Create a convolution layer based on the specified type."""
@@ -706,7 +767,7 @@ class WaveGNN1D:
     Integrates spatial derivatives (via message passing) and time integration
     (via node update function) in a single forward pass.
     """
-    def __init__(self, L, c=1.0, k=1.0, dt=0.01):
+    def __init__(self, L, c, k, dt):
         """
         Args:
             L: Laplacian matrix (sparse)
@@ -853,9 +914,9 @@ def create_dataset(num_graphs=64, cfg=None):
         dataset.append(data)
     return dataset
 
-def rollout_graph(seed, num_steps=200, dt=0.01, cfg=None):
+def rollout_graph(seed, num_steps=200, cfg=None):
     graph_0 = create_graph(seed, cfg=cfg)
-    gn = WaveGNN1D(graph_0.laplacian)
+    gn = WaveGNN1D(graph_0.laplacian, cfg.dataset.c, cfg.dataset.k, cfg.dataset.dt)
     features = graph_0.x.clone()
 
     graphs = []

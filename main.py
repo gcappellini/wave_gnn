@@ -73,7 +73,7 @@ def create_and_save_dataset(cfg: DictConfig, output_dir: Path, plot_dataset=True
     if plot_dataset:
         plot_path = output_dir / "figures/training_dataset.png"
         visual_train_set = np.array([data.x.numpy() for data in train_set]).transpose(2, 0, 1)
-        plot_features_2d(dataset[0].coords, visual_train_set, output_file=str(plot_path))
+        plot_features_2d(dataset[0].coords, visual_train_set, dt=1, output_file=str(plot_path), ylabel='Sample Index', ylabel_as_int=True)
         log.info(f"Training dataset visualization saved to {plot_path}")
     
     log.info(f"  - Training samples: {len(train_set)}")
@@ -103,7 +103,7 @@ def main(cfg: DictConfig):
     log.info(f"Configuration saved to {config_path}")
     
     # Create dataset
-    train_set, val_set = create_and_save_dataset(cfg, output_dir, plot_dataset=cfg.run.plot_dataset)
+    train_set, val_set = create_and_save_dataset(cfg, output_dir, plot_dataset=cfg.plot.plot_dataset)
     
     if cfg.run.train:
         # Train model
