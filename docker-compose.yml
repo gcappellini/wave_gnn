@@ -9,13 +9,11 @@ services:
     container_name: wave-gnn-training
     
     # Enable GPU support
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CUDA_VISIBLE_DEVICES=0
+      - PYTHONUNBUFFERED=1
     
     # Mount volumes for persistent data
     volumes:
@@ -23,11 +21,6 @@ services:
       - ./figures:/app/figures
       - ./matlab:/app/matlab
       - ./configs:/app/configs
-    
-    # Environment variables
-    environment:
-      - CUDA_VISIBLE_DEVICES=0
-      - PYTHONUNBUFFERED=1
     
     # Keep container running for interactive use
     stdin_open: true
