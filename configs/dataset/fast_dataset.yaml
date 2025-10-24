@@ -1,7 +1,7 @@
 # Dataset configuration
 num_graphs: 1000
 num_steps: 6
-dt: 0.01
+dt: 0.1
 train_ratio: 0.8
 batch_size: 4  # Reduced from 32 to fit 8 training samples
 shuffle: true

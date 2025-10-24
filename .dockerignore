@@ -1,0 +1,49 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# Output directories
+outputs/
+multirun/
+wandb/
+matlab/
+figures/
+
+# Model checkpoints
+*.pt
+*.pth
+best_model.pt
+
+# Jupyter notebooks
+*.ipynb
+.ipynb_checkpoints/
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
+nohup.out
+
+# Ground truth data (can be large)
+*.npz
+*.mat
+
+# Test files
+test_*.py

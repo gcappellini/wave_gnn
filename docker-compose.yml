@@ -1,0 +1,37 @@
+version: '3.8'
+
+services:
+  wave-gnn:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: wave-gnn:latest
+    container_name: wave-gnn-training
+    
+    # Enable GPU support
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    
+    # Mount volumes for persistent data
+    volumes:
+      - ./outputs:/app/outputs
+      - ./figures:/app/figures
+      - ./matlab:/app/matlab
+      - ./configs:/app/configs
+    
+    # Environment variables
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+      - PYTHONUNBUFFERED=1
+    
+    # Keep container running for interactive use
+    stdin_open: true
+    tty: true
+    
+    # Override default command if needed
+    # command: python main.py experiment=fast_experiment
