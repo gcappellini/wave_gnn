@@ -1,8 +1,8 @@
 # Deep GCN Model configuration
 in_channels: 3
-hidden_channels: [64, 128] #, 256, 512]
+hidden_channels: [16] #32, 64, 128]
 out_channels: 2
-conv_types: ["GEN","GEN"] #,"GEN", "GEN"]
+conv_types: ["GEN"] #,"GEN","GEN", "GEN"]
 final_layer_type: "Linear"
 activation: "relu"
 dropout: 0.1
@@ -22,7 +22,7 @@ pooling_type: attention         # mean | max | sum | attention
 
 # Encoder-decoder split (used when pooling_position: middle)
 # If encoder_layers is null, it defaults to half of hidden_layers (here: 4)
-encoder_layers: 2
+encoder_layers: 1
 
 # Optional custom decoder sizes. If null, it mirrors the encoder (reverse of first encoder_layers).
 decoder_channels: null
