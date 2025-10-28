@@ -3,6 +3,7 @@ defaults:
   - dataset: ssh_dataset
   - model: ssh_model
   - training: ssh_training
+  - wandb: default
   - _self_
 
 # Experiment settings

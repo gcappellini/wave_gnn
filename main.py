@@ -26,6 +26,14 @@ import pickle
 
 log = logging.getLogger(__name__)
 
+# Optional Weights & Biases import
+try:
+    import wandb
+    _WANDB_AVAILABLE = True
+except Exception:
+    wandb = None
+    _WANDB_AVAILABLE = False
+
 
 def set_seed(seed: int):
     """Set random seed for reproducibility."""
@@ -95,6 +103,27 @@ def main(cfg: DictConfig):
     
     # Setup directories
     output_dir, save_dir = setup_directories(cfg)
+
+    # Initialize Weights & Biases (optional)
+    run = None
+    if _WANDB_AVAILABLE and cfg.get('wandb', {}).get('enabled', False) and cfg.wandb.mode != 'disabled':
+        wandb_mode = cfg.wandb.mode
+        run_name = cfg.wandb.name if cfg.wandb.name is not None else f"{cfg.experiment.name}-{os.getpid()}"
+        try:
+            run = wandb.init(
+                project=cfg.wandb.project,
+                entity=cfg.wandb.entity,
+                mode=wandb_mode,
+                name=run_name,
+                group=cfg.wandb.get('group', cfg.experiment.name),
+                tags=list(cfg.wandb.get('tags', [])),
+                config=OmegaConf.to_container(cfg, resolve=True),
+                settings=wandb.Settings(start_method="thread")
+            )
+            log.info(f"W&B initialized: project={cfg.wandb.project}, run={run.name}")
+        except Exception as e:
+            log.warning(f"W&B init failed ({e}); continuing without W&B.")
+            run = None
     
     # Save configuration to output directory
     config_path = output_dir / "config.yaml"
@@ -156,6 +185,30 @@ def main(cfg: DictConfig):
     log.info("=" * 50)
     log.info("EXPERIMENT COMPLETED SUCCESSFULLY")
     log.info("=" * 50)
+
+    # Log final metrics and optionally the best model to W&B
+    if run is not None:
+        try:
+            # Log summaries
+            if metrics:
+                wandb.log({"best_val_pde": metrics.get('best_val_pde', float('nan'))})
+            if test_metrics:
+                wandb.log({
+                    "test/u_mae": test_metrics.get('u_mae', float('nan')),
+                    "test/v_mae": test_metrics.get('v_mae', float('nan')),
+                })
+            # Optionally log model artifact
+            if cfg.wandb.get('log_model', False):
+                artifact = wandb.Artifact("best_model", type="model")
+                artifact.add_file(str(best_model_path))
+                run.log_artifact(artifact)
+        except Exception as e:
+            log.warning(f"W&B logging failed at end: {e}")
+        finally:
+            try:
+                wandb.finish()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":

@@ -40,6 +40,7 @@ matlab/
 .ipynb_checkpoints/
 *.ipynb
 !main_ssh.ipynb
+!main_ssh_long.ipynb
 
 # Logs
 *.log

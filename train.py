@@ -293,6 +293,13 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
     import logging
     from pathlib import Path
     log = logging.getLogger(__name__)
+    # Optional W&B in this scope
+    try:
+        import wandb
+        _WANDB = (hasattr(cfg, 'wandb') and cfg.wandb.enabled and cfg.wandb.mode != 'disabled' and wandb.run is not None)
+    except Exception:
+        wandb = None
+        _WANDB = False
     
     # Setup device
     if cfg.experiment.device == "cuda" and torch.cuda.is_available():
@@ -448,9 +455,6 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
 
         # Evaluate on validation set
         metrics = evaluate_loader(val_loader, model, device, cfg)
-        avg_loss_2 = epoch_loss_2 / max(1, nbatches)
-        avg_loss_1_rk4 = loss_1_rk4 / max(1, nbatches)
-        avg_loss_2_rk4 = loss_2_rk4 / max(1, nbatches)
 
         # Save model when validation PDE MSE improves
         val_pde = metrics.get("pde_mse", float('nan'))
@@ -512,6 +516,27 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
                     log_msg += f", RK4_1={weights['RK4_loss1']:.2e}, RK4_2={weights['RK4_loss2']:.2e}"
             
             log.info(log_msg)
+            # W&B metric logging
+            if _WANDB:
+                try:
+                    log_dict = {
+                        'epoch': epoch,
+                        'train/total': avg_loss,
+                        'train/PI1': avg_loss_1,
+                        'train/PI2': avg_loss_2,
+                        'val/total': metrics['pde_mse'],
+                        'val/PI1': metrics['loss_1'],
+                        'val/PI2': metrics['loss_2'],
+                        'lr': optimizer.param_groups[0]['lr'],
+                    }
+                    if cfg.training.loss.use_rk4:
+                        log_dict.update({
+                            'train/RK4_1': avg_loss_1_rk4,
+                            'train/RK4_2': avg_loss_2_rk4,
+                        })
+                    wandb.log(log_dict, step=epoch)
+                except Exception:
+                    pass
         
         # Early stopping
         if cfg.training.early_stopping.enabled and patience_counter >= cfg.training.early_stopping.patience:
