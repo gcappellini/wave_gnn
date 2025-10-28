@@ -257,6 +257,8 @@ def create_adaptive_weights_from_config(cfg) -> Optional[AdaptiveLossWeights]:
     loss_names = ['PI_loss1', 'PI_loss2']
     if cfg.training.loss.get('use_rk4', False):
         loss_names.extend(['RK4_loss1', 'RK4_loss2'])
+    if cfg.training.loss.get('use_energy', False):
+        loss_names.append('Energy_loss')
     
     # Initial weights from config
     initial_weights = {
@@ -266,6 +268,8 @@ def create_adaptive_weights_from_config(cfg) -> Optional[AdaptiveLossWeights]:
     if cfg.training.loss.get('use_rk4', False):
         initial_weights['RK4_loss1'] = cfg.training.loss.w1_rk4
         initial_weights['RK4_loss2'] = cfg.training.loss.w2_rk4
+    if cfg.training.loss.get('use_energy', False):
+        initial_weights['Energy_loss'] = cfg.training.loss.w_energy
     
     # Adaptive parameters
     adaptive_cfg = cfg.training.loss.adaptive

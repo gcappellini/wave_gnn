@@ -156,9 +156,9 @@ def comp_energy_loss(interior_mask, input, output, laplacian, dt, c, k, w):
     loss_energy = F.relu(energy_violation)
     
     # Weighted loss
-    pde_loss = w * loss_energy
+    weighted_loss = w * loss_energy
     
-    return pde_loss
+    return float(weighted_loss.detach().item())
 
 def train_physics(batch, model, optimizer, device, cfg, energy_loss=True, rk4=True, adaptive_weights=None):
     """Train on a batched Data object (several graphs concatenated by DataLoader).
