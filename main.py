@@ -131,10 +131,10 @@ def main(cfg: DictConfig):
         f.write(OmegaConf.to_yaml(cfg))
     log.info(f"Configuration saved to {config_path}")
     
-    # Create dataset
-    train_set, val_set = create_and_save_dataset(cfg, output_dir, plot_dataset=cfg.plot.plot_dataset)
     
     if cfg.run.train:
+        # Create dataset
+        train_set, val_set = create_and_save_dataset(cfg, output_dir, plot_dataset=cfg.plot.plot_dataset)
         # Train model
         log.info("\n" + "=" * 50)
         log.info("TRAINING MODEL")

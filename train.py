@@ -489,6 +489,8 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
                         'encoder_layers': cfg.model.get('encoder_layers', None),
                         'decoder_channels': cfg.model.get('decoder_channels', None),
                         'graph_output_dim': cfg.model.get('graph_output_dim', None),
+                        'use_ed_skip': cfg.model.get('use_ed_skip', False),
+                        'ed_skip_type': cfg.model.get('ed_skip_type', 'concat'),
                     }
                 }
                 # Save adaptive weights state if enabled

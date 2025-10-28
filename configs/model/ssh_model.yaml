@@ -1,6 +1,6 @@
 # Deep GCN Model configuration
 in_channels: 3
-hidden_channels: [128] #32, 64, 128]
+hidden_channels: [128] # 2 layers: 1 encoder + 1 decoder
 out_channels: 2
 conv_types: ["GCN"] #,"GEN","GEN", "GEN"]
 final_layer_type: "Linear"
