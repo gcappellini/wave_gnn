@@ -1,9 +1,0 @@
-# Weights & Biases logging configuration
-enabled: false
-project: "wave-gnn"
-entity: "g-cap"   # set to your W&B entity (team/user) or leave null
-mode: "online"  # "online", "offline", or "disabled"
-name: null      # optional custom run name; if null, will auto-generate
-group: ${experiment.name}
-tags: []
-log_model: false  # set true to upload best checkpoint as artifact

@@ -109,7 +109,7 @@ def physics_informed_loss(interior_mask, input, output, laplacian, dt, c, k, w1,
 
     return loss, float(loss_1.detach().item()), float(loss_2.detach().item())
 
-def energy_loss(interior_mask, input, output, laplacian, dt, c, k, w):
+def comp_energy_loss(interior_mask, input, output, laplacian, dt, c, k, w):
     """
     Energy-based regularization loss for wave propagation.
     Penalizes unphysical energy increase beyond what external forcing provides.
@@ -228,7 +228,7 @@ def train_physics(batch, model, optimizer, device, cfg, energy_loss=True, rk4=Tr
             w2=w2_PI,
         )
         if energy_loss:
-            loss_energy = compute_energy_loss(
+            loss_energy = comp_energy_loss(
                 interior_mask,
                 data.x.to(device),
                 out_sub,
@@ -270,7 +270,7 @@ def train_physics(batch, model, optimizer, device, cfg, energy_loss=True, rk4=Tr
             loss1_rk4 += loss_1_rk4
             loss2_rk4 += loss_2_rk4
         if energy_loss:
-            loss_energy += float(loss_energy.detach().item())
+            loss_energy += loss_energy
 
     # After iterating all graphs in the batch, compute mean PDE loss tensor
     if pde_loss_count > 0:
@@ -477,6 +477,7 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
         epoch_loss = 0.0
         epoch_loss_1 = 0.0
         epoch_loss_2 = 0.0
+        epoch_loss_energy = 0.0
         epoch_loss_1_rk4 = 0.0
         epoch_loss_2_rk4 = 0.0
         nbatches = 0
@@ -601,7 +602,6 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
             if _WANDB:
                 try:
                     log_dict = {
-                        'epoch': epoch,
                         'train/total': avg_loss,
                         'train/PI1': avg_loss_1,
                         'train/PI2': avg_loss_2,
@@ -615,7 +615,7 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
                             'train/RK4_1': avg_loss_1_rk4,
                             'train/RK4_2': avg_loss_2_rk4,
                         })
-                    wandb.log(log_dict, step=epoch)
+                    wandb.log(log_dict)
                 except Exception:
                     pass
         

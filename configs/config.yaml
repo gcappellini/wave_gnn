@@ -1,9 +1,9 @@
 # Main configuration file
 defaults:
-  - dataset: ssh_dataset
-  - model: ssh_model
-  - training: ssh_training
-  - wandb: default
+  - dataset: fast_dataset
+  - model: fast_model
+  - training: fast_training
+  - wandb: wandb_default
   - _self_
 
 # Experiment settings

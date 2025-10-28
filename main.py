@@ -12,6 +12,7 @@ Usage:
 import os
 import logging
 from pathlib import Path
+from datetime import datetime
 
 import hydra
 from omegaconf import DictConfig, OmegaConf
@@ -59,7 +60,7 @@ def setup_directories(cfg: DictConfig):
     return output_dir, save_dir
 
 
-def create_and_save_dataset(cfg: DictConfig, output_dir: Path, plot_dataset=True):
+def create_and_save_dataset(cfg: DictConfig, output_dir: Path, plot_dataset=True, run_name="run"):
     """Create dataset and save it for reproducibility."""
     log.info("=" * 50)
     log.info("CREATING DATASET")
@@ -79,7 +80,7 @@ def create_and_save_dataset(cfg: DictConfig, output_dir: Path, plot_dataset=True
     val_set = dataset[n_train:]
 
     if plot_dataset:
-        plot_path = output_dir / "figures/training_dataset.png"
+        plot_path = output_dir / f"figures/training_dataset_{run_name}.png"
         visual_train_set = np.array([data.x.numpy() for data in train_set]).transpose(2, 0, 1)
         plot_features_2d(dataset[0].coords, visual_train_set, dt=1, output_file=str(plot_path), ylabel='Sample Index', ylabel_as_int=True)
         log.info(f"Training dataset visualization saved to {plot_path}")
@@ -106,9 +107,13 @@ def main(cfg: DictConfig):
 
     # Initialize Weights & Biases (optional)
     run = None
+    # Generate fancy run name with timestamp and experiment info
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_name = cfg.wandb.name if cfg.wandb.name is not None else f"{timestamp}"
+    
     if _WANDB_AVAILABLE and cfg.get('wandb', {}).get('enabled', False) and cfg.wandb.mode != 'disabled':
         wandb_mode = cfg.wandb.mode
-        run_name = cfg.wandb.name if cfg.wandb.name is not None else f"{cfg.experiment.name}-{os.getpid()}"
+        
         try:
             run = wandb.init(
                 project=cfg.wandb.project,
@@ -120,13 +125,15 @@ def main(cfg: DictConfig):
                 config=OmegaConf.to_container(cfg, resolve=True),
                 settings=wandb.Settings(start_method="thread")
             )
-            log.info(f"W&B initialized: project={cfg.wandb.project}, run={run.name}")
+            # Update run_name with actual wandb run name
+            run_name = run.name
+            log.info(f"W&B initialized: project={cfg.wandb.project}, run={run_name}")
         except Exception as e:
             log.warning(f"W&B init failed ({e}); continuing without W&B.")
             run = None
     
     # Save configuration to output directory
-    config_path = output_dir / "config.yaml"
+    config_path = output_dir / f"config_{run_name}.yaml"
     with open(config_path, 'w') as f:
         f.write(OmegaConf.to_yaml(cfg))
     log.info(f"Configuration saved to {config_path}")
@@ -134,13 +141,13 @@ def main(cfg: DictConfig):
     
     if cfg.run.train:
         # Create dataset
-        train_set, val_set = create_and_save_dataset(cfg, output_dir, plot_dataset=cfg.plot.plot_dataset)
+        train_set, val_set = create_and_save_dataset(cfg, output_dir, plot_dataset=cfg.plot.plot_dataset, run_name=run_name)
         # Train model
         log.info("\n" + "=" * 50)
         log.info("TRAINING MODEL")
         log.info("=" * 50)
         
-        best_model_path = save_dir / cfg.training.checkpoint_path
+        best_model_path = save_dir / f"best_model_{run_name}.pt"
         model, metrics = train_model(
             cfg=cfg,
             train_set=train_set,
@@ -151,7 +158,7 @@ def main(cfg: DictConfig):
         log.info(f"Training completed. Best model saved to {best_model_path}")
         log.info(f"Best validation PDE MSE: {metrics['best_val_pde']:.6e}")
     else:
-        best_model_path = save_dir / cfg.training.checkpoint_path
+        best_model_path = save_dir / f"best_model_{run_name}.pt"
         log.info(f"Skipping training. Using existing model at {best_model_path}")
         metrics = {}
     
@@ -163,7 +170,8 @@ def main(cfg: DictConfig):
     test_results, test_metrics = test_model(
         cfg=cfg,
         model_path=str(best_model_path),
-        output_dir=str(output_dir)
+        output_dir=str(output_dir),
+        run_name=run_name
     )
     
     log.info("Testing completed.")
@@ -177,7 +185,7 @@ def main(cfg: DictConfig):
         'test_metrics': test_metrics
     }
     
-    summary_path = output_dir / "summary.yaml"
+    summary_path = output_dir / f"summary_{run_name}.yaml"
     with open(summary_path, 'w') as f:
         f.write(OmegaConf.to_yaml(summary))
     

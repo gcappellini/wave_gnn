@@ -13,6 +13,8 @@ lr_baseline_size: 1000  # Baseline dataset size for LR scaling (adjust to your t
 loss:
   w1_PI: 1.323e+02  # weight for displacement loss
   w2_PI: 6.981e+02  # weight for velocity loss
+  use_energy: true  # Enable energy conservation loss
+  w_energy: 1.0e+03  # weight for energy loss
   use_rk4: false
   w1_rk4: 1.323e+02
   w2_rk4: 6.981e+02

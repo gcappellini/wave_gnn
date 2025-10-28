@@ -200,7 +200,7 @@ def simulate_wave(gnn, data, t_f, cfg, device=None, load_gt=False):
 
 
 
-def test_model(cfg, model_path, output_dir):
+def test_model(cfg, model_path, output_dir, run_name="run"):
     """
     Test the trained model and generate visualizations.
     
@@ -208,6 +208,7 @@ def test_model(cfg, model_path, output_dir):
         cfg: Hydra configuration object
         model_path: Path to the saved model checkpoint
         output_dir: Directory to save test outputs
+        run_name: Name of the run for output file naming
         
     Returns:
         test_results: Dictionary containing test metrics and output paths
@@ -257,7 +258,7 @@ def test_model(cfg, model_path, output_dir):
     # Save results to .mat file
     matlab_dir = output_dir / "matlab"
     matlab_dir.mkdir(exist_ok=True)
-    matlab_file = matlab_dir / "data_gcn.mat"
+    matlab_file = matlab_dir / f"data_gcn_{run_name}.mat"
     
     matlab_times = np.linspace(0, T, num=100)
     indices = [np.argmin(np.abs(t_history - t)) for t in matlab_times]
@@ -290,7 +291,7 @@ def test_model(cfg, model_path, output_dir):
         # Fallback if HydraConfig is not available (e.g., running outside Hydra)
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     
-    plot_file = figures_dir / f"gcn_string_pred_{timestamp}.png"
+    plot_file = figures_dir / f"gcn_string_pred_{run_name}_{timestamp}.png"
     
     plot_features_2d(
         nodes,  
