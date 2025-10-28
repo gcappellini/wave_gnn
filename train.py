@@ -524,11 +524,10 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
 
         # Update adaptive weights based on current loss values
         if adaptive_weights is not None:
+            loss_dict = {}
             if cfg.training.loss.use_pi:
-                loss_dict = {
-                    'PI_loss1': avg_loss_1,
-                    'PI_loss2': avg_loss_2,
-                }
+                loss_dict['PI_loss1'] = avg_loss_1
+                loss_dict['PI_loss2'] = avg_loss_2
             if cfg.training.loss.use_rk4:
                 loss_dict['RK4_loss1'] = avg_loss_1_rk4
                 loss_dict['RK4_loss2'] = avg_loss_2_rk4
