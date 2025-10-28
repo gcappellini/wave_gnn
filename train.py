@@ -109,7 +109,58 @@ def physics_informed_loss(interior_mask, input, output, laplacian, dt, c, k, w1,
 
     return loss, float(loss_1.detach().item()), float(loss_2.detach().item())
 
-def train_physics(batch, model, optimizer, device, cfg, rk4=True, adaptive_weights=None):
+def energy_loss(interior_mask, input, output, laplacian, dt, c, k, w):
+    """
+    Energy-based regularization loss for wave propagation.
+    Penalizes unphysical energy increase beyond what external forcing provides.
+    
+    Args:
+        interior_mask: mask for interior nodes (if needed)
+        input: [N, 3] tensor with [u, v, force] at time t
+        output: [N, 2] tensor with [u_next, v_next] at time t+dt
+        laplacian: graph Laplacian (not used here but kept for interface)
+        dt: timestep (0.01s)
+        c: wave speed (c² = k/m)
+        k: stiffness (for potential energy)
+        w: weight for energy loss term
+    
+    Returns:
+        energy_loss: scalar loss value
+    """
+    # Extract current state
+    u = input[:, 0]           # deformation at t
+    v = input[:, 1]           # velocity at t
+    force = input[:, 2]       # external force at t
+    
+    # Extract predicted next state
+    u_next = output[:, 0]     # predicted deformation at t+dt
+    v_next = output[:, 1]     # predicted velocity at t+dt
+    
+    # Total mechanical energy at time t
+    # E = (1/2) * sum(v² + c²u²)
+    energy_current = 0.5 * torch.sum(v**2 + (c**2) * u**2)
+    
+    # Total mechanical energy at time t+dt
+    energy_next = 0.5 * torch.sum(v_next**2 + (c**2) * u_next**2)
+    
+    # Energy injected by external forcing (work done: F·Δu)
+    delta_u = u_next - u
+    energy_forcing = torch.sum(force * delta_u)
+    
+    # Energy violation: system gains more energy than forcing provides
+    # We only penalize INCREASES beyond forcing (not decreases from damping)
+    energy_violation = energy_next - energy_current - energy_forcing
+    
+    # Use ReLU to only penalize positive violations (unphysical energy gain)
+    # Negative values (energy decrease from damping) are physical and allowed
+    loss_energy = F.relu(energy_violation)
+    
+    # Weighted loss
+    pde_loss = w * loss_energy
+    
+    return pde_loss
+
+def train_physics(batch, model, optimizer, device, cfg, energy_loss=True, rk4=True, adaptive_weights=None):
     """Train on a batched Data object (several graphs concatenated by DataLoader).
 
     We iterate over graphs inside the batch, build per-graph Laplacian, compute PDE residual
@@ -176,6 +227,19 @@ def train_physics(batch, model, optimizer, device, cfg, rk4=True, adaptive_weigh
             w1=w1_PI,
             w2=w2_PI,
         )
+        if energy_loss:
+            loss_energy = compute_energy_loss(
+                interior_mask,
+                data.x.to(device),
+                out_sub,
+                L,
+                dt=cfg.dataset.dt,
+                c=cfg.dataset.wave_speed,
+                k=cfg.dataset.damping,
+                w=cfg.training.loss.w_energy,
+            )
+        else:
+            loss_energy = torch.tensor(0.0, device=device)
         if rk4:
             loss_rk4, loss_1_rk4, loss_2_rk4 = rk4_loss(
                 interior_mask,
@@ -191,12 +255,13 @@ def train_physics(batch, model, optimizer, device, cfg, rk4=True, adaptive_weigh
         else:
             loss_rk4 = torch.tensor(0.0, device=device)
 
-        pde_loss_sum = pde_loss_sum + loss_rk4 + loss_tensor
+        pde_loss_sum = pde_loss_sum + loss_energy + loss_rk4 + loss_tensor
         pde_loss_count += 1
         # accumulate scalar components for logging
         if 'loss1_sum' not in locals():
             loss1_sum = 0.0
             loss2_sum = 0.0
+            loss_energy = 0.0
             loss1_rk4 = 0.0
             loss2_rk4 = 0.0
         loss1_sum += loss_1_val
@@ -204,6 +269,8 @@ def train_physics(batch, model, optimizer, device, cfg, rk4=True, adaptive_weigh
         if rk4:
             loss1_rk4 += loss_1_rk4
             loss2_rk4 += loss_2_rk4
+        if energy_loss:
+            loss_energy += float(loss_energy.detach().item())
 
     # After iterating all graphs in the batch, compute mean PDE loss tensor
     if pde_loss_count > 0:
@@ -212,6 +279,7 @@ def train_physics(batch, model, optimizer, device, cfg, rk4=True, adaptive_weigh
         avg_loss2 = loss2_sum / pde_loss_count
         avg_loss1_rk4 = loss1_rk4 / pde_loss_count
         avg_loss2_rk4 = loss2_rk4 / pde_loss_count
+        avg_loss_energy = loss_energy / pde_loss_count
 
     else:
         pde_loss = torch.tensor(0.0, device=device)
@@ -219,6 +287,7 @@ def train_physics(batch, model, optimizer, device, cfg, rk4=True, adaptive_weigh
         avg_loss2 = float('nan')
         avg_loss1_rk4 = float('nan')
         avg_loss2_rk4 = float('nan')
+        avg_loss_energy = float('nan')
 
     # Loss used for optimization (BCs are hard constraints)
     loss = pde_loss
@@ -229,7 +298,7 @@ def train_physics(batch, model, optimizer, device, cfg, rk4=True, adaptive_weigh
     
     optimizer.step()
 
-    return float(loss.detach().item()), avg_loss1, avg_loss2, avg_loss1_rk4, avg_loss2_rk4
+    return float(loss.detach().item()), avg_loss1, avg_loss2, avg_loss_energy, avg_loss1_rk4, avg_loss2_rk4
 
 
 @torch.no_grad()
@@ -414,8 +483,9 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
         
         for batch in train_loader:
             
-            loss, loss_1, loss_2, loss_1_rk4, loss_2_rk4 = train_physics(
+            loss, loss_1, loss_2, loss_energy, loss_1_rk4, loss_2_rk4 = train_physics(
                 batch, model, optimizer, device, cfg,
+                energy_loss=cfg.training.loss.use_energy,
                 rk4=cfg.training.loss.use_rk4,
                 adaptive_weights=adaptive_weights
             )
@@ -430,6 +500,7 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
             epoch_loss += loss
             epoch_loss_1 += loss_1
             epoch_loss_2 += loss_2
+            epoch_loss_energy += loss_energy
             epoch_loss_1_rk4 += loss_1_rk4
             epoch_loss_2_rk4 += loss_2_rk4
             nbatches += 1
@@ -438,6 +509,7 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
         avg_loss = epoch_loss / max(1, nbatches)
         avg_loss_1 = epoch_loss_1 / max(1, nbatches)
         avg_loss_2 = epoch_loss_2 / max(1, nbatches)
+        avg_loss_energy = epoch_loss_energy / max(1, nbatches)
         avg_loss_1_rk4 = epoch_loss_1_rk4 / max(1, nbatches)
         avg_loss_2_rk4 = epoch_loss_2_rk4 / max(1, nbatches)
 
@@ -450,6 +522,8 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
             if cfg.training.loss.use_rk4:
                 loss_dict['RK4_loss1'] = avg_loss_1_rk4
                 loss_dict['RK4_loss2'] = avg_loss_2_rk4
+            if cfg.training.loss.use_energy:
+                loss_dict['Energy_loss'] = avg_loss_energy
             
             adaptive_weights.update(epoch, loss_dict)
 
@@ -505,16 +579,21 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
             # Build log message with current weights if adaptive
             log_msg = (
                 f"Epoch {epoch:03d} | "
-                f"Train {avg_loss:.3e} | PI1 {avg_loss_1:.3e} | PI2 {avg_loss_2:.3e} | "
-                f"RK4_1 {avg_loss_1_rk4:.3e} | RK4_2 {avg_loss_2_rk4:.3e} | "
-                f"Val {metrics['pde_mse']:.3e} | PI1 {metrics['loss_1']:.3e} | PI2 {metrics['loss_2']:.3e}"
+                f"Train {avg_loss:.3e} | PI1 {avg_loss_1:.3e} | PI2 {avg_loss_2:.3e}"
             )
+            if cfg.training.loss.use_energy:
+                log_msg += f" | Energy {avg_loss_energy:.3e}"
+            if cfg.training.loss.use_rk4:
+                log_msg += f" | RK4_1 {avg_loss_1_rk4:.3e} | RK4_2 {avg_loss_2_rk4:.3e}"
+            log_msg += f" | Val {metrics['pde_mse']:.3e} | PI1 {metrics['loss_1']:.3e} | PI2 {metrics['loss_2']:.3e}"
             if adaptive_weights is not None and epoch % (cfg.training.log_interval * 2) == 0:
                 weights = adaptive_weights.get_weights()
                 log_msg += f"\n        Weights: PI1={weights['PI_loss1']:.2e}, PI2={weights['PI_loss2']:.2e}"
                 if 'RK4_loss1' in weights:
                     log_msg += f", RK4_1={weights['RK4_loss1']:.2e}, RK4_2={weights['RK4_loss2']:.2e}"
-            
+                if 'Energy_loss' in weights:
+                    log_msg += f", Energy={weights['Energy_loss']:.2e}"
+
             log.info(log_msg)
             # W&B metric logging
             if _WANDB:
