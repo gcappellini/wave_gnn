@@ -44,4 +44,4 @@ matlab/
 
 # Logs
 *.log
-wandb/
+# wandb/
