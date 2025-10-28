@@ -291,7 +291,7 @@ def test_model(cfg, model_path, output_dir, run_name="run"):
         # Fallback if HydraConfig is not available (e.g., running outside Hydra)
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     
-    plot_file = figures_dir / f"gcn_string_pred_{run_name}_{timestamp}.png"
+    plot_file = figures_dir / f"gcn_string_pred_{run_name}.png"
     
     plot_features_2d(
         nodes,  

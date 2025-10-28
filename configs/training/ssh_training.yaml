@@ -1,5 +1,5 @@
 # Training configuration
-epochs: 20
+epochs: 30
 learning_rate: 0.01
 weight_decay: 1.0e-5
 optimizer: "adam"  # "adam", "sgd", etc.
@@ -23,7 +23,7 @@ loss:
   # Adaptive loss weighting
   adaptive:
     enabled: true  # Enable adaptive weighting
-    strategy: 'fixed'  # Options: 'equal_init', 'equal_init_ema', 'ema', 'fixed'
+    strategy: 'equal_init'  # Options: 'equal_init', 'equal_init_ema', 'ema', 'fixed'
     ema_alpha: 0.8  # Exponential moving average coefficient (0.8 = 80% old, 20% new)
     update_frequency: 1  # Update weights every N epochs
     # Strategy descriptions:
