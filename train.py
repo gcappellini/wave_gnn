@@ -160,7 +160,7 @@ def comp_energy_loss(interior_mask, input, output, laplacian, dt, c, k, w):
     
     return float(weighted_loss.detach().item())
 
-def train_physics(batch, model, optimizer, device, cfg, energy_loss=True, rk4=True, adaptive_weights=None):
+def train_physics(batch, model, optimizer, device, cfg, pi_loss=True, energy_loss=True, rk4=True, adaptive_weights=None):
     """Train on a batched Data object (several graphs concatenated by DataLoader).
 
     We iterate over graphs inside the batch, build per-graph Laplacian, compute PDE residual
@@ -210,23 +210,29 @@ def train_physics(batch, model, optimizer, device, cfg, energy_loss=True, rk4=Tr
             w2_PI = adaptive_weights.get_weight('PI_loss2')
             w1_rk4 = adaptive_weights.get_weight('RK4_loss1')
             w2_rk4 = adaptive_weights.get_weight('RK4_loss2')
+            w_energy = adaptive_weights.get_weight('Energy_loss')
         else:
             w1_PI = cfg.training.loss.w1_PI
             w2_PI = cfg.training.loss.w2_PI
             w1_rk4 = cfg.training.loss.w1_rk4
             w2_rk4 = cfg.training.loss.w2_rk4
-
-        loss_tensor, loss_1_val, loss_2_val = physics_informed_loss(
-            interior_mask,
-            data.x.to(device),
-            out_sub,
-            L,
-            dt=cfg.dataset.dt,
-            c=cfg.dataset.wave_speed,
-            k=cfg.dataset.damping,
-            w1=w1_PI,
-            w2=w2_PI,
-        )
+            w_energy = cfg.training.loss.w_energy
+        if pi_loss:
+            loss_tensor, loss_1_val, loss_2_val = physics_informed_loss(
+                interior_mask,
+                data.x.to(device),
+                out_sub,
+                L,
+                dt=cfg.dataset.dt,
+                c=cfg.dataset.wave_speed,
+                k=cfg.dataset.damping,
+                w1=w1_PI,
+                w2=w2_PI,
+            )
+        else:
+            loss_tensor = torch.tensor(0.0, device=device)
+            loss_1_val = torch.tensor(0.0, device=device)
+            loss_2_val = torch.tensor(0.0, device=device)
         if energy_loss:
             loss_energy = comp_energy_loss(
                 interior_mask,
@@ -236,7 +242,7 @@ def train_physics(batch, model, optimizer, device, cfg, energy_loss=True, rk4=Tr
                 dt=cfg.dataset.dt,
                 c=cfg.dataset.wave_speed,
                 k=cfg.dataset.damping,
-                w=cfg.training.loss.w_energy,
+                w=w_energy,
             )
         else:
             loss_energy = torch.tensor(0.0, device=device)
@@ -264,8 +270,9 @@ def train_physics(batch, model, optimizer, device, cfg, energy_loss=True, rk4=Tr
             loss_energy = 0.0
             loss1_rk4 = 0.0
             loss2_rk4 = 0.0
-        loss1_sum += loss_1_val
-        loss2_sum += loss_2_val
+        if pi_loss:
+            loss1_sum += loss_1_val
+            loss2_sum += loss_2_val
         if rk4:
             loss1_rk4 += loss_1_rk4
             loss2_rk4 += loss_2_rk4
@@ -290,7 +297,7 @@ def train_physics(batch, model, optimizer, device, cfg, energy_loss=True, rk4=Tr
         avg_loss_energy = float('nan')
 
     # Loss used for optimization (BCs are hard constraints)
-    loss = pde_loss
+    loss = pde_loss.detach().clone().requires_grad_(True)
     loss.backward()
     
     # Apply gradient clipping to prevent exploding gradients
@@ -486,6 +493,7 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
             
             loss, loss_1, loss_2, loss_energy, loss_1_rk4, loss_2_rk4 = train_physics(
                 batch, model, optimizer, device, cfg,
+                pi_loss=cfg.training.loss.use_pi,
                 energy_loss=cfg.training.loss.use_energy,
                 rk4=cfg.training.loss.use_rk4,
                 adaptive_weights=adaptive_weights
@@ -516,10 +524,11 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
 
         # Update adaptive weights based on current loss values
         if adaptive_weights is not None:
-            loss_dict = {
-                'PI_loss1': avg_loss_1,
-                'PI_loss2': avg_loss_2,
-            }
+            if cfg.training.loss.use_pi:
+                loss_dict = {
+                    'PI_loss1': avg_loss_1,
+                    'PI_loss2': avg_loss_2,
+                }
             if cfg.training.loss.use_rk4:
                 loss_dict['RK4_loss1'] = avg_loss_1_rk4
                 loss_dict['RK4_loss2'] = avg_loss_2_rk4
@@ -591,7 +600,8 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
             log_msg += f" | Val {metrics['pde_mse']:.3e} | PI1 {metrics['loss_1']:.3e} | PI2 {metrics['loss_2']:.3e}"
             if adaptive_weights is not None and epoch % (cfg.training.log_interval * 2) == 0:
                 weights = adaptive_weights.get_weights()
-                log_msg += f"\n        Weights: PI1={weights['PI_loss1']:.2e}, PI2={weights['PI_loss2']:.2e}"
+                if 'PI_loss1' in weights:
+                    log_msg += f"\n        Weights: PI1={weights['PI_loss1']:.2e}, PI2={weights['PI_loss2']:.2e}"
                 if 'RK4_loss1' in weights:
                     log_msg += f", RK4_1={weights['RK4_loss1']:.2e}, RK4_2={weights['RK4_loss2']:.2e}"
                 if 'Energy_loss' in weights:

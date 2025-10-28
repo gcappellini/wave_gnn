@@ -11,6 +11,7 @@ lr_baseline_size: 1000  # Baseline dataset size for LR scaling (adjust to your t
 
 # Loss weights
 loss:
+  use_pi: false
   w1_PI: 1.323e+02  # weight for displacement loss
   w2_PI: 6.981e+02  # weight for velocity loss
   use_energy: true  # Enable energy conservation loss
@@ -23,7 +24,7 @@ loss:
   # Adaptive loss weighting
   adaptive:
     enabled: true  # Enable adaptive weighting
-    strategy: 'equal_init_ema'  # Options: 'equal_init', 'equal_init_ema', 'ema', 'fixed'
+    strategy: 'equal_init'  # Options: 'equal_init', 'equal_init_ema', 'ema', 'fixed'
     ema_alpha: 0.8  # Exponential moving average coefficient (0.8 = 80% old, 20% new)
     update_frequency: 1  # Update weights every N epochs
     # Strategy descriptions:
