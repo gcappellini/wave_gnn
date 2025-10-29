@@ -200,7 +200,7 @@ def simulate_wave(gnn, data, t_f, cfg, device=None, load_gt=False):
 
 
 
-def test_model(cfg, model_path, output_dir):
+def test_model(cfg, model_path, output_dir, run_name):
     """
     Test the trained model and generate visualizations.
     
@@ -257,7 +257,7 @@ def test_model(cfg, model_path, output_dir):
     # Save results to .mat file
     matlab_dir = output_dir / "matlab"
     matlab_dir.mkdir(exist_ok=True)
-    matlab_file = matlab_dir / "data_gcn.mat"
+    matlab_file = matlab_dir / f"data_gcn_{run_name}.mat"
     
     matlab_times = np.linspace(0, T, num=100)
     indices = [np.argmin(np.abs(t_history - t)) for t in matlab_times]
@@ -281,17 +281,8 @@ def test_model(cfg, model_path, output_dir):
     # Generate plots
     histories = np.array([u_history, v_history, f_history, u_gt, v_gt, u_error])
 
-    # Extract timestamp from hydra run directory
-    try:
-        hydra_cfg = HydraConfig.get()
-        run_dir = Path(hydra_cfg.runtime.output_dir)
-        timestamp = run_dir.name  # e.g., "2024-01-15_14-30-45"
-    except:
-        # Fallback if HydraConfig is not available (e.g., running outside Hydra)
-        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    
-    plot_file = figures_dir / f"gcn_string_pred_{timestamp}.png"
-    
+    plot_file = figures_dir / f"gcn_string_pred_{run_name}.png"
+
     plot_features_2d(
         nodes,  
         histories,

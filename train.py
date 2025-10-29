@@ -7,6 +7,8 @@ import subprocess
 from dataset import create_dataset, WaveGNN1D, build_laplacian_matrix, DeepGCN
 from adaptive_weights import create_adaptive_weights_from_config
 from datetime import datetime
+import pandas as pd
+from plot import plot_loss_history
 
 def rk4_loss(interior_mask, input, output, laplacian, dt, c, k, w1, w2):
         """
@@ -394,6 +396,8 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
     best_pde = float('inf')
     patience_counter = 0
 
+    loss_history = []
+
     log.info(f"Starting training for {epochs} epochs...")
     start_time = datetime.now()
     
@@ -448,9 +452,28 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
 
         # Evaluate on validation set
         metrics = evaluate_loader(val_loader, model, device, cfg)
-        avg_loss_2 = epoch_loss_2 / max(1, nbatches)
-        avg_loss_1_rk4 = loss_1_rk4 / max(1, nbatches)
-        avg_loss_2_rk4 = loss_2_rk4 / max(1, nbatches)
+        # Record loss history for this epoch
+        epoch_record = {
+            'epoch': epoch,
+            'train_total': avg_loss,
+            'train_PI1': avg_loss_1,
+            'train_PI2': avg_loss_2,
+            # 'train_Energy': avg_loss_energy if cfg.training.loss.use_energy else None,
+            'train_RK4_1': avg_loss_1_rk4 if cfg.training.loss.use_rk4 else None,
+            'train_RK4_2': avg_loss_2_rk4 if cfg.training.loss.use_rk4 else None,
+            'val_total': metrics['pde_mse'],
+            'val_PI1': metrics['loss_1'],
+            'val_PI2': metrics['loss_2'],
+            'lr': optimizer.param_groups[0]['lr'],
+        }
+        # Add adaptive weights if enabled
+        if adaptive_weights is not None:
+            weights = adaptive_weights.get_weights()
+            for key, value in weights.items():
+                epoch_record[f'weight_{key}'] = value
+        
+        loss_history.append(epoch_record)
+
 
         # Save model when validation PDE MSE improves
         val_pde = metrics.get("pde_mse", float('nan'))
@@ -502,9 +525,10 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
             log_msg = (
                 f"Epoch {epoch:03d} | "
                 f"Train {avg_loss:.3e} | PI1 {avg_loss_1:.3e} | PI2 {avg_loss_2:.3e} | "
-                f"RK4_1 {avg_loss_1_rk4:.3e} | RK4_2 {avg_loss_2_rk4:.3e} | "
-                f"Val {metrics['pde_mse']:.3e} | PI1 {metrics['loss_1']:.3e} | PI2 {metrics['loss_2']:.3e}"
             )
+            if cfg.training.loss.use_rk4:
+                log_msg += f" | RK4_1 {avg_loss_1_rk4:.3e} | RK4_2 {avg_loss_2_rk4:.3e}"
+            log_msg += f"Val {metrics['pde_mse']:.3e} | PI1 {metrics['loss_1']:.3e} | PI2 {metrics['loss_2']:.3e}"
             if adaptive_weights is not None and epoch % (cfg.training.log_interval * 2) == 0:
                 weights = adaptive_weights.get_weights()
                 log_msg += f"\n        Weights: PI1={weights['PI_loss1']:.2e}, PI2={weights['PI_loss2']:.2e}"
@@ -521,7 +545,22 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
     log.info(f"Training finished. Best validation PDE MSE: {best_pde:.6e}")
     end_time = datetime.now()
     log.info(f"Total training time: {end_time - start_time}")
-    
+
+    # Save loss history to CSV file alongside checkpoint
+    loss_history_path = Path(save_path).with_suffix('.csv')
+    df = pd.DataFrame(loss_history)
+    df.to_csv(loss_history_path, index=False, float_format='%.6e')
+    log.info(f"Loss history saved to {loss_history_path}")
+
+    if cfg.plot.get('plot_train_loss', False):
+        loss_plot_path = Path(save_path).with_name(Path(save_path).stem + '_loss_history.png')
+        plot_loss_history(
+                loss_history,
+                output_file=str(loss_plot_path),
+                show_weights=(adaptive_weights is not None)
+            )
+        log.info(f"Loss history plot saved to {loss_plot_path}")
+
     return model, {'best_val_pde': best_pde, 'final_epoch': epoch}
 
 

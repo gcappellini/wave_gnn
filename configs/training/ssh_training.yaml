@@ -1,7 +1,7 @@
 # Training configuration
-epochs: 40
-learning_rate: 0.01
-weight_decay: 1.0e-5
+epochs: 20
+learning_rate: 0.001
+weight_decay: 1.0e-4
 optimizer: "adam"  # "adam", "sgd", etc.
 
 # Numerical stability
