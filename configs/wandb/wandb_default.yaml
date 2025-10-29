@@ -1,5 +1,5 @@
 # Weights & Biases logging configuration
-enabled: true
+enabled: false
 project: "wave-gnn"
 entity: "g-cap"   # set to your W&B entity (team/user) or leave null
 mode: "online"  # "online", "offline", or "disabled"

@@ -1,8 +1,8 @@
 # Main configuration file
 defaults:
-  - dataset: ssh_dataset
-  - model: ssh_model
-  - training: ssh_training
+  - dataset: fast_dataset
+  - model: fast_model
+  - training: fast_training
   - wandb: wandb_default
   - _self_
 
@@ -29,6 +29,7 @@ run:
 # Plot settings
 plot:
   plot_dataset: False
+  plot_train_loss: True  # Generate loss history plot after training
   load_gt: True
   look_up_every: False # Frequency of look-up during testing (set to None to disable)
 

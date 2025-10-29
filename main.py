@@ -22,6 +22,7 @@ import numpy as np
 from train import train_model
 from test_gcn import test_model
 from dataset import create_dataset
+from random_window_dataset import H5RandomTimeStepDataset
 from plot import plot_features_2d
 import pickle
 
@@ -66,27 +67,51 @@ def create_and_save_dataset(cfg: DictConfig, output_dir: Path, plot_dataset=True
     log.info("CREATING DATASET")
     log.info("=" * 50)
     
-    dataset = create_dataset(num_graphs=cfg.dataset.num_graphs, cfg=cfg)
+    # Always load from HDF5
+    h5_path = Path(cfg.dataset.h5_path)
+    if not h5_path.exists():
+        raise FileNotFoundError(
+            f"HDF5 dataset not found at {h5_path}. "
+            f"Generate it first with: python dataset.py"
+        )
     
-    log.info(f"Dataset created: {len(dataset)} graphs")
-    log.info(f"  - Number of graphs: {cfg.dataset.num_graphs}")
-    log.info(f"  - Timesteps per graph: {cfg.dataset.num_steps}")
-    log.info(f"  - Time step (dt): {cfg.dataset.dt}")
+    # Get sampling parameters from config
+    num_samples = cfg.dataset.get('num_samples', None)
+    num_timesteps = cfg.dataset.get('num_timesteps', None)
+    window_length = cfg.dataset.get('window_length', 200)
+    
+    log.info(f"Loading HDF5 dataset from {h5_path}")
+    log.info(f"  - Requested samples: {num_samples if num_samples else 'all'}")
+    log.info(f"  - Requested timesteps: {num_timesteps if num_timesteps else 'all'}")
+    log.info(f"  - Window length: {window_length}")
+    
+    dataset = H5RandomTimeStepDataset(
+        h5_path=str(h5_path),
+        window_length=window_length,
+        num_samples=num_samples,
+        num_timesteps=num_timesteps
+    )
+    
+    log.info(f"Dataset loaded: {len(dataset)} time-step samples")
+    log.info(f"  - Simulations loaded: {dataset.S}")
+    log.info(f"  - Timesteps per sim: {dataset.T}")
+    log.info(f"  - Window length: {dataset.window_length}")
+    log.info(f"  - Samples per epoch: {len(dataset)}")
     log.info(f"  - Batch size: {cfg.dataset.batch_size}")
     
-    # Split dataset
-    n_train = int(cfg.dataset.train_ratio * len(dataset))
-    train_set = dataset[:n_train]
-    val_set = dataset[n_train:]
-
-    if plot_dataset:
-        plot_path = output_dir / f"figures/training_dataset_{run_name}.png"
-        visual_train_set = np.array([data.x.numpy() for data in train_set]).transpose(2, 0, 1)
-        plot_features_2d(dataset[0].coords, visual_train_set, dt=1, output_file=str(plot_path), ylabel='Sample Index', ylabel_as_int=True)
-        log.info(f"Training dataset visualization saved to {plot_path}")
+    # Split dataset by simulation index to avoid train/val leakage
+    n_train_sims = int(cfg.dataset.train_ratio * dataset.S)
+    train_indices = list(range(n_train_sims * dataset.window_length))
+    val_indices = list(range(n_train_sims * dataset.window_length, len(dataset)))
+    
+    train_set = torch.utils.data.Subset(dataset, train_indices)
+    val_set = torch.utils.data.Subset(dataset, val_indices)
     
     log.info(f"  - Training samples: {len(train_set)}")
     log.info(f"  - Validation samples: {len(val_set)}")
+    
+    if plot_dataset:
+        log.info("Dataset visualization: use plot_h5_sample() for HDF5 datasets")
     
     return train_set, val_set
 

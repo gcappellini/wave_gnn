@@ -6,7 +6,9 @@ import numpy as np
 import subprocess
 from dataset import create_dataset, WaveGNN1D, build_laplacian_matrix, DeepGCN
 from adaptive_weights import create_adaptive_weights_from_config
+from plot import plot_loss_history
 from datetime import datetime
+from pathlib import Path
 
 def rk4_loss(interior_mask, input, output, laplacian, dt, c, k, w1, w2):
         """
@@ -476,6 +478,9 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
     epochs = cfg.training.epochs
     best_pde = float('inf')
     patience_counter = 0
+    
+    # Initialize loss history tracking
+    loss_history = []
 
     log.info(f"Starting training for {epochs} epochs...")
     start_time = datetime.now()
@@ -538,6 +543,28 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
 
         # Evaluate on validation set
         metrics = evaluate_loader(val_loader, model, device, cfg)
+        
+        # Record loss history for this epoch
+        epoch_record = {
+            'epoch': epoch,
+            'train_total': avg_loss,
+            'train_PI1': avg_loss_1,
+            'train_PI2': avg_loss_2,
+            'train_Energy': avg_loss_energy if cfg.training.loss.use_energy else None,
+            'train_RK4_1': avg_loss_1_rk4 if cfg.training.loss.use_rk4 else None,
+            'train_RK4_2': avg_loss_2_rk4 if cfg.training.loss.use_rk4 else None,
+            'val_total': metrics['pde_mse'],
+            'val_PI1': metrics['loss_1'],
+            'val_PI2': metrics['loss_2'],
+            'lr': optimizer.param_groups[0]['lr'],
+        }
+        # Add adaptive weights if enabled
+        if adaptive_weights is not None:
+            weights = adaptive_weights.get_weights()
+            for key, value in weights.items():
+                epoch_record[f'weight_{key}'] = value
+        
+        loss_history.append(epoch_record)
 
         # Save model when validation PDE MSE improves
         val_pde = metrics.get("pde_mse", float('nan'))
@@ -628,6 +655,14 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
                 except Exception:
                     pass
         
+        # Resample random windows for HDF5 dataset (if applicable)
+        # This triggers new random window starts for the next epoch
+        if hasattr(train_loader.dataset, 'on_epoch_end'):
+            train_loader.dataset.on_epoch_end()
+        elif hasattr(train_loader.dataset, 'dataset') and hasattr(train_loader.dataset.dataset, 'on_epoch_end'):
+            # Handle case where dataset is wrapped in Subset
+            train_loader.dataset.dataset.on_epoch_end()
+        
         # Early stopping
         if cfg.training.early_stopping.enabled and patience_counter >= cfg.training.early_stopping.patience:
             log.info(f"Early stopping triggered at epoch {epoch}")
@@ -637,7 +672,37 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
     end_time = datetime.now()
     log.info(f"Total training time: {end_time - start_time}")
     
-    return model, {'best_val_pde': best_pde, 'final_epoch': epoch}
+    # Save loss history to CSV file alongside checkpoint
+    loss_history_path = Path(save_path).with_suffix('.csv')
+    try:
+        import pandas as pd
+        df = pd.DataFrame(loss_history)
+        df.to_csv(loss_history_path, index=False, float_format='%.6e')
+        log.info(f"Loss history saved to {loss_history_path}")
+    except ImportError:
+        # Fallback to manual CSV writing if pandas not available
+        import csv
+        with open(loss_history_path, 'w', newline='') as f:
+            if loss_history:
+                writer = csv.DictWriter(f, fieldnames=loss_history[0].keys())
+                writer.writeheader()
+                writer.writerows(loss_history)
+        log.info(f"Loss history saved to {loss_history_path}")
+    
+    # Plot loss history if enabled
+    if cfg.plot.get('plot_train_loss', False):
+        loss_plot_path = Path(save_path).with_name(Path(save_path).stem + '_loss_history.png')
+        try:
+            plot_loss_history(
+                loss_history,
+                output_file=str(loss_plot_path),
+                show_weights=(adaptive_weights is not None)
+            )
+            log.info(f"Loss history plot saved to {loss_plot_path}")
+        except Exception as e:
+            log.warning(f"Failed to plot loss history: {e}")
+    
+    return model, {'best_val_pde': best_pde, 'final_epoch': epoch, 'loss_history': loss_history}
 
 
 @torch.no_grad()

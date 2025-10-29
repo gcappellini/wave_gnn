@@ -13,6 +13,16 @@ from torch.nn import Linear, Sequential, ReLU
 from torch_geometric.data import Data
 from scipy.sparse import lil_matrix
 import scipy.sparse as sp
+from plot import plot_features_2d
+import os
+from pathlib import Path
+
+try:
+    import h5py  # Efficient on-disk array storage
+    _H5PY_AVAILABLE = True
+except Exception:
+    h5py = None
+    _H5PY_AVAILABLE = False
 
 class DeepGCN(nn.Module):
     """
@@ -653,7 +663,7 @@ def membranedisplacement(coords, t, t_f=1, amp=0.003, x0=0.5, y0=0.5, sign=-1, l
 
     return u, v
 
-def membraneforce(coords, t, loc, forcing, x_f_1=None, y_f_1=None, sign=-1, seed=None, margin=0.1):
+def membraneforce(coords, t, loc, forcing=None, x_f_1=None, y_f_1=None, sign=-1, seed=None, margin=0.1):
     """
     2D membrane forcing - Gaussian pulses in space and time.
     
@@ -915,19 +925,13 @@ def create_dataset(num_graphs=64, cfg=None):
     return dataset
 
 def rollout_graph(seed, num_steps=200, cfg=None):
-    graph_0 = create_graph(seed, cfg=cfg)
-    gn = WaveGNN1D(graph_0.laplacian, cfg.dataset.c, cfg.dataset.k, cfg.dataset.dt)
+    graph_0 = create_graph(seed, zeros=True, cfg=cfg)
+    gn = WaveGNN1D(graph_0.laplacian, 1, 1, 0.01)
     features = graph_0.x.clone()
 
-    graphs = []
+    feature_list = []
     # append initial graph
-    graphs.append(Data(x=features.clone(),
-                       edge_index=graph_0.edge_index,
-                       bc_mask=graph_0.bc_mask,
-                       coords=graph_0.coords,
-                       laplacian=graph_0.laplacian,
-                       nodes=graph_0.nodes,
-                       elements=graph_0.elements))
+    feature_list.append(features.clone())
 
     t = 0.0
     for i in range(1, num_steps):
@@ -935,12 +939,12 @@ def rollout_graph(seed, num_steps=200, cfg=None):
         features = gn.forward(features)
 
         # advance time
-        t += dt
-        frc = cfg.dataset.force
+        t += 0.01
+        # frc = cfg.dataset.force
 
         # compute forcing (use numpy coords for membraneforce)
         coords_np = graph_0.coords.cpu().numpy()
-        f_np = membraneforce(coords_np, t, loc=frc.location, forcing=frc.forcing_type, sign=frc.sign, margin=frc.margin, seed=seed)
+        f_np = membraneforce(coords_np, t, loc="casual", sign=-1, margin=0.1, seed=seed)
         f_np = np.asarray(f_np).squeeze()  # ensure shape (N,)
 
         # build new features tensor: [u, v, f]
@@ -955,31 +959,225 @@ def rollout_graph(seed, num_steps=200, cfg=None):
         features = torch.stack([u, v, f_t], dim=1)
 
         # create new Data object for this timestep (keep other graph attributes same)
-        graph_t = Data(x=features.clone(),
-                       edge_index=graph_0.edge_index,
-                       bc_mask=graph_0.bc_mask,
-                       coords=graph_0.coords,
-                       laplacian=graph_0.laplacian,
-                       nodes=graph_0.nodes,
-                       elements=graph_0.elements)
-        graphs.append(graph_t)
+        feature_list.append(features.clone())
 
-    return graphs
+    # feature_list: list of tensors [N, 3] for each time step
+    # Default historical return was shape (3, T, N)
+    return np.array(feature_list).transpose(2, 0, 1)
+
+
+def rollout_graph_TxNxC(seed, num_steps=500, cfg=None):
+    """Roll out a causal-force simulation and return array shaped (T, N, 3).
+
+    This is a convenience wrapper that reorders axes from the legacy
+    rollout_graph() output shape (3, T, N) to a more natural (T, N, C).
+
+    Args:
+        seed: Random seed for reproducibility per-simulation
+        num_steps: Number of time steps to simulate
+        cfg: Optional hydra config for dataset params
+
+    Returns:
+        features: np.ndarray of shape (T, N, 3) with [u, v, f] per node
+        graph_meta: dict with coords [N,1], edge_index [2,E], bc_mask [N], num_nodes
+    """
+    data0 = create_graph(seed, zeros=True, cfg=cfg)
+    arr = rollout_graph(seed=seed, num_steps=num_steps, cfg=cfg)  # (3, T, N)
+    features_TxNxC = np.transpose(arr, (1, 2, 0)).astype(np.float32)  # (T, N, 3)
+
+    graph_meta = {
+        'coords': data0.coords.cpu().numpy().astype(np.float32),
+        'edge_index': data0.edge_index.cpu().numpy().astype(np.int64),
+        'bc_mask': data0.bc_mask.cpu().numpy().astype(np.bool_),
+        'num_nodes': int(data0.coords.shape[0]),
+    }
+    return features_TxNxC, graph_meta
+
+
+def generate_h5_simulations(out_path, num_samples, num_steps=500, cfg=None, base_seed=1000,
+                            overwrite=False, compression="gzip", compression_level=4):
+    """Generate many causal-force simulations and store efficiently in a single HDF5.
+
+    The file structure is:
+      - features: float32, shape (num_samples, num_steps, num_nodes, 3)
+      - coords:   float32, shape (num_nodes, 1)
+      - edge_index: int64, shape (2, E)
+      - bc_mask:  bool, shape (num_nodes,)
+      - num_nodes: int attribute
+      - num_steps: int attribute
+
+    Notes:
+      - Graph topology is constant across simulations (1D chain with 100 nodes),
+        so it's stored once.
+      - Use chunking to enable lazy loading of individual simulations.
+
+    Args:
+      out_path: Path to .h5 file to create
+      num_samples: Number of simulations to generate
+      num_steps: Steps per simulation (default 500)
+      cfg: Optional Hydra config
+      base_seed: Base seed; simulation i uses seed = base_seed + i
+      overwrite: Overwrite existing file if True
+      compression: HDF5 compression filter ("gzip" or None)
+      compression_level: 0-9 when using gzip
+    """
+    if not _H5PY_AVAILABLE:
+        raise ImportError("h5py is required for generate_h5_simulations(). Please pip install h5py.")
+
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    if out_path.exists() and not overwrite:
+        raise FileExistsError(f"{out_path} already exists. Pass overwrite=True to replace it.")
+
+    # Probe graph metadata once
+    _, meta = rollout_graph_TxNxC(seed=base_seed, num_steps=2, cfg=cfg)
+    num_nodes = meta['num_nodes']
+    # time step (seconds)
+    dt = 0.01
+    try:
+        if cfg is not None:
+            dt = float(cfg.dataset.dt)
+    except Exception:
+        dt = 0.01
+
+    # Create HDF5 file and datasets
+    with h5py.File(out_path, 'w') as f:
+        # Create main dataset with chunking along the sample dimension
+        chunks = (1, min(100, num_steps), num_nodes, 3)  # tune chunk size if needed
+        dset = f.create_dataset(
+            'features',
+            shape=(num_samples, num_steps, num_nodes, 3),
+            dtype='float32',
+            chunks=chunks,
+            compression=compression,
+            compression_opts=compression_level if compression == 'gzip' else None,
+        )
+
+        # Store static graph info once
+        f.create_dataset('coords', data=meta['coords'], dtype='float32')
+        f.create_dataset('edge_index', data=meta['edge_index'], dtype='int64')
+        f.create_dataset('bc_mask', data=meta['bc_mask'], dtype='bool')
+        f.attrs['num_nodes'] = int(num_nodes)
+        f.attrs['num_steps'] = int(num_steps)
+        f.attrs['format'] = 'features[sample, t, node, channel]'  # (S, T, N, 3)
+        f.attrs['dt'] = float(dt)
+
+        # Generate simulations
+        for i in range(num_samples):
+            seed = base_seed + i
+            sim, _ = rollout_graph_TxNxC(seed=seed, num_steps=num_steps, cfg=cfg)  # (T, N, 3)
+            dset[i, :, :, :] = sim  # write one sample
+
+    return str(out_path)
+
+
+def plot_h5_sample(h5_path, idx=0, timesteps=150, out_file="data/sample_plot.png"):
+    """Plot a small portion of one simulation from the HDF5 dataset.
+
+    Produces a 2D map (space x time) for [u, v, f] channels using plot_features_2d.
+
+    Args:
+        h5_path: Path to simulations .h5
+        idx: simulation index to visualize
+        timesteps: number of initial time steps to plot (None = full)
+        out_file: path to save the PNG
+    """
+    if not _H5PY_AVAILABLE:
+        raise ImportError("h5py is required for plot_h5_sample(). Please pip install h5py.")
+    with h5py.File(h5_path, 'r') as f:
+        feats = f['features'][idx]  # (T, N, 3)
+        nodes = f['coords'][:, 0]
+        dt = float(f.attrs.get('dt', 0.01))
+    if timesteps is not None:
+        feats = feats[:timesteps]
+    # Transpose to (C, T, N)
+    histories = np.transpose(feats, (2, 0, 1))
+    # Ensure nodes is (N,) and numeric
+    nodes_1d = np.asarray(nodes).reshape(-1)
+    plot_features_2d(nodes_1d, histories, dt=dt, output_file=out_file,
+                     feature_names=['u (deformation)', 'v (velocity)', 'f (force)'])
+    return out_file
+
+
+class WaveSimulationsH5(torch.utils.data.Dataset):
+    """Lazy loader for HDF5 simulations stored by generate_h5_simulations().
+
+    Returns one full simulation (T, N, 3) per index. Use a custom collate_fn if
+    batching variable-length sequences in the future.
+
+    Example:
+        ds = WaveSimulationsH5('data/sims.h5')
+        x, meta = ds[0]  # x: torch.FloatTensor [T, N, 3]
+    """
+    def __init__(self, h5_path):
+        if not _H5PY_AVAILABLE:
+            raise ImportError("h5py is required for WaveSimulationsH5. Please pip install h5py.")
+        self.h5_path = str(h5_path)
+        with h5py.File(self.h5_path, 'r') as f:
+            self.num_samples = f['features'].shape[0]
+            self.num_steps = int(f.attrs['num_steps'])
+            self.num_nodes = int(f.attrs['num_nodes'])
+
+    def __len__(self):
+        return self.num_samples
+
+    def __getitem__(self, idx):
+        with h5py.File(self.h5_path, 'r') as f:
+            arr = f['features'][idx]  # (T, N, 3)
+            coords = f['coords'][:]
+            edge_index = f['edge_index'][:]
+            bc_mask = f['bc_mask'][:]
+        x = torch.from_numpy(arr).float()
+        meta = {
+            'coords': torch.from_numpy(coords).float(),
+            'edge_index': torch.from_numpy(edge_index).long(),
+            'bc_mask': torch.from_numpy(bc_mask).bool(),
+            'num_steps': self.num_steps,
+            'num_nodes': self.num_nodes,
+        }
+        return x, meta
+
+
+def get_random_simulation(h5_path):
+    """Load a random simulation (T, N, 3) from an HDF5 dataset file.
+
+    Returns (tensor[T,N,3], meta dict).
+    """
+    ds = WaveSimulationsH5(h5_path)
+    import random
+    idx = random.randrange(len(ds))
+    return ds[idx]
 
 if __name__ == "__main__":
-    plt.close()
-    data = create_graph(2)
-    G = nx.Graph()
-    G.add_nodes_from(range(data.coords.shape[0]))
-    edges = data.edge_index.t().numpy()
-    G.add_edges_from(edges)
-    node_colors = ['red' if data.bc_mask[i] else 'blue' for i in range(data.coords.shape[0])]
-    # For 1D chain, use x-coordinate only for layout
-    pos = {i: (float(data.coords[i]), 0) for i in range(data.coords.shape[0])}
-    plt.figure(figsize=(8, 2))
-    nx.draw(G, pos, node_size=40, node_color=node_colors, edge_color='gray')
-    plt.title("1D Chain Mesh Graph")
-    plt.tight_layout()
-    plt.savefig("figures/mesh_graph_1d.png")
-    plt.show()
+    # Example: generate and sample an on-disk dataset
+    # 1) Generate 100 simulations x 500 steps to data/simulations.h5
+    try:
+        out_file = generate_h5_simulations(
+            out_path="data/simulations.h5",
+            num_samples=100,
+            num_steps=500,
+            base_seed=2025,
+            overwrite=True,
+        )
+        print(f"Saved simulations to {out_file}")
+    except Exception as e:
+        print(f"Dataset generation skipped or failed: {e}")
+
+    # 2) Load a random sample and print shapes
+    try:
+        sim, meta = get_random_simulation("data/simulations.h5")
+        print(f"Loaded simulation shape: {tuple(sim.shape)} (T, N, 3)")
+        print(f"Num nodes: {meta['num_nodes']}, Num steps: {meta['num_steps']}")
+    except Exception as e:
+        print(f"Random sample load skipped or failed: {e}")
+    
+    # 3) Plot a small portion of a simulation to verify content
+    try:
+        plot_path = plot_h5_sample("data/simulations.h5", idx=0, timesteps=150, out_file="data/sample_plot.png")
+        print(f"Saved sample plot to {plot_path}")
+    except Exception as e:
+        print(f"Plotting skipped or failed: {e}")
+    # print(feats.shape)
+    # plot_path = "./prova_dataset.png"
+    # plot_features_2d(ref_graph.coords, feats, dt=1, output_file=str(plot_path), ylabel='Sample Index', ylabel_as_int=True)
 
