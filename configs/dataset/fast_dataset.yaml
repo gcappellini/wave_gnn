@@ -3,9 +3,9 @@
 h5_path: "data/simulations.h5"
 
 # Sampling configuration (reduced for fast experimentation)
-num_samples: 10         # Number of simulations to load from HDF5
-num_timesteps: 50       # Number of timesteps per simulation to use
-window_length: 20       # Timesteps per random window sample
+num_samples: 100         # Number of simulations to load from HDF5
+num_timesteps: 1       # Number of timesteps per simulation to use
+window_length: 1       # Timesteps per random window sample
 
 # Training split
 train_ratio: 0.8
@@ -15,11 +15,11 @@ drop_last: false
 
 # Legacy parameters (kept for compatibility)
 num_graphs: 100
-dt: 0.1
 
 # Physics parameters
 wave_speed: 1.0  # c
 damping: 1.0     # k
+dt: 0.01
 
 # Mesh parameters
 num_nodes: 100

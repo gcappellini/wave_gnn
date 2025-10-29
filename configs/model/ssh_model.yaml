@@ -6,7 +6,7 @@ conv_types: ["GCN", "GCN"] #,"GEN","GEN", "GEN"]
 final_layer_type: "Linear"
 activation: "relu"
 dropout: 0.1
-block: "res" # recommended with heterogeneous dims; residual variants need equal in/out dims
+block: "plain" # recommended with heterogeneous dims; residual variants need equal in/out dims
 use_bn: true
 gat_heads: 4
 cheb_K: 3

@@ -28,6 +28,104 @@ import pickle
 
 log = logging.getLogger(__name__)
 
+
+def convert_to_native_types(obj):
+    """
+    Recursively convert NumPy types to Python native types for OmegaConf compatibility.
+    
+    Args:
+        obj: Object to convert (can be dict, list, numpy type, etc.)
+    
+    Returns:
+        Object with all numpy types converted to Python native types
+    """
+    if isinstance(obj, dict):
+        return {k: convert_to_native_types(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_to_native_types(item) for item in obj]
+    elif isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    else:
+        return obj
+
+
+def restore_from_previous_run(run_name: str, save_dir: Path):
+    """
+    Restore model checkpoint and training metrics from a previous run.
+    
+    Args:
+        run_name: Name of the previous run (e.g., "2024-10-29_14-30-45")
+        save_dir: Directory where checkpoints are saved
+    
+    Returns:
+        tuple: (checkpoint_path, metrics_dict) where:
+            - checkpoint_path: Path to the model checkpoint (.pt file)
+            - metrics_dict: Dictionary containing training metrics including loss_history
+    
+    Raises:
+        FileNotFoundError: If checkpoint or CSV file not found
+    """
+    checkpoint_path = save_dir / f"best_model_{run_name}.pt"
+    csv_path = save_dir / f"best_model_{run_name}.csv"
+    
+    # Check if files exist
+    if not checkpoint_path.exists():
+        raise FileNotFoundError(
+            f"Checkpoint not found: {checkpoint_path}\n"
+            f"Available checkpoints in {save_dir}:\n" +
+            "\n".join([f"  - {f.name}" for f in save_dir.glob("best_model_*.pt")])
+        )
+    
+    if not csv_path.exists():
+        log.warning(f"Loss history CSV not found: {csv_path}")
+        log.warning("Metrics will be loaded from checkpoint only (may not include full loss_history)")
+    
+    # Load checkpoint to get stored metrics
+    log.info(f"Restoring from checkpoint: {checkpoint_path}")
+    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+    
+    # Extract metrics from checkpoint
+    metrics = {
+        'best_val_pde': checkpoint.get('best_val_pde', float('nan')),
+        'final_epoch': checkpoint.get('epoch', 0),
+    }
+    
+    # Try to load full loss history from CSV if available
+    if csv_path.exists():
+        try:
+            import pandas as pd
+            df = pd.read_csv(csv_path)
+            loss_history = df.to_dict('records')
+            metrics['loss_history'] = loss_history
+            log.info(f"Loaded loss history from CSV: {len(loss_history)} epochs")
+        except Exception as e:
+            log.warning(f"Failed to load loss history from CSV: {e}")
+            import csv
+            try:
+                with open(csv_path, 'r') as f:
+                    reader = csv.DictReader(f)
+                    loss_history = list(reader)
+                    # Convert string values to float
+                    for record in loss_history:
+                        for key, value in record.items():
+                            try:
+                                record[key] = float(value)
+                            except (ValueError, TypeError):
+                                pass
+                    metrics['loss_history'] = loss_history
+                log.info(f"Loaded loss history from CSV (fallback): {len(loss_history)} epochs")
+            except Exception as e2:
+                log.warning(f"Failed to load loss history with fallback: {e2}")
+    
+    log.info(f"Restored metrics: best_val_pde={metrics['best_val_pde']:.6e}, final_epoch={metrics['final_epoch']}")
+    
+    return checkpoint_path, metrics
+
+
 # Optional Weights & Biases import
 try:
     import wandb
@@ -172,6 +270,8 @@ def main(cfg: DictConfig):
         f.write(OmegaConf.to_yaml(cfg))
     log.info(f"Configuration saved to {config_path}")
     
+    # Check if we should resume from a previous run
+    resume_from = cfg.run.get('resume_from', None)
     
     if cfg.run.train:
         # Create dataset
@@ -192,9 +292,48 @@ def main(cfg: DictConfig):
         log.info(f"Training completed. Best model saved to {best_model_path}")
         log.info(f"Best validation PDE MSE: {metrics['best_val_pde']:.6e}")
     else:
-        best_model_path = save_dir / f"best_model_{run_name}.pt"
-        log.info(f"Skipping training. Using existing model at {best_model_path}")
-        metrics = {}
+        # Not training - restore from previous run or use current run_name
+        if resume_from is not None:
+            log.info(f"Restoring model and metrics from previous run: {resume_from}")
+            try:
+                best_model_path, metrics = restore_from_previous_run(resume_from, save_dir)
+                log.info(f"Successfully restored from {resume_from}")
+            except FileNotFoundError as e:
+                log.error(str(e))
+                raise
+        else:
+            # Use current run_name (assumes model already exists)
+            best_model_path = save_dir / f"best_model_{run_name}.pt"
+            log.info(f"Skipping training. Using model at {best_model_path}")
+            
+            if not best_model_path.exists():
+                raise FileNotFoundError(
+                    f"Model not found: {best_model_path}\n"
+                    f"Either set run.train=True to train a new model, or set run.resume_from=<previous_run_name> to use an existing model.\n"
+                    f"Available checkpoints in {save_dir}:\n" +
+                    "\n".join([f"  - {f.name}" for f in save_dir.glob("best_model_*.pt")])
+                )
+            
+            # Try to load metrics from CSV
+            csv_path = save_dir / f"best_model_{run_name}.csv"
+            if csv_path.exists():
+                try:
+                    import pandas as pd
+                    df = pd.read_csv(csv_path)
+                    loss_history = df.to_dict('records')
+                    checkpoint = torch.load(best_model_path, map_location='cpu')
+                    metrics = {
+                        'best_val_pde': checkpoint.get('best_val_pde', float('nan')),
+                        'final_epoch': checkpoint.get('epoch', 0),
+                        'loss_history': loss_history
+                    }
+                    log.info(f"Loaded metrics from checkpoint and CSV")
+                except Exception as e:
+                    log.warning(f"Could not load full metrics: {e}")
+                    metrics = {}
+            else:
+                log.warning(f"Loss history CSV not found: {csv_path}")
+                metrics = {}
     
     # Test model
     log.info("\n" + "=" * 50)
@@ -211,12 +350,17 @@ def main(cfg: DictConfig):
     log.info("Testing completed.")
     log.info(f"Results saved to {save_dir}")
     
+    # Convert NumPy types to Python native types for OmegaConf compatibility
+    metrics_native = convert_to_native_types(metrics)
+    test_results_native = convert_to_native_types(test_results)
+    test_metrics_native = convert_to_native_types(test_metrics)
+    
     # Save final summary
     summary = {
         'config': OmegaConf.to_container(cfg, resolve=True),
-        'training_metrics': metrics,
-        'test_results': test_results,
-        'test_metrics': test_metrics
+        'training_metrics': metrics_native,
+        'test_results': test_results_native,
+        'test_metrics': test_metrics_native
     }
     
     summary_path = output_dir / f"summary_{run_name}.yaml"

@@ -1,5 +1,5 @@
 # Training configuration
-epochs: 30
+epochs: 100
 learning_rate: 0.01
 weight_decay: 1.0e-5
 optimizer: "adam"  # "adam", "sgd", etc.
@@ -14,8 +14,8 @@ loss:
   use_pi: true
   w1_PI: 1.323e+02  # weight for displacement loss
   w2_PI: 6.981e+02  # weight for velocity loss
-  use_energy: true  # Enable energy conservation loss
-  w_energy: 1.0e+03  # weight for energy loss
+  use_energy: false  # Enable energy conservation loss
+  w_energy: 1.0e+00  # weight for energy loss
   use_rk4: false
   w1_rk4: 1.323e+02
   w2_rk4: 6.981e+02
@@ -24,7 +24,7 @@ loss:
   # Adaptive loss weighting
   adaptive:
     enabled: true  # Enable adaptive weighting
-    strategy: 'equal_init'  # Options: 'equal_init', 'equal_init_ema', 'ema', 'fixed'
+    strategy: 'fixed'  # Options: 'equal_init', 'equal_init_ema', 'ema', 'fixed'
     ema_alpha: 0.8  # Exponential moving average coefficient (0.8 = 80% old, 20% new)
     update_frequency: 1  # Update weights every N epochs
     # Strategy descriptions:
