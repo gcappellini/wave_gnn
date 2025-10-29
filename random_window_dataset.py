@@ -38,8 +38,31 @@ class H5RandomTimeStepDataset(Dataset):
         """
         if not _H5PY_AVAILABLE:
             raise ImportError("h5py is required for H5RandomTimeStepDataset. Please pip install h5py.")
+        
         self.h5_path = str(h5_path)
         self.window_length = int(window_length)
+        
+        # Validate HDF5 file exists and is valid
+        h5_file = Path(self.h5_path)
+        if not h5_file.exists():
+            raise FileNotFoundError(
+                f"HDF5 file not found: {self.h5_path}\n"
+                f"Please generate it first with: python dataset.py"
+            )
+        
+        if h5_file.stat().st_size == 0:
+            raise ValueError(
+                f"HDF5 file is empty: {self.h5_path}\n"
+                f"Please regenerate it with: python dataset.py"
+            )
+        
+        # Validate it's a valid HDF5 file
+        if not h5py.is_hdf5(self.h5_path):
+            raise ValueError(
+                f"File is not a valid HDF5 file: {self.h5_path}\n"
+                f"File size: {h5_file.stat().st_size} bytes\n"
+                f"Please regenerate it with: python dataset.py"
+            )
 
         with h5py.File(self.h5_path, 'r') as f:
             feats = f['features']  # (S, T, N, C)

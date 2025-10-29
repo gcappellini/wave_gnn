@@ -69,10 +69,19 @@ def create_and_save_dataset(cfg: DictConfig, output_dir: Path, plot_dataset=True
     
     # Always load from HDF5
     h5_path = Path(cfg.dataset.h5_path)
+    
+    # Comprehensive validation before loading
     if not h5_path.exists():
         raise FileNotFoundError(
-            f"HDF5 dataset not found at {h5_path}. "
-            f"Generate it first with: python dataset.py"
+            f"HDF5 dataset not found at {h5_path}\n"
+            f"Please generate it first with: python dataset.py\n"
+            f"Current working directory: {Path.cwd()}"
+        )
+    
+    if h5_path.stat().st_size == 0:
+        raise ValueError(
+            f"HDF5 file is empty: {h5_path}\n"
+            f"Please regenerate it with: python dataset.py"
         )
     
     # Get sampling parameters from config
