@@ -574,13 +574,28 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
             # Sample a subset of batches for faster closure evaluation
             num_batches_to_use = min(len(train_loader), cfg.training.get('lbfgs_batches_per_step', 5))
             
+            # Track losses for this L-BFGS epoch
+            lbfgs_loss_pi1 = 0.0
+            lbfgs_loss_pi2 = 0.0
+            lbfgs_loss_rk4_1 = 0.0
+            lbfgs_loss_rk4_2 = 0.0
+            lbfgs_total_loss = 0.0
+            
             def closure():
+                nonlocal lbfgs_loss_pi1, lbfgs_loss_pi2, lbfgs_loss_rk4_1, lbfgs_loss_rk4_2, lbfgs_total_loss
+                
                 lbfgs_optimizer.zero_grad()
                 model.train()
                 
                 # Compute loss over a subset of batches (not entire dataset)
                 total_loss = torch.tensor(0.0, device=device, requires_grad=True)
                 batch_count = 0
+                
+                # Reset accumulators
+                loss_pi1_sum = 0.0
+                loss_pi2_sum = 0.0
+                loss_rk4_1_sum = 0.0
+                loss_rk4_2_sum = 0.0
                 
                 for batch_idx, batch in enumerate(train_loader):
                     if batch_idx >= num_batches_to_use:
@@ -612,7 +627,7 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
                             w2_rk4 = cfg.training.loss.w2_rk4
                         
                         # Compute physics-informed loss
-                        loss_tensor, _, _ = physics_informed_loss(
+                        loss_tensor, loss_pi1_val, loss_pi2_val = physics_informed_loss(
                             interior_mask,
                             data.x.to(device),
                             out_sub,
@@ -624,8 +639,12 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
                             w2=w2_PI,
                         )
                         
+                        # Accumulate individual loss components
+                        loss_pi1_sum += loss_pi1_val
+                        loss_pi2_sum += loss_pi2_val
+                        
                         if cfg.training.loss.use_rk4:
-                            loss_rk4, _, _ = rk4_loss(
+                            loss_rk4, loss_rk4_1_val, loss_rk4_2_val = rk4_loss(
                                 interior_mask,
                                 data.x.to(device),
                                 out_sub,
@@ -636,6 +655,8 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
                                 w1=w1_rk4,
                                 w2=w2_rk4,
                             )
+                            loss_rk4_1_sum += loss_rk4_1_val
+                            loss_rk4_2_sum += loss_rk4_2_val
                         else:
                             loss_rk4 = torch.tensor(0.0, device=device)
                         
@@ -650,6 +671,13 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
                 # Average over batches used
                 if batch_count > 0:
                     total_loss = total_loss / batch_count
+                    # Store averaged individual losses
+                    lbfgs_loss_pi1 = loss_pi1_sum / (batch_count * len(data_list))
+                    lbfgs_loss_pi2 = loss_pi2_sum / (batch_count * len(data_list))
+                    if cfg.training.loss.use_rk4:
+                        lbfgs_loss_rk4_1 = loss_rk4_1_sum / (batch_count * len(data_list))
+                        lbfgs_loss_rk4_2 = loss_rk4_2_sum / (batch_count * len(data_list))
+                    lbfgs_total_loss = float(total_loss.item())
                 
                 total_loss.backward()
                 return total_loss
@@ -665,6 +693,37 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
             if lbfgs_epoch % cfg.training.log_interval == 0 or lbfgs_epoch == 1:
                 metrics = evaluate_loader(val_loader, model, device, cfg)
                 log.info(f"L-BFGS Epoch {lbfgs_epoch:03d} | Val PDE MSE: {metrics['pde_mse']:.3e}")
+                
+                # Record L-BFGS epoch in loss history
+                lbfgs_epoch_record = {
+                    'epoch': epoch + lbfgs_epoch,
+                    'train_total': lbfgs_total_loss,
+                    'train_PI1': lbfgs_loss_pi1,
+                    'train_PI2': lbfgs_loss_pi2,
+                    'train_RK4_1': lbfgs_loss_rk4_1 if cfg.training.loss.use_rk4 else None,
+                    'train_RK4_2': lbfgs_loss_rk4_2 if cfg.training.loss.use_rk4 else None,
+                    'val_total': metrics['pde_mse'],
+                    'val_PI1': metrics['loss_1'],
+                    'val_PI2': metrics['loss_2'],
+                    'lr': cfg.training.get('lbfgs_lr', 0.1),  # L-BFGS uses constant LR
+                }
+                # Add adaptive weights if enabled
+                if adaptive_weights is not None:
+                    weights = adaptive_weights.get_weights()
+                    for key, value in weights.items():
+                        lbfgs_epoch_record[f'weight_{key}'] = value
+                
+                loss_history.append(lbfgs_epoch_record)
+                
+                # Build detailed log message
+                log_msg = (
+                    f"L-BFGS Epoch {lbfgs_epoch:03d} | "
+                    f"Train {lbfgs_total_loss:.3e} | PI1 {lbfgs_loss_pi1:.3e} | PI2 {lbfgs_loss_pi2:.3e}"
+                )
+                if cfg.training.loss.use_rk4:
+                    log_msg += f" | RK4_1 {lbfgs_loss_rk4_1:.3e} | RK4_2 {lbfgs_loss_rk4_2:.3e}"
+                log_msg += f" | Val {metrics['pde_mse']:.3e} | PI1 {metrics['loss_1']:.3e} | PI2 {metrics['loss_2']:.3e}"
+                log.info(log_msg)
                 
                 # Save if better
                 if metrics['pde_mse'] < best_pde:
