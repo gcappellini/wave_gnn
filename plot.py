@@ -170,15 +170,26 @@ def plot_loss_history(
     ax1.plot(epochs, train_PI2, 'r--', linewidth=1.5, label='PI2', alpha=0.7)
     
     if has_energy:
-        train_energy = [r['train_Energy'] for r in loss_history if r['train_Energy'] is not None]
-        epochs_energy = [r['epoch'] for r in loss_history if r['train_Energy'] is not None]
+        # Build lists with matching indices for epochs
+        train_energy = []
+        epochs_energy = []
+        for r in loss_history:
+            if r.get('train_Energy') is not None:
+                train_energy.append(r['train_Energy'])
+                epochs_energy.append(r['epoch'])
         if train_energy:
             ax1.plot(epochs_energy, train_energy, 'g-.', linewidth=1.5, label='Energy', alpha=0.7)
     
     if has_rk4:
-        train_rk4_1 = [r['train_RK4_1'] for r in loss_history if r['train_RK4_1'] is not None]
-        train_rk4_2 = [r['train_RK4_2'] for r in loss_history if r['train_RK4_2'] is not None]
-        epochs_rk4 = [r['epoch'] for r in loss_history if r['train_RK4_1'] is not None]
+        # Build lists with matching indices for epochs
+        train_rk4_1 = []
+        train_rk4_2 = []
+        epochs_rk4 = []
+        for r in loss_history:
+            if r.get('train_RK4_1') is not None and r.get('train_RK4_2') is not None:
+                train_rk4_1.append(r['train_RK4_1'])
+                train_rk4_2.append(r['train_RK4_2'])
+                epochs_rk4.append(r['epoch'])
         if train_rk4_1:
             ax1.plot(epochs_rk4, train_rk4_1, 'c:', linewidth=1.5, label='RK4_1', alpha=0.7)
             ax1.plot(epochs_rk4, train_rk4_2, 'm:', linewidth=1.5, label='RK4_2', alpha=0.7)
