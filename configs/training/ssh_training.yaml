@@ -44,6 +44,10 @@ early_stopping:
 # L-BFGS fine-tuning (runs after Adam completes)
 use_lbfgs_after_adam: true  # Enable L-BFGS fine-tuning after Adam
 lbfgs_lr: 0.1  # Learning rate for L-BFGS
-lbfgs_max_iter: 20  # Max iterations per L-BFGS step
-lbfgs_history_size: 100  # History size for quasi-Newton approximation
-lbfgs_epochs: 50  # Number of L-BFGS epochs
+lbfgs_max_iter: 10  # Max iterations per L-BFGS step (reduced for speed)
+lbfgs_max_eval: 15  # Max function evaluations per step
+lbfgs_tolerance_grad: 1.0e-7  # Gradient tolerance
+lbfgs_tolerance_change: 1.0e-9  # Parameter change tolerance
+lbfgs_history_size: 50  # History size for quasi-Newton approximation (reduced for memory)
+lbfgs_epochs: 20  # Number of L-BFGS epochs (reduced from 50)
+lbfgs_batches_per_step: 5  # Number of batches to use per L-BFGS step (subset for speed)

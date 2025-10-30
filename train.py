@@ -551,26 +551,41 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
         log.info("Switching to L-BFGS optimizer for fine-tuning...")
         log.info("=" * 50)
         
-        # Create L-BFGS optimizer
+        # Load best model before L-BFGS
+        checkpoint = torch.load(save_path, map_location=device)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        log.info("Loaded best Adam model for L-BFGS fine-tuning")
+        
+        # Create L-BFGS optimizer with more conservative settings
         lbfgs_optimizer = torch.optim.LBFGS(
             model.parameters(),
             lr=cfg.training.get('lbfgs_lr', 0.1),
-            max_iter=cfg.training.get('lbfgs_max_iter', 20),
-            history_size=cfg.training.get('lbfgs_history_size', 100),
+            max_iter=cfg.training.get('lbfgs_max_iter', 10),  # Reduced from 20
+            max_eval=cfg.training.get('lbfgs_max_eval', 15),  # Limit function evaluations
+            tolerance_grad=cfg.training.get('lbfgs_tolerance_grad', 1e-7),
+            tolerance_change=cfg.training.get('lbfgs_tolerance_change', 1e-9),
+            history_size=cfg.training.get('lbfgs_history_size', 50),  # Reduced from 100
             line_search_fn='strong_wolfe'
         )
         
-        lbfgs_epochs = cfg.training.get('lbfgs_epochs', 50)
+        lbfgs_epochs = cfg.training.get('lbfgs_epochs', 20)  # Reduced default
         
         for lbfgs_epoch in range(1, lbfgs_epochs + 1):
+            # Sample a subset of batches for faster closure evaluation
+            num_batches_to_use = min(len(train_loader), cfg.training.get('lbfgs_batches_per_step', 5))
+            
             def closure():
                 lbfgs_optimizer.zero_grad()
                 model.train()
                 
-                # Compute loss over all batches
-                total_loss = 0.0
+                # Compute loss over a subset of batches (not entire dataset)
+                total_loss = torch.tensor(0.0, device=device, requires_grad=True)
+                batch_count = 0
                 
-                for batch in train_loader:
+                for batch_idx, batch in enumerate(train_loader):
+                    if batch_idx >= num_batches_to_use:
+                        break
+                        
                     batch = batch.to(device)
                     data_list = batch.to_data_list()
                     
@@ -629,17 +644,25 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
                     
                     if pde_loss_count > 0:
                         batch_loss = pde_loss_sum / pde_loss_count
-                        total_loss += batch_loss
+                        total_loss = total_loss + batch_loss
+                        batch_count += 1
                 
-                # Average over batches
-                total_loss = total_loss / len(train_loader)
+                # Average over batches used
+                if batch_count > 0:
+                    total_loss = total_loss / batch_count
+                
                 total_loss.backward()
                 return total_loss
             
-            lbfgs_optimizer.step(closure)
+            try:
+                lbfgs_optimizer.step(closure)
+            except RuntimeError as e:
+                log.warning(f"L-BFGS step failed at epoch {lbfgs_epoch}: {e}")
+                log.warning("Stopping L-BFGS fine-tuning early")
+                break
             
             # Evaluate periodically
-            if lbfgs_epoch % cfg.training.log_interval == 0:
+            if lbfgs_epoch % cfg.training.log_interval == 0 or lbfgs_epoch == 1:
                 metrics = evaluate_loader(val_loader, model, device, cfg)
                 log.info(f"L-BFGS Epoch {lbfgs_epoch:03d} | Val PDE MSE: {metrics['pde_mse']:.3e}")
                 
@@ -650,6 +673,7 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
                         'epoch': epoch + lbfgs_epoch,
                         'model_state_dict': model.state_dict(),
                         'optimizer_state_dict': lbfgs_optimizer.state_dict(),
+                        'best_val_pde': best_pde,
                         'val_pde': best_pde,
                         'config': cfg,
                         'scaling_enabled': cfg.dataset.scaling.enabled,
