@@ -23,8 +23,8 @@ hydra:
 
 # Run settings
 run:
-  train: False
-  resume_from: '20251029_153811'
+  train: True
+  resume_from: null #'20251029_153811'
 
 # Plot settings
 plot:

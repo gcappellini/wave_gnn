@@ -474,7 +474,6 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
         
         loss_history.append(epoch_record)
 
-
         # Save model when validation PDE MSE improves
         val_pde = metrics.get("pde_mse", float('nan'))
         if not (isinstance(val_pde, float) and (val_pde != val_pde)):  # check not NaN
@@ -545,6 +544,144 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
     log.info(f"Training finished. Best validation PDE MSE: {best_pde:.6e}")
     end_time = datetime.now()
     log.info(f"Total training time: {end_time - start_time}")
+    
+    # Switch to L-BFGS optimizer after Adam training if enabled
+    if cfg.training.get('use_lbfgs_after_adam', False):
+        log.info("=" * 50)
+        log.info("Switching to L-BFGS optimizer for fine-tuning...")
+        log.info("=" * 50)
+        
+        # Create L-BFGS optimizer
+        lbfgs_optimizer = torch.optim.LBFGS(
+            model.parameters(),
+            lr=cfg.training.get('lbfgs_lr', 0.1),
+            max_iter=cfg.training.get('lbfgs_max_iter', 20),
+            history_size=cfg.training.get('lbfgs_history_size', 100),
+            line_search_fn='strong_wolfe'
+        )
+        
+        lbfgs_epochs = cfg.training.get('lbfgs_epochs', 50)
+        
+        for lbfgs_epoch in range(1, lbfgs_epochs + 1):
+            def closure():
+                lbfgs_optimizer.zero_grad()
+                model.train()
+                
+                # Compute loss over all batches
+                total_loss = 0.0
+                
+                for batch in train_loader:
+                    batch = batch.to(device)
+                    data_list = batch.to_data_list()
+                    
+                    pde_loss_sum = torch.tensor(0.0, device=device)
+                    pde_loss_count = 0
+                    
+                    for data in data_list:
+                        L = data.laplacian
+                        model.bc_mask = data.bc_mask.to(device)
+                        interior_mask = ~data.bc_mask.to(device)
+                        
+                        out_sub = model(data.x.to(device), data.edge_index.to(device), data.bc_mask.to(device))
+                        
+                        # Get weights
+                        if adaptive_weights is not None:
+                            w1_PI = adaptive_weights.get_weight('PI_loss1')
+                            w2_PI = adaptive_weights.get_weight('PI_loss2')
+                            w1_rk4 = adaptive_weights.get_weight('RK4_loss1')
+                            w2_rk4 = adaptive_weights.get_weight('RK4_loss2')
+                        else:
+                            w1_PI = cfg.training.loss.w1_PI
+                            w2_PI = cfg.training.loss.w2_PI
+                            w1_rk4 = cfg.training.loss.w1_rk4
+                            w2_rk4 = cfg.training.loss.w2_rk4
+                        
+                        # Compute physics-informed loss
+                        loss_tensor, _, _ = physics_informed_loss(
+                            interior_mask,
+                            data.x.to(device),
+                            out_sub,
+                            L,
+                            dt=cfg.dataset.dt,
+                            c=cfg.dataset.wave_speed,
+                            k=cfg.dataset.damping,
+                            w1=w1_PI,
+                            w2=w2_PI,
+                        )
+                        
+                        if cfg.training.loss.use_rk4:
+                            loss_rk4, _, _ = rk4_loss(
+                                interior_mask,
+                                data.x.to(device),
+                                out_sub,
+                                L,
+                                dt=cfg.dataset.dt,
+                                c=cfg.dataset.wave_speed,
+                                k=cfg.dataset.damping,
+                                w1=w1_rk4,
+                                w2=w2_rk4,
+                            )
+                        else:
+                            loss_rk4 = torch.tensor(0.0, device=device)
+                        
+                        pde_loss_sum = pde_loss_sum + loss_rk4 + loss_tensor
+                        pde_loss_count += 1
+                    
+                    if pde_loss_count > 0:
+                        batch_loss = pde_loss_sum / pde_loss_count
+                        total_loss += batch_loss
+                
+                # Average over batches
+                total_loss = total_loss / len(train_loader)
+                total_loss.backward()
+                return total_loss
+            
+            lbfgs_optimizer.step(closure)
+            
+            # Evaluate periodically
+            if lbfgs_epoch % cfg.training.log_interval == 0:
+                metrics = evaluate_loader(val_loader, model, device, cfg)
+                log.info(f"L-BFGS Epoch {lbfgs_epoch:03d} | Val PDE MSE: {metrics['pde_mse']:.3e}")
+                
+                # Save if better
+                if metrics['pde_mse'] < best_pde:
+                    best_pde = metrics['pde_mse']
+                    ckpt = {
+                        'epoch': epoch + lbfgs_epoch,
+                        'model_state_dict': model.state_dict(),
+                        'optimizer_state_dict': lbfgs_optimizer.state_dict(),
+                        'val_pde': best_pde,
+                        'config': cfg,
+                        'scaling_enabled': cfg.dataset.scaling.enabled,
+                        'model_config': {
+                            'in_channels': cfg.model.in_channels,
+                            'hidden_channels': cfg.model.hidden_channels,
+                            'out_channels': cfg.model.out_channels,
+                            'conv_types': cfg.model.conv_types,
+                            'final_layer_type': cfg.model.final_layer_type,
+                            'activation': cfg.model.activation,
+                            'dropout': cfg.model.dropout,
+                            'block': cfg.model.block,
+                            'use_bn': cfg.model.use_bn,
+                            'gat_heads': cfg.model.gat_heads,
+                            'cheb_K': cfg.model.cheb_K,
+                            'residual': cfg.model.get('residual', False),
+                            'use_global_pooling': cfg.model.get('use_global_pooling', False),
+                            'pooling_position': cfg.model.get('pooling_position', 'end'),
+                            'pooling_type': cfg.model.get('pooling_type', 'mean'),
+                            'encoder_layers': cfg.model.get('encoder_layers', None),
+                            'decoder_channels': cfg.model.get('decoder_channels', None),
+                            'graph_output_dim': cfg.model.get('graph_output_dim', None),
+                        }
+                    }
+                    # Save adaptive weights state if enabled
+                    if adaptive_weights is not None:
+                        ckpt['adaptive_weights_state'] = adaptive_weights.state_dict()
+                    
+                    torch.save(ckpt, save_path)
+                    log.info(f"✓ L-BFGS improved model saved (val PDE MSE={best_pde:.3e})")
+        
+        log.info(f"L-BFGS fine-tuning finished. Best validation PDE MSE: {best_pde:.6e}")
 
     # Save loss history to CSV file alongside checkpoint
     loss_history_path = Path(save_path).with_suffix('.csv')

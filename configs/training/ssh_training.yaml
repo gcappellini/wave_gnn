@@ -1,5 +1,5 @@
 # Training configuration
-epochs: 20
+epochs: 10
 learning_rate: 0.001
 weight_decay: 1.0e-4
 optimizer: "adam"  # "adam", "sgd", etc.
@@ -40,3 +40,10 @@ early_stopping:
   enabled: true
   patience: 50
   min_delta: 1.0e-6
+
+# L-BFGS fine-tuning (runs after Adam completes)
+use_lbfgs_after_adam: true  # Enable L-BFGS fine-tuning after Adam
+lbfgs_lr: 0.1  # Learning rate for L-BFGS
+lbfgs_max_iter: 20  # Max iterations per L-BFGS step
+lbfgs_history_size: 100  # History size for quasi-Newton approximation
+lbfgs_epochs: 50  # Number of L-BFGS epochs
