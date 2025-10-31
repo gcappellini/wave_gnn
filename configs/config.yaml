@@ -31,5 +31,5 @@ plot:
   plot_dataset: True
   plot_train_loss: True
   load_gt: True
-  look_up_every: 100  # Frequency of look-up during testing (set to None to disable)
+  look_up_every: False  # Frequency of look-up during testing (set to None to disable)
 

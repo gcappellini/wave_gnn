@@ -1,5 +1,5 @@
 # Dataset configuration
-num_graphs: 300
+num_graphs: 1000
 num_steps: 6
 dt: 0.01
 train_ratio: 0.8

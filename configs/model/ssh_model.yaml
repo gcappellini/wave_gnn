@@ -2,7 +2,7 @@
 in_channels: 3
 hidden_channels: [64, 128] #, 256, 512]
 out_channels: 2
-conv_types: ["GEN","GEN"] #,"GEN", "GEN"]
+conv_types: ["Linear","Linear"] #,"GEN", "GEN"]
 final_layer_type: "Linear"
 activation: "relu"
 dropout: 0.1
@@ -18,7 +18,7 @@ residual: true
 #  - "middle": encoder-decoder with pooling bottleneck → node-level output with global context
 use_global_pooling: true
 pooling_position: middle   # middle | end
-pooling_type: attention         # mean | max | sum | attention
+pooling_type: sum         # mean | max | sum | attention
 
 # Encoder-decoder split (used when pooling_position: middle)
 # If encoder_layers is null, it defaults to half of hidden_layers (here: 4)

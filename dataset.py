@@ -14,6 +14,26 @@ from torch_geometric.data import Data
 from scipy.sparse import lil_matrix
 import scipy.sparse as sp
 
+
+class LinearConvWrapper(nn.Module):
+    """
+    Wrapper for Linear layer to make it compatible with graph convolution API.
+    DeepGCNLayer expects layers that take (x, edge_index), but Linear only takes x.
+    This wrapper ignores edge_index and applies linear transformation.
+    """
+    def __init__(self, in_channels, out_channels):
+        super().__init__()
+        self.linear = Linear(in_channels, out_channels)
+    
+    def forward(self, x, edge_index=None):
+        """Forward pass - ignores edge_index."""
+        return self.linear(x)
+    
+    def reset_parameters(self):
+        """Reset parameters for Linear layer."""
+        self.linear.reset_parameters()
+
+
 class DeepGCN(nn.Module):
     """
     Deep GCN using DeepGCNLayer for robust training of deep architectures.
@@ -23,7 +43,7 @@ class DeepGCN(nn.Module):
         hidden_channels (int or list[int]): hidden dims for each hidden layer
         out_channels (int): output dim
         conv_types (list[str] or str): convolution types for hidden layers.
-            Options: 'GCN', 'GEN', 'SAGE', 'GAT', 'GATv2', 'GIN', 'Edge', 'Transformer', 'Cheb'
+            Options: 'LINEAR', 'GCN', 'GEN', 'SAGE', 'GAT', 'GATv2', 'GIN', 'Edge', 'Transformer', 'Cheb'
             If a single string, it will be repeated for all hidden layers.
         final_layer_type (str): type for final layer ('Linear', 'GCN', or any conv type)
         activation (str): 'tanh' or 'relu'
@@ -340,7 +360,12 @@ class DeepGCN(nn.Module):
     
     def _create_conv_layer(self, conv_type, in_dim, out_dim):
         """Create a convolution layer based on the specified type."""
-        if conv_type == "GCN":
+        if conv_type == "LINEAR":
+            # Simple linear transformation without graph convolution
+            # Use wrapper to make it compatible with DeepGCNLayer
+            return LinearConvWrapper(in_dim, out_dim)
+        
+        elif conv_type == "GCN":
             return GCNConv(in_dim, out_dim)
         
         elif conv_type == "GEN":
@@ -384,7 +409,7 @@ class DeepGCN(nn.Module):
         else:
             raise ValueError(
                 f"Unsupported conv type: {conv_type}. "
-                f"Options: GCN, GEN, SAGE, GAT, GATv2, GIN, Edge, Transformer, Cheb"
+                f"Options: LINEAR, GCN, GEN, SAGE, GAT, GATv2, GIN, Edge, Transformer, Cheb"
             )
     
     def global_pooling(self, x, batch=None):
