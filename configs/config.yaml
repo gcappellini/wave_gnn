@@ -23,13 +23,13 @@ hydra:
 
 # Run settings
 run:
-  train: true
-  resume_from: null #'20251103_152601'
+  train: false
+  resume_from: '20251103_154905'
 
 # Plot settings
 plot:
   plot_dataset: false
   plot_train_loss: True
   load_gt: True
-  look_up_every: 100  # Frequency of look-up during testing (set to None to disable)
+  look_up_every: 50  # Frequency of look-up during testing (set to None to disable)
 
