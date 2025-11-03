@@ -180,7 +180,7 @@ def create_and_save_dataset(cfg: DictConfig, output_dir: Path, plot_dataset=True
 
     if plot_dataset:
         plot_path = output_dir / f"figures/training_dataset_{run_name}.png"
-        visual_train_set = np.array([data.x.numpy() for data in train_set]).transpose(2, 0, 1)
+        visual_train_set = np.array([data.x.numpy() for data in train_set[:100]]).transpose(2, 0, 1)
         plot_features_2d(dataset[0].coords, visual_train_set, dt=1, output_file=str(plot_path), ylabel='Sample Index', ylabel_as_int=True)
         log.info(f"Training dataset visualization saved to {plot_path}")
     

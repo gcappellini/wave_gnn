@@ -1,6 +1,6 @@
 # Dataset configuration
 num_graphs: 5000
-num_steps: 6
+num_steps: 1
 dt: 0.01
 train_ratio: 0.8
 batch_size: 4  # Reduced from 32 to fit 8 training samples

@@ -934,11 +934,11 @@ def create_dataset(num_graphs=64, cfg=None):
     dataset = []
     for i in range(num_graphs):
         # vary seed so graphs are different
-        data = create_graph(seed=1000 + i, cfg=cfg)
-        dataset.append(data)
+        # data = create_graph(seed=1000 + i, cfg=cfg)
+        # dataset.append(data)
         # possibility to rollout instead, using rollout_graph
-        # data = rollout_graph(seed=1000 + i, cfg=cfg)
-        # dataset.extend(data)
+        data = rollout_graph(seed=1000 + i, cfg=cfg)
+        dataset.extend(data)
     return dataset
 
 def rollout_graph(seed, cfg=None):

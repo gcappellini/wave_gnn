@@ -1,6 +1,6 @@
 # Main configuration file
 defaults:
-  - dataset: ssh_dataset
+  - dataset: dataset
   - model: wavegnn
   - training: ssh_training
   - _self_
@@ -23,12 +23,12 @@ hydra:
 
 # Run settings
 run:
-  train: false
-  resume_from: '20251103_154905'
+  train: true
+  resume_from: null #'20251103_154905'
 
 # Plot settings
 plot:
-  plot_dataset: false
+  plot_dataset: true
   plot_train_loss: True
   load_gt: True
   look_up_every: 50  # Frequency of look-up during testing (set to None to disable)
