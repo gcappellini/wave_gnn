@@ -276,7 +276,8 @@ def test_model(cfg, model_path, output_dir, run_name):
 
     
     # Compute error on matching time steps
-    u_error = np.abs(u_history - u_gt)
+    # u_error = np.abs(u_history - u_gt) / (np.abs(u_gt) + 1e-8)
+    u_error = np.abs(u_history - u_gt)/(0.04)
     
     # Generate plots
     histories = np.array([u_history, v_history, f_history, u_gt, v_gt, u_error])
@@ -288,7 +289,7 @@ def test_model(cfg, model_path, output_dir, run_name):
         histories,
         dt=cfg.dataset.dt,
         output_file=str(plot_file),
-        feature_names=['Deformation', 'Velocity', 'Force', 'GT Deformation', 'GT Velocity', 'Deformation Error']
+        feature_names=['Deformation', 'Velocity', 'Force', 'GT Deformation', 'GT Velocity', 'Normalized Error']
     )
 
     log.info(f"Plot saved to {plot_file}")

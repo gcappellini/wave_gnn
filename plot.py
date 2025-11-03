@@ -198,6 +198,7 @@ def plot_loss_history(
     ax1.set_ylabel('Training Loss', fontsize=11)
     ax1.set_title('Training Loss Components', fontsize=13, fontweight='bold')
     ax1.set_yscale('log')
+    ax1.xaxis.set_major_locator(plt.MaxNLocator(integer=True))
     ax1.grid(True, alpha=0.3, linestyle='--')
     ax1.legend(loc='best', framealpha=0.9, fontsize=9)
     
@@ -216,6 +217,7 @@ def plot_loss_history(
     ax2.set_ylabel('Validation Loss', fontsize=11)
     ax2.set_title('Validation Loss Components', fontsize=13, fontweight='bold')
     ax2.set_yscale('log')
+    ax2.xaxis.set_major_locator(plt.MaxNLocator(integer=True))
     ax2.grid(True, alpha=0.3, linestyle='--')
     ax2.legend(loc='best', framealpha=0.9, fontsize=9)
     
@@ -240,6 +242,7 @@ def plot_loss_history(
         ax3.set_xlabel('Epoch', fontsize=11)
         ax3.set_ylabel('Weight Value', fontsize=11)
         ax3.set_title('Adaptive Loss Weights Evolution', fontsize=13, fontweight='bold')
+        ax3.xaxis.set_major_locator(plt.MaxNLocator(integer=True))
         ax3.grid(True, alpha=0.3, linestyle='--')
         ax3.legend(loc='best', framealpha=0.9, fontsize=9, ncol=2)
     

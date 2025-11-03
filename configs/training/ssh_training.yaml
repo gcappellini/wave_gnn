@@ -16,12 +16,14 @@ loss:
   use_rk4: false
   w1_rk4: 1.0e+00
   w2_rk4: 1.0e+00
-  use_gn_solver: false
+  use_energy: true
+  w_energy: 1.0e+00  # weight for energy conservation loss
+
   
   # Adaptive loss weighting
   adaptive:
     enabled: true  # Enable adaptive weighting
-    strategy: 'equal_init'  # Options: 'equal_init', 'equal_init_ema', 'ema', 'fixed'
+    strategy: 'fixed'  # Options: 'equal_init', 'equal_init_ema', 'ema', 'fixed'
     ema_alpha: 0.8  # Exponential moving average coefficient (0.8 = 80% old, 20% new)
     update_frequency: 1  # Update weights every N epochs
     # Strategy descriptions:
@@ -42,7 +44,7 @@ early_stopping:
   min_delta: 1.0e-6
 
 # L-BFGS fine-tuning (runs after Adam completes)
-use_lbfgs_after_adam: false  # Enable L-BFGS fine-tuning after Adam
+use_lbfgs_after_adam: true  # Enable L-BFGS fine-tuning after Adam
 lbfgs_lr: 0.1  # Learning rate for L-BFGS
 lbfgs_max_iter: 10  # Max iterations per L-BFGS step (reduced for speed)
 lbfgs_max_eval: 15  # Max function evaluations per step

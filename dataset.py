@@ -678,7 +678,7 @@ def membranedisplacement(coords, t, t_f=1, amp=0.003, x0=0.5, y0=0.5, sign=-1, l
 
     return u, v
 
-def membraneforce(coords, t, loc, forcing, x_f_1=None, y_f_1=None, sign=-1, seed=None, margin=0.1):
+def membraneforce(coords, t, loc, forcing='middle', x_f_1=None, y_f_1=None, sign=-1, seed=None, margin=0.1):
     """
     2D membrane forcing - Gaussian pulses in space and time.
     
@@ -713,18 +713,18 @@ def membraneforce(coords, t, loc, forcing, x_f_1=None, y_f_1=None, sign=-1, seed
     X = coords
     h = sign*3
 
-    # if forcing == 'casual':
-    #     forcing_options = ['start', 'middle', 'end']
-    #     forcing = np.random.choice(forcing_options)
+    if forcing == 'casual':
+        forcing_options = ['start', 'middle', 'end']
+        forcing = np.random.choice(forcing_options)
 
-    # if forcing == 'start':
-    #     time = t
-    # elif forcing == 'middle':
-    #     time = t - 1.0
-    # else:  # 'end'
-    #     time = 2.0 - t
+    if forcing == 'start':
+        time = t
+    elif forcing == 'middle':
+        time = t - 1.0
+    else:  # 'end'
+        time = 2.0 - t
     
-    time = t - 1.0
+    # time = t - 1.0
 
     z1 = h * np.exp(-400 * ((X - x_f_1)**2)) * \
             np.exp(-(time**2) / (2 * 0.5**2))
@@ -935,13 +935,16 @@ def create_dataset(num_graphs=64, cfg=None):
     for i in range(num_graphs):
         # vary seed so graphs are different
         data = create_graph(seed=1000 + i, cfg=cfg)
-
         dataset.append(data)
+        # possibility to rollout instead, using rollout_graph
+        # data = rollout_graph(seed=1000 + i, cfg=cfg)
+        # dataset.extend(data)
     return dataset
 
-def rollout_graph(seed, num_steps=200, cfg=None):
+def rollout_graph(seed, cfg=None):
     graph_0 = create_graph(seed, cfg=cfg)
-    gn = WaveGNN1D(graph_0.laplacian, cfg.dataset.c, cfg.dataset.k, cfg.dataset.dt)
+    num_steps = cfg.dataset.num_steps
+    gn = WaveGNN1D(graph_0.laplacian, cfg.dataset.wave_speed, cfg.dataset.damping, cfg.dataset.dt)
     features = graph_0.x.clone()
 
     graphs = []
@@ -960,7 +963,7 @@ def rollout_graph(seed, num_steps=200, cfg=None):
         features = gn.forward(features)
 
         # advance time
-        t += dt
+        t += cfg.dataset.dt
         frc = cfg.dataset.force
 
         # compute forcing (use numpy coords for membraneforce)
