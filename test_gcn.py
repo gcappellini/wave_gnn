@@ -2,58 +2,119 @@ import numpy as np
 from datetime import datetime
 from scipy.io import savemat
 import torch
-from dataset import create_graph, WaveGNN1D
+from dataset import create_graph, WaveGNN1D, DeepGCN
 from plot import plot_features_2d
 from omegaconf import OmegaConf
 from hydra.core.hydra_config import HydraConfig
 from pathlib import Path
+from try_gno import WaveGNN
 
 
+def create_model_from_checkpoint(ckpt, device='cpu'):
+    """
+    Create model instance from checkpoint configuration.
+    Automatically detects and instantiates the correct model type.
+    
+    Args:
+        ckpt: Checkpoint dictionary containing 'model_config'
+        device: torch device
+    
+    Returns:
+        model: Initialized model instance
+    """
+    if 'model_config' not in ckpt:
+        # Legacy checkpoint without model_config
+        print("Warning: Legacy checkpoint without model_config. Assuming DeepGCN with default params.")
+        model = DeepGCN(
+            in_channels=3, 
+            hidden_channels=[128], 
+            out_channels=2, 
+            dropout=0.5
+        )
+        return model.to(device)
+    
+    cfg = ckpt['model_config']
+    
+    # Auto-detect model type
+    # WaveGNN: has 'hidden_dim' and 'num_layers', no 'hidden_channels'
+    is_wavegnn = ('hidden_dim' in cfg and 'num_layers' in cfg and 
+                  ('hidden_channels' not in cfg or cfg.get('hidden_channels') is None))
+    
+    if is_wavegnn:
+        # Create WaveGNN from checkpoint config
+        model = WaveGNN(
+            hidden_dim=cfg['hidden_dim'],
+            num_layers=cfg['num_layers'],
+            dt=cfg.get('dt', 0.01),
+            dropout=cfg.get('dropout', 0.0),
+            u_scale=cfg.get('u_scale', 0.04),
+            v_scale=cfg.get('v_scale', 0.08),
+            f_scale=cfg.get('f_scale', 3.0),
+        )
+        print(f"✓ Loaded WaveGNN (hidden_dim={cfg['hidden_dim']}, num_layers={cfg['num_layers']})")
+    else:
+        # Create DeepGCN from checkpoint config
+        # Ensure backward compatibility with skip connection params
+        if 'use_ed_skip' not in cfg:
+            cfg['use_ed_skip'] = False
+        if 'ed_skip_type' not in cfg:
+            cfg['ed_skip_type'] = 'concat'
+            
+        model = DeepGCN(
+            in_channels=cfg['in_channels'],
+            hidden_channels=cfg['hidden_channels'],
+            out_channels=cfg['out_channels'],
+            conv_types=cfg.get('conv_types', ['GCN']),
+            final_layer_type=cfg.get('final_layer_type', 'Linear'),
+            activation=cfg.get('activation', 'relu'),
+            dropout=cfg.get('dropout', 0.0),
+            block=cfg.get('block', 'res'),
+            use_bn=cfg.get('use_bn', True),
+            residual=cfg.get('residual', False),
+            use_global_pooling=cfg.get('use_global_pooling', False),
+            pooling_position=cfg.get('pooling_position', 'end'),
+            pooling_type=cfg.get('pooling_type', 'mean'),
+            encoder_layers=cfg.get('encoder_layers', None),
+            decoder_channels=cfg.get('decoder_channels', None),
+            graph_output_dim=cfg.get('graph_output_dim', None),
+            use_ed_skip=cfg['use_ed_skip'],
+            ed_skip_type=cfg['ed_skip_type'],
+        )
+        print(f"✓ Loaded DeepGCN (hidden_channels={cfg['hidden_channels']})")
+    
+    return model.to(device)
 
-def load_best_model(path='./best_model.pt', device=None, model_cls=None, model_kwargs=None):
-    """Load the best saved checkpoint and return a model instance + checkpoint dict.
+
+def load_best_model(path='./best_model.pt', device=None):
+    """
+    Load the best saved checkpoint and return model + checkpoint.
+    Automatically detects and instantiates the correct model type.
 
     Args:
-        path: path to checkpoint (default 'best_model.pt')
-        device: torch device or None to auto-select
-        model_cls: optional model class to instantiate; if None, will import DeepGCN from dataset
-        model_kwargs: kwargs to pass to model constructor (optional, will use saved config if available)
+        path: Path to checkpoint file
+        device: torch device (auto-selected if None)
 
     Returns:
-        model (torch.nn.Module), checkpoint (dict)
+        tuple: (model, checkpoint)
     """
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+    # Load checkpoint
     ckpt = torch.load(path, map_location=device, weights_only=False)
-
-    if model_cls is None:
-        try:
-            from dataset import DeepGCN as DefaultModel
-            model_cls = DefaultModel
-        except Exception:
-            raise ImportError("Could not import DeepGCN from dataset. Please pass model_cls or ensure dataset.DeepGCN is importable.")
-
-    # Use saved model_config if available (from newer checkpoints), otherwise fall back to model_kwargs
-    if model_kwargs is None:
-        if 'model_config' in ckpt:
-            model_kwargs = ckpt['model_config']
-        else:
-            # Fallback for old checkpoints without model_config
-            model_kwargs = {'in_channels': 3, 'hidden_channels': 128, 'out_channels': 2, 'dropout': 0.5}
-            print("Warning: Checkpoint doesn't contain 'model_config'. Using default architecture.")
-            print("If loading fails, please provide model_kwargs manually or retrain with updated train.py")
     
-    # Ensure new skip connection parameters have defaults for backward compatibility
-    if 'use_ed_skip' not in model_kwargs:
-        model_kwargs['use_ed_skip'] = False
-    if 'ed_skip_type' not in model_kwargs:
-        model_kwargs['ed_skip_type'] = 'concat'
-
-    model = model_cls(**model_kwargs).to(device)
-    model.load_state_dict(ckpt['model_state_dict'], strict=False)
+    # Create model from checkpoint config
+    model = create_model_from_checkpoint(ckpt, device)
+    
+    # Load state dict (use strict=False for compatibility)
+    missing_keys, unexpected_keys = model.load_state_dict(ckpt['model_state_dict'], strict=False)
+    
+    if missing_keys:
+        print(f"  Warning: Missing keys: {missing_keys[:3]}{'...' if len(missing_keys) > 3 else ''}")
+    if unexpected_keys:
+        print(f"  Warning: Unexpected keys: {unexpected_keys[:3]}{'...' if len(unexpected_keys) > 3 else ''}")
+    
     model.eval()
-
     return model, ckpt
 
 

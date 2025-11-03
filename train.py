@@ -9,6 +9,125 @@ from adaptive_weights import create_adaptive_weights_from_config
 from datetime import datetime
 import pandas as pd
 from plot import plot_loss_history
+from try_gno import WaveGNN
+
+
+def create_model_from_config(cfg, device='cpu'):
+    """
+    Factory function to create model from configuration.
+    Automatically selects between DeepGCN and WaveGNN based on config.
+    
+    Args:
+        cfg: Hydra configuration object
+        device: torch device
+    
+    Returns:
+        model: Initialized model on specified device
+    """
+    # Detect model type from config
+    # WaveGNN indicator: has hidden_dim and num_layers
+    # DeepGCN indicator: has hidden_channels
+    is_wavegnn = (hasattr(cfg.model, 'hidden_dim') and 
+                  cfg.model.hidden_dim is not None and
+                  (not hasattr(cfg.model, 'hidden_channels') or 
+                   cfg.model.hidden_channels is None))
+    
+    if is_wavegnn:
+        # Create WaveGNN
+        model = WaveGNN(
+            hidden_dim=cfg.model.hidden_dim,
+            num_layers=cfg.model.num_layers,
+            dt=cfg.dataset.dt,
+            dropout=cfg.model.get('dropout', 0.0),
+            u_scale=cfg.dataset.get('u_scale', 0.04),
+            v_scale=cfg.dataset.get('v_scale', 0.08),
+            f_scale=cfg.dataset.get('f_scale', 3.0),
+        )
+        print(f"Created WaveGNN model (hidden_dim={cfg.model.hidden_dim}, num_layers={cfg.model.num_layers})")
+    else:
+        # Create DeepGCN
+        model = DeepGCN(
+            in_channels=cfg.model.in_channels,
+            hidden_channels=cfg.model.hidden_channels,
+            out_channels=cfg.model.out_channels,
+            conv_types=cfg.model.conv_types,
+            final_layer_type=cfg.model.final_layer_type,
+            activation=cfg.model.activation,
+            dropout=cfg.model.dropout,
+            block=cfg.model.block,
+            use_bn=cfg.model.use_bn,
+            residual=cfg.model.get('residual', False),
+            use_global_pooling=cfg.model.get('use_global_pooling', False),
+            pooling_position=cfg.model.get('pooling_position', 'end'),
+            pooling_type=cfg.model.get('pooling_type', 'mean'),
+            encoder_layers=cfg.model.get('encoder_layers', None),
+            decoder_channels=cfg.model.get('decoder_channels', None),
+            graph_output_dim=cfg.model.get('graph_output_dim', None),
+            use_ed_skip=cfg.model.get('use_ed_skip', False),
+            ed_skip_type=cfg.model.get('ed_skip_type', 'concat'),
+        )
+        print(f"Created DeepGCN model (hidden_channels={cfg.model.hidden_channels})")
+    
+    return model.to(device)
+
+
+def get_model_config_for_checkpoint(cfg, model):
+    """
+    Extract model configuration for checkpoint saving.
+    Handles both DeepGCN and WaveGNN models.
+    
+    Args:
+        cfg: Hydra config object
+        model: Model instance (DeepGCN or WaveGNN)
+    
+    Returns:
+        dict: Model configuration dictionary
+    """
+    # Check if model is WaveGNN by looking for specific attributes
+    is_wavegnn = hasattr(model, 'hidden_dim') and hasattr(model, 'num_layers') and hasattr(model, 'normalizer')
+    
+    if is_wavegnn:
+        # WaveGNN configuration
+        model_config = {
+            # WaveGNN-specific params
+            'hidden_dim': cfg.model.get('hidden_dim', 128),
+            'num_layers': cfg.model.get('num_layers', 3),
+            'dt': cfg.dataset.dt,
+            # Compatibility params
+            'in_channels': cfg.model.in_channels,
+            'out_channels': cfg.model.out_channels,
+            'dropout': cfg.model.dropout,
+            # Optional scaling params
+            'u_scale': cfg.dataset.get('u_scale', 0.04),
+            'v_scale': cfg.dataset.get('v_scale', 0.08),
+            'f_scale': cfg.dataset.get('f_scale', 3.0),
+        }
+    else:
+        # DeepGCN configuration
+        model_config = {
+            'in_channels': cfg.model.in_channels,
+            'hidden_channels': cfg.model.hidden_channels,
+            'out_channels': cfg.model.out_channels,
+            'conv_types': cfg.model.conv_types,
+            'final_layer_type': cfg.model.final_layer_type,
+            'activation': cfg.model.activation,
+            'dropout': cfg.model.dropout,
+            'block': cfg.model.block,
+            'use_bn': cfg.model.use_bn,
+            'gat_heads': cfg.model.gat_heads,
+            'cheb_K': cfg.model.cheb_K,
+            'residual': cfg.model.get('residual', False),
+            'use_global_pooling': cfg.model.get('use_global_pooling', False),
+            'pooling_position': cfg.model.get('pooling_position', 'end'),
+            'pooling_type': cfg.model.get('pooling_type', 'mean'),
+            'encoder_layers': cfg.model.get('encoder_layers', None),
+            'decoder_channels': cfg.model.get('decoder_channels', None),
+            'graph_output_dim': cfg.model.get('graph_output_dim', None),
+        }
+    
+    return model_config
+
+
 
 def rk4_loss(interior_mask, input, output, laplacian, dt, c, k, w1, w2):
         """
@@ -429,29 +548,9 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
     )
 
 
-    # Build model
-    sample = train_set[0]
-    model = DeepGCN(
-        in_channels=cfg.model.in_channels,
-        hidden_channels=cfg.model.hidden_channels,
-        out_channels=cfg.model.out_channels,
-        conv_types=cfg.model.conv_types,
-        final_layer_type=cfg.model.final_layer_type,
-        activation=cfg.model.activation,
-        dropout=cfg.model.dropout,
-        block=cfg.model.block,
-        use_bn=cfg.model.use_bn,
-        residual=cfg.model.get('residual', False),  # Default to False for backward compatibility
-        # Global pooling / encoder-decoder options (all optional for backward compatibility)
-        use_global_pooling=cfg.model.get('use_global_pooling', False),
-        pooling_position=cfg.model.get('pooling_position', 'end'),
-        pooling_type=cfg.model.get('pooling_type', 'mean'),
-        encoder_layers=cfg.model.get('encoder_layers', None),
-        decoder_channels=cfg.model.get('decoder_channels', None),
-        graph_output_dim=cfg.model.get('graph_output_dim', None),
-        use_ed_skip=cfg.model.get('use_ed_skip', False),
-        ed_skip_type=cfg.model.get('ed_skip_type', 'concat'),
-    ).to(device)
+    # Build model using unified factory function
+    model = create_model_from_config(cfg, device)
+    
     # Safety note: This trainer expects node-level outputs. If pooling at end is enabled,
     # the model will return graph-level outputs which will break the physics losses.
     if getattr(model, 'use_global_pooling', False) and getattr(model, 'pooling_position', 'end') == 'end':
@@ -604,26 +703,7 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
                     'val_pde': val_pde,
                     'config': cfg,
                     # Save complete model architecture for easy loading
-                    'model_config': {
-                        'in_channels': cfg.model.in_channels,
-                        'hidden_channels': cfg.model.hidden_channels,
-                        'out_channels': cfg.model.out_channels,
-                        'conv_types': cfg.model.conv_types,
-                        'final_layer_type': cfg.model.final_layer_type,
-                        'activation': cfg.model.activation,
-                        'dropout': cfg.model.dropout,
-                        'block': cfg.model.block,
-                        'use_bn': cfg.model.use_bn,
-                        'gat_heads': cfg.model.gat_heads,
-                        'cheb_K': cfg.model.cheb_K,
-                        'residual': cfg.model.get('residual', False),
-                        'use_global_pooling': cfg.model.get('use_global_pooling', False),
-                        'pooling_position': cfg.model.get('pooling_position', 'end'),
-                        'pooling_type': cfg.model.get('pooling_type', 'mean'),
-                        'encoder_layers': cfg.model.get('encoder_layers', None),
-                        'decoder_channels': cfg.model.get('decoder_channels', None),
-                        'graph_output_dim': cfg.model.get('graph_output_dim', None),
-                    }
+                    'model_config': get_model_config_for_checkpoint(cfg, model)
                 }
                 # Save adaptive weights state if enabled
                 if adaptive_weights is not None:
@@ -879,26 +959,8 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
                         'best_val_pde': best_pde,
                         'val_pde': best_pde,
                         'config': cfg,
-                        'model_config': {
-                            'in_channels': cfg.model.in_channels,
-                            'hidden_channels': cfg.model.hidden_channels,
-                            'out_channels': cfg.model.out_channels,
-                            'conv_types': cfg.model.conv_types,
-                            'final_layer_type': cfg.model.final_layer_type,
-                            'activation': cfg.model.activation,
-                            'dropout': cfg.model.dropout,
-                            'block': cfg.model.block,
-                            'use_bn': cfg.model.use_bn,
-                            'gat_heads': cfg.model.gat_heads,
-                            'cheb_K': cfg.model.cheb_K,
-                            'residual': cfg.model.get('residual', False),
-                            'use_global_pooling': cfg.model.get('use_global_pooling', False),
-                            'pooling_position': cfg.model.get('pooling_position', 'end'),
-                            'pooling_type': cfg.model.get('pooling_type', 'mean'),
-                            'encoder_layers': cfg.model.get('encoder_layers', None),
-                            'decoder_channels': cfg.model.get('decoder_channels', None),
-                            'graph_output_dim': cfg.model.get('graph_output_dim', None),
-                        }
+                        # Save complete model architecture for easy loading
+                        'model_config': get_model_config_for_checkpoint(cfg, model)
                     }
                     # Save adaptive weights state if enabled
                     if adaptive_weights is not None:

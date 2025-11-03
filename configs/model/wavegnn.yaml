@@ -1,0 +1,38 @@
+# WaveGNN Model Configuration
+# Drop-in replacement for DeepGCN with global message passing
+
+# Standard DeepGCN parameters (for compatibility)
+in_channels: 3
+out_channels: 2
+dropout: 0.1
+
+# WaveGNN-specific parameters
+hidden_dim: 128
+num_layers: 3
+
+# Physics parameters (read from dataset config, but can override here)
+# dt: 0.01  # Timestep (usually from dataset)
+# u_scale: 0.04  # Displacement normalization scale
+# v_scale: 0.08  # Velocity normalization scale  
+# f_scale: 3.0   # Force normalization scale
+
+# Note: These parameters are ignored by WaveGNN but accepted for compatibility
+conv_types: "GCN"  # Ignored
+final_layer_type: "Linear"  # Ignored
+activation: "relu"  # Ignored
+block: "res"  # Ignored
+use_bn: true  # Ignored
+gat_heads: 4  # Ignored
+cheb_K: 3  # Ignored
+residual: false  # Ignored
+hidden_channels: null
+
+# Global pooling (not used in WaveGNN, but accepted)
+use_global_pooling: false
+pooling_position: "end"
+pooling_type: "mean"
+encoder_layers: null
+decoder_channels: null
+graph_output_dim: null
+use_ed_skip: false
+ed_skip_type: "concat"
