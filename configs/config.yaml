@@ -1,7 +1,7 @@
 # Main configuration file
 defaults:
   - dataset: dataset
-  - model: wavegnn
+  - model: deepgcn
   - training: ssh_training
   - _self_
 
@@ -24,12 +24,12 @@ hydra:
 # Run settings
 run:
   train: true
-  resume_from: null #'20251103_154905'
+  resume_from: null #'20251105_094350'
 
 # Plot settings
 plot:
   plot_dataset: true
   plot_train_loss: True
   load_gt: True
-  look_up_every: 50  # Frequency of look-up during testing (set to None to disable)
+  look_up_every: 100  # Frequency of look-up during testing (set to None to disable)
 

@@ -111,25 +111,6 @@ def restore_from_previous_run(run_name: str, save_dir: Path, cfg: DictConfig = N
             log.info(f"Loss history plot saved to {plot_path}")
         
 
-        # except Exception as e:
-        #     log.warning(f"Failed to load loss history from CSV: {e}")
-        #     import csv
-        #     try:
-        #         with open(csv_path, 'r') as f:
-        #             reader = csv.DictReader(f)
-        #             loss_history = list(reader)
-        #             # Convert string values to float
-        #             for record in loss_history:
-        #                 for key, value in record.items():
-        #                     try:
-        #                         record[key] = float(value)
-        #                     except (ValueError, TypeError):
-        #                         pass
-        #             metrics['loss_history'] = loss_history
-        #         log.info(f"Loaded loss history from CSV (fallback): {len(loss_history)} epochs")
-        #     except Exception as e2:
-        #         log.warning(f"Failed to load loss history with fallback: {e2}")
-    
     log.info(f"Restored metrics: best_val_pde={metrics['best_val_pde']:.6e}, final_epoch={metrics['final_epoch']}")
     
     return checkpoint_path, metrics

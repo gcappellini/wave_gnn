@@ -1,4 +1,5 @@
 # Deep GCN Model configuration
+model_name: "DeepGCN"
 in_channels: 3
 hidden_channels: [64, 128] #, 256, 512]
 out_channels: 2
@@ -11,6 +12,7 @@ use_bn: true
 gat_heads: 4
 cheb_K: 3
 residual: true 
+
 
 # Global pooling settings
 # Set use_global_pooling=true to enable pooling. Choose where to apply it:

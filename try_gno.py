@@ -151,54 +151,44 @@ class WaveGNN(nn.Module):
     
     def __init__(
         self,
-        hidden_dim=128,
-        num_layers=3,
-        dt=0.01,
-        u_scale=0.04,
-        v_scale=0.08,
-        f_scale=3.0,
-        dropout=0.1,
-        # DeepGCN compatibility parameters (ignored but accepted)
-        in_channels=3,
-        out_channels=2,
-        **kwargs  # Accept and ignore other DeepGCN params
+        cfg
     ):
         super().__init__()
-        
-        self.hidden_dim = hidden_dim
-        self.num_layers = num_layers
-        self.dt = dt
+        cfg_model = cfg.model
+        self.hidden_dim = cfg_model.hidden_dim
+        self.num_layers = cfg_model.num_layers
+        self.dt = cfg.dataset.dt
         
         # Store for compatibility with train.py
-        self.in_channels = in_channels
-        self.out_channels = out_channels
+        # self.in_channels = cfg_model.in_channels
+        # self.out_channels = cfg_model.out_channels
         self.bc_mask = None  # Will be set externally like DeepGCN
         
         # Normalization
-        self.normalizer = Normalizer(u_scale, v_scale, f_scale)
+        self.normalizer = Normalizer(cfg.dataset.u_scale, cfg.dataset.v_scale, cfg.dataset.f_scale)
         
         # Lifting: 3 input features -> hidden_dim
         self.lifting = nn.Sequential(
-            nn.Linear(3, hidden_dim),
+            nn.Linear(3, cfg_model.hidden_dim),
             nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim)
+            nn.Linear(cfg_model.hidden_dim, cfg_model.hidden_dim)
         )
         
         # Initialize global node
-        self.global_node_init = nn.Parameter(torch.randn(1, hidden_dim))
+        self.global_node_init = nn.Parameter(torch.randn(1, cfg_model.hidden_dim))
         
         # Message passing layers
         self.mp_layers = nn.ModuleList([
-            GlobalMessagePassing(hidden_dim, dropout) 
-            for _ in range(num_layers)
+            GlobalMessagePassing(cfg_model.hidden_dim, cfg_model.dropout) 
+            for _ in range(cfg_model.num_layers)
         ])
         
         # Projection: hidden_dim -> 2 (displacement change, velocity change)
         self.projection = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
+            nn.Linear(cfg_model.hidden_dim, cfg_model.hidden_dim),
             nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, 2)  # Predicts [du_norm, dv_norm]
+            nn.Dropout(cfg_model.dropout),
+            nn.Linear(cfg_model.hidden_dim, 2)  # Predicts [du_norm, dv_norm]
         )
         
         # Boundary conditions
@@ -589,17 +579,7 @@ def create_wavegnn_from_config(cfg):
         model = create_wavegnn_from_config(cfg)
     """
     model = WaveGNN(
-        # WaveGNN-specific parameters
-        hidden_dim=cfg.model.get('hidden_dim', 128),
-        num_layers=cfg.model.get('num_layers', 3),
-        dt=cfg.dataset.dt,
-        u_scale=cfg.dataset.get('u_scale', 0.04),
-        v_scale=cfg.dataset.get('v_scale', 0.08),
-        f_scale=cfg.dataset.get('f_scale', 3.0),
-        dropout=cfg.model.dropout,
-        # DeepGCN compatibility
-        in_channels=cfg.model.in_channels,
-        out_channels=cfg.model.out_channels,
+        cfg_model=cfg.model
     )
     return model
 

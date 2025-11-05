@@ -1,6 +1,6 @@
 # Dataset configuration
-num_graphs: 5000
-num_steps: 1
+num_graphs: 1
+num_steps: 5
 dt: 0.01
 train_ratio: 0.8
 batch_size: 4  # Reduced from 32 to fit 8 training samples
@@ -20,5 +20,8 @@ force:
   margin: 0.1
   sign: -1.0
   location: "casual"  # "casual" or fixed coordinates
-  forcing_type: "middle"  # "casual", "start", "middle", "end".
+  forcing_type: "start"  # "casual", "start", "middle", "end".
 
+u_scale: 0.04
+v_scale: 0.08
+f_scale: 3.0

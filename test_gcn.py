@@ -22,65 +22,25 @@ def create_model_from_checkpoint(ckpt, device='cpu'):
     Returns:
         model: Initialized model instance
     """
-    if 'model_config' not in ckpt:
-        # Legacy checkpoint without model_config
-        print("Warning: Legacy checkpoint without model_config. Assuming DeepGCN with default params.")
-        model = DeepGCN(
-            in_channels=3, 
-            hidden_channels=[128], 
-            out_channels=2, 
-            dropout=0.5
-        )
-        return model.to(device)
+
+    cfg = ckpt['config']
     
-    cfg = ckpt['model_config']
     
-    # Auto-detect model type
-    # WaveGNN: has 'hidden_dim' and 'num_layers', no 'hidden_channels'
-    is_wavegnn = ('hidden_dim' in cfg and 'num_layers' in cfg and 
-                  ('hidden_channels' not in cfg or cfg.get('hidden_channels') is None))
-    
-    if is_wavegnn:
+    if cfg.model.model_name == 'WaveGNN':
         # Create WaveGNN from checkpoint config
-        model = WaveGNN(
-            hidden_dim=cfg['hidden_dim'],
-            num_layers=cfg['num_layers'],
-            dt=cfg.get('dt', 0.01),
-            dropout=cfg.get('dropout', 0.0),
-            u_scale=cfg.get('u_scale', 0.04),
-            v_scale=cfg.get('v_scale', 0.08),
-            f_scale=cfg.get('f_scale', 3.0),
+        model = WaveGNN(cfg
         )
-        print(f"✓ Loaded WaveGNN (hidden_dim={cfg['hidden_dim']}, num_layers={cfg['num_layers']})")
+        print(f"✓ Loaded WaveGNN")
     else:
         # Create DeepGCN from checkpoint config
         # Ensure backward compatibility with skip connection params
-        if 'use_ed_skip' not in cfg:
-            cfg['use_ed_skip'] = False
-        if 'ed_skip_type' not in cfg:
-            cfg['ed_skip_type'] = 'concat'
+        if 'use_ed_skip' not in cfg.model:
+            cfg.model['use_ed_skip'] = False
+        if 'ed_skip_type' not in cfg.model:
+            cfg.model['ed_skip_type'] = 'concat'
             
-        model = DeepGCN(
-            in_channels=cfg['in_channels'],
-            hidden_channels=cfg['hidden_channels'],
-            out_channels=cfg['out_channels'],
-            conv_types=cfg.get('conv_types', ['GCN']),
-            final_layer_type=cfg.get('final_layer_type', 'Linear'),
-            activation=cfg.get('activation', 'relu'),
-            dropout=cfg.get('dropout', 0.0),
-            block=cfg.get('block', 'res'),
-            use_bn=cfg.get('use_bn', True),
-            residual=cfg.get('residual', False),
-            use_global_pooling=cfg.get('use_global_pooling', False),
-            pooling_position=cfg.get('pooling_position', 'end'),
-            pooling_type=cfg.get('pooling_type', 'mean'),
-            encoder_layers=cfg.get('encoder_layers', None),
-            decoder_channels=cfg.get('decoder_channels', None),
-            graph_output_dim=cfg.get('graph_output_dim', None),
-            use_ed_skip=cfg['use_ed_skip'],
-            ed_skip_type=cfg['ed_skip_type'],
-        )
-        print(f"✓ Loaded DeepGCN (hidden_channels={cfg['hidden_channels']})")
+        model = DeepGCN(cfg)
+        print(f"✓ Loaded DeepGCN")
     
     return model.to(device)
 
@@ -301,7 +261,7 @@ def test_model(cfg, model_path, output_dir, run_name):
     if cfg.model.get('residual', False):
         log.info("✓ Model in residual mode: Predicts changes (Δu, Δv)")
     
-    initial_graph = create_graph(zeros=True)
+    initial_graph = create_graph(zeros=True, cfg=cfg)
     nodes, elements = initial_graph.nodes, initial_graph.elements
 
     # Run simulation

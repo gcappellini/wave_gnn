@@ -64,43 +64,29 @@ class DeepGCN(nn.Module):
     """
     def __init__(
         self,
-        hidden_channels,
-        conv_types="GCN",
-        final_layer_type="Linear",
-        activation="relu",
-        dropout=0.0,
-        block="res+",
-        use_bn=True,
-        gat_heads=4,
-        cheb_K=3,
-        in_channels=3,
-        out_channels=2,
-        residual=False,
-        use_global_pooling=False,
-        pooling_type="mean",
-        graph_output_dim=None,
-        pooling_position="end",
-        encoder_layers=None,
-        decoder_channels=None,
-        use_ed_skip=False,
-        ed_skip_type="concat",
+        cfg
     ):
         super().__init__()
         
-        self.residual = residual  # Whether to predict changes or absolute values
-        self.use_global_pooling = use_global_pooling
-        self.pooling_type = pooling_type.lower()
-        self.pooling_position = pooling_position.lower()
+        self.residual = cfg.model.residual  # Whether to predict changes or absolute values
+        self.use_global_pooling = cfg.model.use_global_pooling
+        self.pooling_type = cfg.model.pooling_type.lower()
+        self.pooling_position = cfg.model.pooling_position.lower()
+        conv_types = cfg.model.conv_types
+
+        self.u_scale = cfg.dataset.u_scale
+        self.v_scale = cfg.dataset.v_scale
+        self.f_scale = cfg.dataset.f_scale
         
         # Encoder-Decoder skip connections (only applicable when pooling_position='middle')
-        self.use_ed_skip = bool(use_ed_skip)
-        self.ed_skip_type = str(ed_skip_type).lower()
-        
+        self.use_ed_skip = bool(cfg.model.use_ed_skip)
+        self.ed_skip_type = str(cfg.model.ed_skip_type).lower()
+
         # Normalize hidden_channels to a list
-        if isinstance(hidden_channels, int):
-            hidden_sizes = [hidden_channels]
+        if isinstance(cfg.model.hidden_channels, int):
+            hidden_sizes = [cfg.model.hidden_channels]
         else:
-            hidden_sizes = list(hidden_channels)
+            hidden_sizes = list(cfg.model.hidden_channels)
 
         n_hidden = len(hidden_sizes)
         
@@ -111,63 +97,63 @@ class DeepGCN(nn.Module):
             raise ValueError("len(conv_types) must match number of hidden layers")
         
         # Activation module
-        if activation == "tanh":
+        if cfg.model.activation == "tanh":
             act_module = nn.Tanh()
-        elif activation == "relu":
+        elif cfg.model.activation == "relu":
             act_module = nn.ReLU(inplace=True)
-        elif activation == "leaky_relu":
+        elif cfg.model.activation == "leaky_relu":
             act_module = nn.LeakyReLU(negative_slope=0.2, inplace=True)
-        elif activation == "elu":
+        elif cfg.model.activation == "elu":
             act_module = nn.ELU(inplace=True)
-        elif activation == "gelu":
+        elif cfg.model.activation == "gelu":
             act_module = nn.GELU()
-        elif activation == "prelu":
+        elif cfg.model.activation == "prelu":
             act_module = nn.PReLU()
         else:
             raise ValueError("activation not implemented.")
         
-        self.dropout = float(dropout)
+        self.dropout = float(cfg.model.dropout)
         self.n_hidden = n_hidden
-        self.gat_heads = gat_heads
-        self.cheb_K = cheb_K
+        self.gat_heads = cfg.model.gat_heads
+        self.cheb_K = cfg.model.cheb_K
         
         # Input projection to match first hidden dimension
-        if hidden_sizes[0] != in_channels:
-            self.input_proj = Linear(in_channels, hidden_sizes[0])
+        if hidden_sizes[0] != cfg.model.in_channels:
+            self.input_proj = Linear(cfg.model.in_channels, hidden_sizes[0])
         else:
             self.input_proj = None
         
         # Determine encoder-decoder split if using middle pooling
         if self.use_global_pooling and self.pooling_position == "middle":
             # Split layers into encoder and decoder
-            if encoder_layers is None:
+            if cfg.model.encoder_layers is None:
                 # Default: use half the layers as encoder
                 self.n_encoder_layers = n_hidden // 2
             else:
-                self.n_encoder_layers = min(encoder_layers, n_hidden)
+                self.n_encoder_layers = min(cfg.model.encoder_layers, n_hidden)
             
             # Build encoder layers
             self.encoder_layers = nn.ModuleList()
-            prev_dim = hidden_sizes[0] if self.input_proj else in_channels
+            prev_dim = hidden_sizes[0] if self.input_proj else cfg.model.in_channels
             
             for i in range(self.n_encoder_layers):
                 hid = hidden_sizes[i]
                 ctype = conv_types[i].upper()
                 conv = self._create_conv_layer(ctype, prev_dim, hid)
                 # Use 'plain' block when feature dims change to avoid pre-norm mismatch
-                layer_block = block
+                layer_block = cfg.model.block
                 norm_dim = hid
-                if block != "plain" and prev_dim != hid:
+                if layer_block != "plain" and prev_dim != hid:
                     layer_block = "plain"
                 # For residual-style blocks, normalization happens pre-conv → use prev_dim
                 if layer_block != "plain":
                     norm_dim = prev_dim
                 deep_layer = DeepGCNLayer(
                     conv=conv,
-                    norm=nn.BatchNorm1d(norm_dim) if use_bn else None,
+                    norm=nn.BatchNorm1d(norm_dim) if cfg.model.use_bn else None,
                     act=act_module,
                     block=layer_block,
-                    dropout=dropout,
+                    dropout=self.dropout,
                 )
                 self.encoder_layers.append(deep_layer)
                 prev_dim = hid
@@ -176,18 +162,18 @@ class DeepGCN(nn.Module):
             self.encoder_output_dim = prev_dim
             
             # Graph pooling dimension
-            if graph_output_dim is None:
+            if cfg.model.graph_output_dim is None:
                 self.graph_dim = self.encoder_output_dim
             else:
-                self.graph_dim = graph_output_dim
+                self.graph_dim = cfg.model.graph_output_dim
                 
             # Attention for pooling if needed
             if self.pooling_type == "attention":
                 self.attention_weights = Linear(self.encoder_output_dim, 1)
             
             # Optional projection after pooling
-            if graph_output_dim is not None and graph_output_dim != self.encoder_output_dim:
-                self.graph_projection = Linear(self.encoder_output_dim, graph_output_dim)
+            if cfg.model.graph_output_dim is not None and cfg.model.graph_output_dim != self.encoder_output_dim:
+                self.graph_projection = Linear(self.encoder_output_dim, cfg.model.graph_output_dim)
             else:
                 self.graph_projection = None
             
@@ -195,11 +181,11 @@ class DeepGCN(nn.Module):
             self.decoder_layers = nn.ModuleList()
             
             # Determine decoder architecture
-            if decoder_channels is None:
+            if cfg.model.decoder_channels is None:
                 # Default: mirror encoder in reverse
                 decoder_sizes = list(reversed(hidden_sizes[:self.n_encoder_layers]))
             else:
-                decoder_sizes = list(decoder_channels)
+                decoder_sizes = list(cfg.model.decoder_channels)
             
             # First decoder layer input dimension (graph features, plus optional skip)
             if self.use_ed_skip and self.pooling_position == "middle" and self.ed_skip_type == "concat":
@@ -217,28 +203,28 @@ class DeepGCN(nn.Module):
                 
                 conv = self._create_conv_layer(ctype, prev_dim, hid)
                 # Use 'plain' block when feature dims change
-                layer_block = block
+                layer_block = cfg.model.block
                 norm_dim = hid
-                if block != "plain" and prev_dim != hid:
+                if layer_block != "plain" and prev_dim != hid:
                     layer_block = "plain"
                 if layer_block != "plain":
                     norm_dim = prev_dim
                 deep_layer = DeepGCNLayer(
                     conv=conv,
-                    norm=nn.BatchNorm1d(norm_dim) if use_bn else None,
+                    norm=nn.BatchNorm1d(norm_dim) if cfg.model.use_bn else None,
                     act=act_module,
                     block=layer_block,
-                    dropout=dropout,
+                    dropout=self.dropout,
                 )
                 self.decoder_layers.append(deep_layer)
                 prev_dim = hid
             
             # Final output layer
-            ft = final_layer_type.upper()
+            ft = cfg.model.final_layer_type.upper()
             if ft == "LINEAR":
-                self.final_layer = Linear(prev_dim, out_channels)
+                self.final_layer = Linear(prev_dim, cfg.model.out_channels)
             else:
-                self.final_layer = self._create_conv_layer(ft, prev_dim, out_channels)
+                self.final_layer = self._create_conv_layer(ft, prev_dim, cfg.model.out_channels)
             self.final_layer_type = ft
             
         else:
@@ -248,7 +234,7 @@ class DeepGCN(nn.Module):
             
             # Build hidden layers using DeepGCNLayer
             self.layers = nn.ModuleList()
-            prev_dim = hidden_sizes[0] if self.input_proj else in_channels
+            prev_dim = hidden_sizes[0] if self.input_proj else cfg.model.in_channels
             
             for i, hid in enumerate(hidden_sizes):
                 ctype = conv_types[i].upper()
@@ -257,43 +243,43 @@ class DeepGCN(nn.Module):
                 conv = self._create_conv_layer(ctype, prev_dim, hid)
                 
                 # Wrap in DeepGCNLayer
-                layer_block = block
+                layer_block = cfg.model.block
                 norm_dim = hid
-                if block != "plain" and prev_dim != hid:
+                if layer_block != "plain" and prev_dim != hid:
                     layer_block = "plain"
                 if layer_block != "plain":
                     norm_dim = prev_dim
                 deep_layer = DeepGCNLayer(
                     conv=conv,
-                    norm=nn.BatchNorm1d(norm_dim) if use_bn else None,
+                    norm=nn.BatchNorm1d(norm_dim) if cfg.model.use_bn else None,
                     act=act_module,
                     block=layer_block,
-                    dropout=dropout,
+                    dropout=self.dropout,
                 )
                 self.layers.append(deep_layer)
                 prev_dim = hid
             
             # Final layer (no skip connection or activation on output)
-            ft = final_layer_type.upper()
+            ft = cfg.model.final_layer_type.upper()
             if ft == "LINEAR":
-                self.final_layer = Linear(prev_dim, out_channels)
+                self.final_layer = Linear(prev_dim, cfg.model.out_channels)
             else:
-                self.final_layer = self._create_conv_layer(ft, prev_dim, out_channels)
+                self.final_layer = self._create_conv_layer(ft, prev_dim, cfg.model.out_channels)
             
             self.final_layer_type = ft
             
             # Global pooling setup (only for 'end' position)
             if self.use_global_pooling and self.pooling_position == "end":
                 # Determine the dimension after pooling
-                pool_dim = out_channels
+                pool_dim = cfg.model.out_channels
                 
                 # Attention-based pooling requires learnable parameters
                 if self.pooling_type == "attention":
                     self.attention_weights = Linear(pool_dim, 1)
                 
                 # Optional graph-level output projection
-                if graph_output_dim is not None:
-                    self.graph_projection = Linear(pool_dim, graph_output_dim)
+                if cfg.model.graph_output_dim is not None:
+                    self.graph_projection = Linear(pool_dim, cfg.model.graph_output_dim)
                 else:
                     self.graph_projection = None
         
@@ -449,8 +435,7 @@ class DeepGCN(nn.Module):
         
         return pooled
     
-    def forward(self, x, edge_index, bc_mask, batch=None, return_pooled=False, 
-                u_scale=0.04, v_scale=0.08, f_scale=3):
+    def forward(self, x, edge_index, bc_mask, batch=None, return_pooled=False):
         """
         Forward pass with input/output scaling.
         
@@ -477,12 +462,12 @@ class DeepGCN(nn.Module):
         """
         # Apply input scaling: translate from [-scale, scale] to [-1, 1]
         x_scaled = x.clone()
-        if u_scale is not None:
-            x_scaled[:, 0] = x[:, 0] / (2 * u_scale)
-        if v_scale is not None:
-            x_scaled[:, 1] = x[:, 1] / (2 * v_scale)
-        if f_scale is not None and x.shape[1] > 2:
-            x_scaled[:, 2] = x[:, 2] / (2 * f_scale)
+        if self.u_scale is not None:
+            x_scaled[:, 0] = x[:, 0] / (2 * self.u_scale)
+        if self.v_scale is not None:
+            x_scaled[:, 1] = x[:, 1] / (2 * self.v_scale)
+        if self.f_scale is not None and x.shape[1] > 2:
+            x_scaled[:, 2] = x[:, 2] / (2 * self.f_scale)
         
         # Store input for residual connection (use scaled values)
         if self.residual:
@@ -569,10 +554,10 @@ class DeepGCN(nn.Module):
             x_scaled = torch.cat([u_next, v_next], dim=1)
         
         # Apply output scaling: translate from [-1, 1] back to [-scale, scale]
-        if u_scale is not None:
-            x_scaled[:, 0] = x_scaled[:, 0] * (2 * u_scale)
-        if v_scale is not None:
-            x_scaled[:, 1] = x_scaled[:, 1] * (2 * v_scale)
+        if self.u_scale is not None:
+            x_scaled[:, 0] = x_scaled[:, 0] * (2 * self.u_scale)
+        if self.v_scale is not None:
+            x_scaled[:, 1] = x_scaled[:, 1] * (2 * self.v_scale)
         
         # Apply boundary conditions
         x_scaled[bc_mask] = 0.0
@@ -678,7 +663,7 @@ def membranedisplacement(coords, t, t_f=1, amp=0.003, x0=0.5, y0=0.5, sign=-1, l
 
     return u, v
 
-def membraneforce(coords, t, loc, forcing='middle', x_f_1=None, y_f_1=None, sign=-1, seed=None, margin=0.1):
+def membraneforce(coords, t, loc, forcing, x_f_1=None, sign=-1, seed=None, margin=0.1):
     """
     2D membrane forcing - Gaussian pulses in space and time.
     
@@ -701,14 +686,13 @@ def membraneforce(coords, t, loc, forcing='middle', x_f_1=None, y_f_1=None, sign
     -------
     f : np.ndarray
         Computed 2D force field values.
-    """
+    """ 
     if seed is not None:
         torch.manual_seed(seed)
         np.random.seed(seed)
 
     if loc == 'casual':
         x_f_1 = float(np.random.uniform(margin, 1.0 - margin))
-        y_f_1 = float(np.random.uniform(margin, 1.0 - margin))
 
     X = coords
     h = sign*3
@@ -718,9 +702,9 @@ def membraneforce(coords, t, loc, forcing='middle', x_f_1=None, y_f_1=None, sign
         forcing = np.random.choice(forcing_options)
 
     if forcing == 'start':
-        time = t
-    elif forcing == 'middle':
         time = t - 1.0
+    elif forcing == 'middle':
+        time = t
     else:  # 'end'
         time = 2.0 - t
     
@@ -763,19 +747,11 @@ def create_graph(seed=None, zeros=False, cfg=None):
     coords = torch.tensor(nodes, dtype=torch.float)
 
     # Get parameters from cfg if available, otherwise use defaults
-    if cfg is not None:
-        margin = cfg.dataset.force.margin
-        sign = cfg.dataset.force.sign
-        forcing = cfg.dataset.force.forcing_type
-    else:
-        margin = 0.1
-        sign = -1
-        forcing = 'casual'
-    
-    
+    frc = cfg.dataset.force
+
     t = float(np.random.rand()*2)
-    u_np, v_np = membranedisplacement(coords, t, loc='casual', sign=sign, seed=seed)
-    f_np = membraneforce(coords, t, loc='casual', forcing=forcing, sign=sign, seed=seed, margin=margin)
+    u_np, v_np = membranedisplacement(coords, t, loc=frc.location, sign=frc.sign, seed=seed)
+    f_np = membraneforce(coords, t, loc=frc.location, forcing=frc.forcing_type, sign=frc.sign, seed=seed, margin=frc.margin)
 
     x = np.stack([u_np, v_np, f_np], axis=1).astype(np.float32)
     x = torch.from_numpy(x)
