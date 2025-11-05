@@ -621,6 +621,69 @@ def build_laplacian_matrix(N, dx):
     return L_torch  # Return PyTorch sparse tensor instead of scipy CSR
 
 
+def compute_laplacian_eigenbasis(L, num_modes=None, normalized=True):
+    """
+    Compute eigendecomposition of graph Laplacian for spectral methods.
+    
+    This should be called ONCE during graph creation to precompute the
+    Fourier basis (eigenvectors) for spectral graph convolutions.
+    
+    Args:
+        L: Laplacian matrix (scipy sparse or torch sparse tensor)
+        num_modes: Number of smallest eigenvalues/eigenvectors to compute.
+                   If None, compute all (only for small graphs!)
+        normalized: If True, use normalized Laplacian
+    
+    Returns:
+        eigenvalues: [k] tensor of eigenvalues in ascending order
+        eigenvectors: [N, k] tensor where columns are eigenvectors U
+    """
+    # Convert torch sparse to scipy if needed
+    if torch.is_tensor(L):
+        if L.is_sparse:
+            indices = L._indices().cpu().numpy()
+            values = L._values().cpu().numpy()
+            shape = L.shape
+            L_scipy = sp.coo_matrix((values, (indices[0], indices[1])), shape=shape).tocsr()
+        else:
+            L_scipy = sp.csr_matrix(L.cpu().numpy())
+    else:
+        L_scipy = L
+    
+    N = L_scipy.shape[0]
+    
+    # Optional: normalize the Laplacian
+    if normalized:
+        # Compute degree matrix (sum of each row)
+        degrees = np.array(np.abs(L_scipy).sum(axis=1)).flatten()
+        degrees[degrees == 0] = 1.0  # Avoid division by zero
+        D_inv_sqrt = sp.diags(1.0 / np.sqrt(degrees))
+        L_norm = D_inv_sqrt @ L_scipy @ D_inv_sqrt
+        L_scipy = L_norm.tocsr()
+    
+    # Compute eigendecomposition
+    if num_modes is None or num_modes >= N - 1:
+        # Compute all eigenvalues/vectors (for small graphs)
+        L_dense = L_scipy.toarray()
+        eigenvalues, eigenvectors = np.linalg.eigh(L_dense)
+    else:
+        # Compute k smallest eigenvalues/vectors (for larger graphs)
+        # For Laplacian, smallest eigenvalues = low-frequency modes
+        from scipy.sparse.linalg import eigsh
+        eigenvalues, eigenvectors = eigsh(L_scipy, k=num_modes, which='SM')
+    
+    # Sort by eigenvalue (should already be sorted, but ensure it)
+    idx = np.argsort(eigenvalues)
+    eigenvalues = eigenvalues[idx]
+    eigenvectors = eigenvectors[:, idx]
+    
+    # Convert to torch tensors
+    eigenvalues = torch.from_numpy(eigenvalues).float()
+    eigenvectors = torch.from_numpy(eigenvectors).float()
+    
+    return eigenvalues, eigenvectors
+
+
 def membranedisplacement(coords, t, t_f=1, amp=0.003, x0=0.5, y0=0.5, sign=-1, loc=None, num_terms=4, seed=None):
     """Simple analytic displacement + velocity field for testing.
 
@@ -691,8 +754,8 @@ def membraneforce(coords, t, loc, forcing, x_f_1=None, sign=-1, seed=None, margi
         torch.manual_seed(seed)
         np.random.seed(seed)
 
-    if loc == 'casual':
-        x_f_1 = float(np.random.uniform(margin, 1.0 - margin))
+    # if loc == 'casual':
+    x_f_1 = float(np.random.uniform(margin, 1.0 - margin))
 
     X = coords
     h = sign*3
@@ -739,6 +802,15 @@ def create_graph(seed=None, zeros=False, cfg=None):
         adj[j, i] = 1  # undirected
 
     L = build_laplacian_matrix(num_nodes, dx)
+    
+    # Compute Laplacian eigenbasis for spectral methods
+    # This is done ONCE during graph creation for efficiency
+    num_spectral_modes = getattr(cfg.model, 'num_spectral_modes', num_nodes // 2)
+    eigenvalues, eigenvectors = compute_laplacian_eigenbasis(
+        L, 
+        num_modes=num_spectral_modes,
+        normalized=True
+    )
 
     # edge_index: 2 x num_edges, undirected
     edge_index = np.vstack(np.nonzero(adj))
@@ -759,7 +831,17 @@ def create_graph(seed=None, zeros=False, cfg=None):
         x = torch.zeros_like(x)
 
     x = x.squeeze(-1)  # Removes the last dimension if it's 1
-    data = Data(x=x, edge_index=edge_index_torch, bc_mask=bc_mask_torch, coords=coords, laplacian=L, nodes=nodes, elements=elements)
+    data = Data(
+        x=x, 
+        edge_index=edge_index_torch, 
+        bc_mask=bc_mask_torch, 
+        coords=coords, 
+        laplacian=L, 
+        eigenvalues=eigenvalues,
+        eigenvectors=eigenvectors,
+        nodes=nodes, 
+        elements=elements
+    )
     return data
 
 class WaveGNN1D:
@@ -925,13 +1007,14 @@ def rollout_graph(seed, cfg=None):
 
     graphs = []
     # append initial graph
-    graphs.append(Data(x=features.clone(),
-                       edge_index=graph_0.edge_index,
-                       bc_mask=graph_0.bc_mask,
-                       coords=graph_0.coords,
-                       laplacian=graph_0.laplacian,
-                       nodes=graph_0.nodes,
-                       elements=graph_0.elements))
+    # graphs.append(Data(x=features.clone(),
+    #                    edge_index=graph_0.edge_index,
+    #                    bc_mask=graph_0.bc_mask,
+    #                    coords=graph_0.coords,
+    #                    laplacian=graph_0.laplacian,
+    #                    nodes=graph_0.nodes,
+    #                    elements=graph_0.elements))
+    graphs.append(graph_0)
 
     t = 0.0
     for i in range(1, num_steps):
@@ -964,6 +1047,8 @@ def rollout_graph(seed, cfg=None):
                        bc_mask=graph_0.bc_mask,
                        coords=graph_0.coords,
                        laplacian=graph_0.laplacian,
+                       eigenvalues=graph_0.eigenvalues,
+                       eigenvectors=graph_0.eigenvectors,
                        nodes=graph_0.nodes,
                        elements=graph_0.elements)
         graphs.append(graph_t)

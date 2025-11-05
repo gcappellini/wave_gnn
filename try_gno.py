@@ -1,3 +1,36 @@
+"""
+Graph Neural Operator (GNO) for Wave Equation Prediction
+
+This module implements three phases of global communication in GNNs:
+
+PHASE 1 (Current): Global Node Broadcast
+    - Uses a virtual global node that aggregates information from all nodes
+    - Broadcasts global information back to all nodes
+    - Simple but not based on graph structure
+
+PHASE 2: Spectral Global Communication
+    - Replaces global node with Fourier transform via Laplacian eigenbasis
+    - Architecture: Lifting → Spectral Layers → Projection → Physics
+    - Spectral Layer:
+        h_spatial → U^T @ h_spatial (to frequency)
+        → Learnable_Filter(h_spectral) (process modes)
+        → U @ h_filtered (back to spatial)
+    - See spectral_models.py for implementation
+
+PHASE 3: Hybrid Spatial-Spectral Model
+    - Combines local message passing with spectral processing
+    - Architecture: Lifting → Parallel[Spatial, Spectral] → Combine → Projection
+    - Branch 1: Local MP layers (captures local structure)
+    - Branch 2: Spectral layers (captures global patterns)
+    - Combine: h_final = MLP(concat[h_spatial, h_spectral])
+    - See spectral_models.py for implementation
+
+To use:
+    Phase 1: model = WaveGNN(cfg)
+    Phase 2: from spectral_models import SpectralWaveGNN; model = SpectralWaveGNN(cfg)
+    Phase 3: from spectral_models import HybridWaveGNN; model = HybridWaveGNN(cfg)
+"""
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -31,10 +64,15 @@ class Normalizer:
 
 class GlobalMessagePassing(MessagePassing):
     """
-    Message passing layer with virtual global node.
+    PHASE 1: Message passing layer with virtual global node.
+    
     Each node communicates with:
     - Its local neighbors (via graph edges)
     - A global node (broadcast communication)
+    
+    This provides a baseline for global communication that will be
+    replaced by spectral methods in Phase 2, and combined with
+    local methods in Phase 3.
     """
     
     def __init__(self, hidden_dim, dropout=0.1):
@@ -140,13 +178,17 @@ class BoundaryCondition(nn.Module):
 
 class WaveGNN(nn.Module):
     """
-    Graph Neural Network for wave equation prediction.
-    Predicts both displacement and velocity changes directly.
+    PHASE 1: Graph Neural Network for wave equation with global node.
+    
+    Predicts both displacement and velocity changes directly using
+    a virtual global node for global communication.
     
     DROP-IN REPLACEMENT for DeepGCN:
     - Compatible with existing training loop
     - Same forward signature: forward(x, edge_index, bc_mask)
     - Returns [N, 2] tensor with [u_next, v_next]
+    
+    For Phase 2 (spectral) and Phase 3 (hybrid), see spectral_models.py
     """
     
     def __init__(

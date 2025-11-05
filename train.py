@@ -10,27 +10,32 @@ from datetime import datetime
 import pandas as pd
 from plot import plot_loss_history
 from try_gno import WaveGNN
+from spectral_models import SpectralWaveGNN, HybridWaveGNN
 
 
 def create_model_from_config(cfg, device='cpu'):
     """
     Factory function to create model from configuration.
-    Automatically selects between DeepGCN and WaveGNN based on config.
     
     Args:
-        model_cfg: Model configuration (cfg.model)
-        dataset_cfg: Dataset configuration (cfg.dataset), needed for WaveGNN scaling params
+        cfg: Configuration object
         device: torch device
     
     Returns:
         model: Initialized model on specified device
     """
-
     if cfg.model.model_name == "WaveGNN":
-        # Create WaveGNN
-        model = WaveGNN(cfg)
+        global_comm = cfg.model.get('global_communication', 'global_node')
+        
+        if global_comm == 'global_node':
+            model = WaveGNN(cfg)
+        elif global_comm == 'fourier':
+            model = SpectralWaveGNN(cfg)
+        elif global_comm == 'hybrid':
+            model = HybridWaveGNN(cfg)
+        else:
+            raise ValueError(f"Unknown global_communication: {global_comm}")
     else:
-        # Create DeepGCN
         model = DeepGCN(cfg)
     return model.to(device)
 
@@ -175,7 +180,7 @@ def physics_informed_loss(interior_mask, input, output, laplacian, dt, c, k, w1,
 
     return loss, float(loss_1.detach().item()), float(loss_2.detach().item())
 
-def train_physics(batch, model, optimizer, device, cfg, energy_loss=True, rk4=True, adaptive_weights=None):
+def train_physics(batch, model, optimizer, device, cfg, adaptive_weights=None):
     """Train on a batched Data object (several graphs concatenated by DataLoader).
 
     We iterate over graphs inside the batch, build per-graph Laplacian, compute PDE residual
@@ -217,7 +222,12 @@ def train_physics(batch, model, optimizer, device, cfg, energy_loss=True, rk4=Tr
         interior_mask = ~data.bc_mask.to(device)
         # interior_mask = torch.ones_like(model_sub.bc_mask, dtype=torch.bool, device=device)
         
-        out_sub = model_sub(data.x.to(device), data.edge_index.to(device), data.bc_mask.to(device))
+        # Spectral models need eigenvectors
+        if isinstance(model_sub, (SpectralWaveGNN, HybridWaveGNN)):
+            out_sub = model_sub(data.x.to(device), data.edge_index.to(device), 
+                              data.bc_mask.to(device), eigenvectors=data.eigenvectors.to(device))
+        else:
+            out_sub = model_sub(data.x.to(device), data.edge_index.to(device), data.bc_mask.to(device))
 
         # Get weights (from adaptive weighting or config)
         if adaptive_weights is not None:
@@ -232,19 +242,23 @@ def train_physics(batch, model, optimizer, device, cfg, energy_loss=True, rk4=Tr
             w1_rk4 = cfg.training.loss.w1_rk4
             w2_rk4 = cfg.training.loss.w2_rk4
             w_energy = cfg.training.loss.w_energy
-
-        loss_tensor, loss_1_val, loss_2_val = physics_informed_loss(
-            interior_mask,
-            data.x.to(device),
-            out_sub,
-            L,
-            dt=cfg.dataset.dt,
-            c=cfg.dataset.wave_speed,
-            k=cfg.dataset.damping,
-            w1=w1_PI,
-            w2=w2_PI,
-        )
-        if energy_loss:
+        if cfg.training.loss.use_PI:
+            loss_tensor, loss_1_val, loss_2_val = physics_informed_loss(
+                interior_mask,
+                data.x.to(device),
+                out_sub,
+                L,
+                dt=cfg.dataset.dt,
+                c=cfg.dataset.wave_speed,
+                k=cfg.dataset.damping,
+                w1=w1_PI,
+                w2=w2_PI,
+            )
+        else:
+            loss_tensor = torch.tensor(0.0, device=device)
+            loss_1_val = 0.0
+            loss_2_val = 0.0
+        if cfg.training.loss.use_energy:
             loss_energy_tensor, loss_energy_val = comp_energy_loss(
                 interior_mask,
                 data.x.to(device),
@@ -258,7 +272,7 @@ def train_physics(batch, model, optimizer, device, cfg, energy_loss=True, rk4=Tr
         else:
             loss_energy_tensor = torch.tensor(0.0, device=device)
             loss_energy_val = 0.0
-        if rk4:
+        if cfg.training.loss.use_rk4:
             loss_rk4, loss_1_rk4, loss_2_rk4 = rk4_loss(
                 interior_mask,
                 data.x.to(device),
@@ -282,12 +296,13 @@ def train_physics(batch, model, optimizer, device, cfg, energy_loss=True, rk4=Tr
             loss_energy_sum = 0.0
             loss1_rk4 = 0.0
             loss2_rk4 = 0.0
-        loss1_sum += loss_1_val
-        loss2_sum += loss_2_val
-        if rk4:
+        if cfg.training.loss.use_PI:
+            loss1_sum += loss_1_val
+            loss2_sum += loss_2_val
+        if cfg.training.loss.use_rk4:
             loss1_rk4 += loss_1_rk4
             loss2_rk4 += loss_2_rk4
-        if energy_loss:
+        if cfg.training.loss.use_energy:
             loss_energy_sum += loss_energy_val
 
     # After iterating all graphs in the batch, compute mean PDE loss tensor
@@ -335,7 +350,12 @@ def evaluate_loader(loader, model, device, cfg):
             L = data.laplacian
 
             model.bc_mask = data.bc_mask.to(device)
-            preds = model(data.x.to(device), data.edge_index.to(device), data.bc_mask.to(device))
+            
+            if isinstance(model, (SpectralWaveGNN, HybridWaveGNN)):
+                preds = model(data.x.to(device), data.edge_index.to(device), 
+                            data.bc_mask.to(device), eigenvectors=data.eigenvectors.to(device))
+            else:
+                preds = model(data.x.to(device), data.edge_index.to(device), data.bc_mask.to(device))
 
             interior_mask = ~data.bc_mask.to(device)
             # interior_mask = torch.ones_like(model.bc_mask, dtype=torch.bool, device=device)
@@ -479,8 +499,6 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
             
             loss, loss_1, loss_2, loss_energy, loss_1_rk4, loss_2_rk4 = train_physics(
                 batch, model, optimizer, device, cfg,
-                energy_loss=cfg.training.loss.use_energy,
-                rk4=cfg.training.loss.use_rk4,
                 adaptive_weights=adaptive_weights
             )
             
@@ -509,13 +527,17 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
 
         # Update adaptive weights based on current loss values
         if adaptive_weights is not None:
-            loss_dict = {
-                'PI_loss1': avg_loss_1,
-                'PI_loss2': avg_loss_2,
-            }
+            loss_dict = {}
+            if cfg.training.loss.use_PI:
+                loss_dict.update({
+                    'PI_loss1': avg_loss_1,
+                    'PI_loss2': avg_loss_2,
+                })
             if cfg.training.loss.use_rk4:
-                loss_dict['RK4_loss1'] = avg_loss_1_rk4
-                loss_dict['RK4_loss2'] = avg_loss_2_rk4
+                loss_dict.update({
+                    'RK4_loss1': avg_loss_1_rk4,
+                    'RK4_loss2': avg_loss_2_rk4,
+                })
             if cfg.training.loss.use_energy:
                 loss_dict['Energy_loss'] = avg_loss_energy
             
@@ -527,8 +549,8 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
         epoch_record = {
             'epoch': epoch,
             'train_total': avg_loss,
-            'train_PI1': avg_loss_1,
-            'train_PI2': avg_loss_2,
+            'train_PI1': avg_loss_1 if cfg.training.loss.use_PI else None,
+            'train_PI2': avg_loss_2 if cfg.training.loss.use_PI else None,
             'train_Energy': avg_loss_energy if cfg.training.loss.use_energy else None,
             'train_RK4_1': avg_loss_1_rk4 if cfg.training.loss.use_rk4 else None,
             'train_RK4_2': avg_loss_2_rk4 if cfg.training.loss.use_rk4 else None,
@@ -575,8 +597,11 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
         if epoch % cfg.training.log_interval == 0 or epoch == 1:
             # Build log message with current weights if adaptive
             log_msg = (
-                f"Epoch {epoch:03d} | "
-                f"Train {avg_loss:.3e} | PI1 {avg_loss_1:.3e} | PI2 {avg_loss_2:.3e} | "
+                f"Epoch {epoch:03d} | Train {avg_loss:.3e} | "
+            )
+            if cfg.training.loss.use_PI:
+                log_msg += (
+                f"PI1 {avg_loss_1:.3e} | PI2 {avg_loss_2:.3e} | "
             )
             if cfg.training.loss.use_energy:
                 log_msg += f"Energy {avg_loss_energy:.3e} | "
@@ -671,7 +696,11 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
                         model.bc_mask = data.bc_mask.to(device)
                         interior_mask = ~data.bc_mask.to(device)
                         
-                        out_sub = model(data.x.to(device), data.edge_index.to(device), data.bc_mask.to(device))
+                        if isinstance(model, (SpectralWaveGNN, HybridWaveGNN)):
+                            out_sub = model(data.x.to(device), data.edge_index.to(device), 
+                                          data.bc_mask.to(device), eigenvectors=data.eigenvectors.to(device))
+                        else:
+                            out_sub = model(data.x.to(device), data.edge_index.to(device), data.bc_mask.to(device))
                         
                         # Get weights
                         if adaptive_weights is not None:
@@ -688,21 +717,24 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
                             w_energy = cfg.training.loss.w_energy
                         
                         # Compute physics-informed loss
-                        loss_tensor, loss_pi1_val, loss_pi2_val = physics_informed_loss(
-                            interior_mask,
-                            data.x.to(device),
-                            out_sub,
-                            L,
-                            dt=cfg.dataset.dt,
-                            c=cfg.dataset.wave_speed,
-                            k=cfg.dataset.damping,
-                            w1=w1_PI,
-                            w2=w2_PI,
-                        )
-                        
-                        # Accumulate individual loss components
-                        loss_pi1_sum += loss_pi1_val
-                        loss_pi2_sum += loss_pi2_val
+                        if cfg.training.loss.use_PI:
+                            loss_tensor, loss_pi1_val, loss_pi2_val = physics_informed_loss(
+                                interior_mask,
+                                data.x.to(device),
+                                out_sub,
+                                L,
+                                dt=cfg.dataset.dt,
+                                c=cfg.dataset.wave_speed,
+                                k=cfg.dataset.damping,
+                                w1=w1_PI,
+                                w2=w2_PI,
+                            )
+                            
+                            # Accumulate individual loss components
+                            loss_pi1_sum += loss_pi1_val
+                            loss_pi2_sum += loss_pi2_val
+                        else:
+                            loss_tensor = torch.tensor(0.0, device=device)
                         if cfg.training.loss.use_energy:
                             loss_energy_tensor, loss_energy_val = comp_energy_loss(
                                 interior_mask,
@@ -747,8 +779,9 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
                 if batch_count > 0:
                     total_loss = total_loss / batch_count
                     # Store averaged individual losses
-                    lbfgs_loss_pi1 = loss_pi1_sum / (batch_count * len(data_list))
-                    lbfgs_loss_pi2 = loss_pi2_sum / (batch_count * len(data_list))
+                    if cfg.training.loss.use_PI:
+                        lbfgs_loss_pi1 = loss_pi1_sum / (batch_count * len(data_list))
+                        lbfgs_loss_pi2 = loss_pi2_sum / (batch_count * len(data_list))
                     if cfg.training.loss.use_energy:
                         lbfgs_loss_energy = loss_energy_sum / (batch_count * len(data_list))
 
@@ -776,8 +809,8 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
                 lbfgs_epoch_record = {
                     'epoch': epoch + lbfgs_epoch,
                     'train_total': lbfgs_total_loss,
-                    'train_PI1': lbfgs_loss_pi1,
-                    'train_PI2': lbfgs_loss_pi2,
+                    'train_PI1': lbfgs_loss_pi1 if cfg.training.loss.use_PI else None,
+                    'train_PI2': lbfgs_loss_pi2 if cfg.training.loss.use_PI else None,
                     'train_Energy': lbfgs_loss_energy if cfg.training.loss.use_energy else None,
                     'train_RK4_1': lbfgs_loss_rk4_1 if cfg.training.loss.use_rk4 else None,
                     'train_RK4_2': lbfgs_loss_rk4_2 if cfg.training.loss.use_rk4 else None,
@@ -796,9 +829,12 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
                 
                 # Build detailed log message
                 log_msg = (
-                    f"L-BFGS Epoch {lbfgs_epoch:03d} | "
-                    f"Train {lbfgs_total_loss:.3e} | PI1 {lbfgs_loss_pi1:.3e} | PI2 {lbfgs_loss_pi2:.3e}"
+                    f"L-BFGS Epoch {lbfgs_epoch:03d} | Train {lbfgs_total_loss:.3e} |"
                 )
+                if cfg.training.loss.use_PI:
+                    log_msg += (
+                        f" PI1 {lbfgs_loss_pi1:.3e} | PI2 {lbfgs_loss_pi2:.3e}"
+                    )
                 if cfg.training.loss.use_energy:
                     log_msg += f" | Energy {lbfgs_loss_energy:.3e}"
                 if cfg.training.loss.use_rk4:
@@ -816,10 +852,6 @@ def train_model(cfg, train_set, val_set, save_path="best_model.pt"):
                         'best_val_pde': best_pde,
                         'val_pde': best_pde,
                         'config': cfg,
-                        # Save complete model configuration
-                        'model_config': get_model_config_for_checkpoint(cfg),
-                        # Also save dataset config for WaveGNN scaling parameters
-                        'dataset_config': cfg.dataset
                     }
                     # Save adaptive weights state if enabled
                     if adaptive_weights is not None:
@@ -868,7 +900,11 @@ def evaluate_loader_with_scaling(loader, model, device):
             model.bc_mask = data.bc_mask.to(device)
             
             # Forward pass with scaled input
-            preds = model(data.x.to(device), data.edge_index.to(device), data.bc_mask.to(device))
+            if isinstance(model, (SpectralWaveGNN, HybridWaveGNN)):
+                preds = model(data.x.to(device), data.edge_index.to(device), 
+                            data.bc_mask.to(device), eigenvectors=data.eigenvectors.to(device))
+            else:
+                preds = model(data.x.to(device), data.edge_index.to(device), data.bc_mask.to(device))
             
             # Optional: check for numerical issues
             if torch.isnan(preds).any() or torch.isinf(preds).any():

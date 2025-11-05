@@ -1,5 +1,10 @@
 # WaveGNN Model Configuration
 model_name: "WaveGNN"
+global_communication: "hybrid"  # Options: global_node, fourier, hybrid
 dropout: 0.1
 hidden_dim: 128
 num_layers: 3
+num_spectral_modes: 50
+
+spatial_weight: 0.25
+spectral_weight: 0.75
