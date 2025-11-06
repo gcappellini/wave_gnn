@@ -105,15 +105,24 @@ geom = dde.geometry.Interval(0, 1)
 timedomain = dde.geometry.TimeDomain(0, 1)
 geomtime = dde.geometry.GeometryXTime(geom, timedomain)
 
-# BC and IC are enforced as hard constraints via output_transform
-# So we don't need to include them in the PDE (optional - you can keep them for extra enforcement)
+# BC and IC constraints
+# Spatial boundary conditions: u(0,t) = u(1,t) = 0
 bc = dde.icbc.DirichletBC(geomtime, lambda _: 0, lambda _, on_boundary: on_boundary)
-ic = dde.icbc.IC(geomtime, lambda _: 0, lambda _, on_initial: on_initial)
+
+# Initial condition on displacement: u(x,0) = 0
+ic_u = dde.icbc.IC(geomtime, lambda _: 0, lambda _, on_initial: on_initial)
+
+# Initial condition on velocity: du/dt(x,0) = 0
+ic_v = dde.icbc.OperatorBC(
+    geomtime,
+    lambda x, y, _: dde.grad.jacobian(y, x, j=1),  # du/dt
+    lambda _, on_initial: on_initial
+)
 
 pde = dde.data.TimePDE(
     geomtime,
     pde,
-    [ic, bc],  # No soft constraints needed - enforced via transform
+    [bc, ic_u, ic_v],  # Include both displacement and velocity ICs
     num_domain=200,
     num_boundary=40,
     num_initial=20,
