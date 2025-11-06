@@ -24,6 +24,7 @@ os.makedirs('pi-operator', exist_ok=True)
 
 c = 1.0
 k = 1.0
+timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
 dde.config.set_random_seed(35)
 np.random.seed(35)
@@ -235,15 +236,15 @@ axes[2].set_title('Absolute Error')
 plt.colorbar(im2, ax=axes[2])
 
 plt.tight_layout()
-plt.savefig('pi-operator/comparison.png', dpi=150)
+plt.savefig(f'pi-operator/comparison_{timestamp}.png', dpi=150)
 plt.close()
 
 
 # Save the predicted solution
-np.savez('pi-operator/prediction.npz', u_pred=u_pred, x=x, t=t)
+np.savez(f'pi-operator/prediction_{timestamp}.npz', u_pred=u_pred, x=x, t=t)
 
 # Save the model outputs
-model.save('pi-operator/model_final')
+model.save(f'pi-operator/model_final_{timestamp}')
 
 # Save the loss history
-dde.utils.external.save_loss_history(losshistory, 'pi-operator/loss.dat')
+dde.utils.external.save_loss_history(losshistory, f'pi-operator/loss_{timestamp}.dat')
