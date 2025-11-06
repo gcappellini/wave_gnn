@@ -123,11 +123,12 @@ ic_v = dde.icbc.OperatorBC(
 pde = dde.data.TimePDE(
     geomtime,
     pde,
-    [bc, ic_u, ic_v],  # Include both displacement and velocity ICs
-    num_domain=200,
-    num_boundary=40,
-    num_initial=20,
-    num_test=500,
+    # [bc, ic_u, ic_v], 
+    [ic_v], 
+    num_domain=100,
+    num_boundary=20,
+    num_initial=10,
+    num_test=250,
 )
 
 # Function space - using spatiotemporal forcing v(x,t)
@@ -137,6 +138,7 @@ func_space = SpatioTemporalGRF(length_scale_x=0.6, length_scale_t=0.3, f_scale=3
 # Sensor points now need to cover both x and t
 n_sensors_x = 5
 n_sensors_t = 5
+branch_in = n_sensors_t * n_sensors_x
 x_sensors = np.linspace(0, 1, n_sensors_x)
 t_sensors = np.linspace(0, 1, n_sensors_t)
 xv_sensors, tv_sensors = np.meshgrid(x_sensors, t_sensors)
@@ -148,19 +150,19 @@ data = dde.data.PDEOperatorCartesianProd(
 
 # Net - branch network now takes 25 inputs (5x5 spatiotemporal sensors)
 net = dde.nn.DeepONetCartesianProd(
-    [25, 128, 128, 128],  # Branch: 25 = 5x5 sensors for v(x,t)
+    [branch_in, 128, 128, 128],  # Branch: 25 = 5x5 sensors for v(x,t)
     [2, 128, 128, 128],    # Trunk: still (x,t) coordinates
     "tanh",
     "Glorot normal",
 )
 
 # Apply output transform to enforce BC/IC as hard constraints
-# net.apply_output_transform(output_transform)
+net.apply_output_transform(output_transform)
 
 model = dde.Model(data, net)
-model.compile("adam", lr=0.0005)
+model.compile("adam", lr=0.005)
 start_time = datetime.now()
-losshistory, train_state = model.train(iterations=10000)
+losshistory, train_state = model.train(iterations=4000)
 end_time = datetime.now()
 print(f"Training time: {end_time - start_time}")
 dde.utils.plot_loss_history(losshistory)
@@ -239,6 +241,17 @@ plt.tight_layout()
 plt.savefig(f'pi-operator/comparison_{timestamp}.png', dpi=150)
 plt.close()
 
+# Plot f_at_sensors (forcing function at sensor locations)
+fig_f, ax_f = plt.subplots(figsize=(8, 6))
+f_sensors_2d = f_at_sensors.reshape((n_sensors_t, n_sensors_x))
+im_f = ax_f.imshow(f_sensors_2d, extent=[0, 1, 0, 1], aspect='auto', origin='lower')
+ax_f.set_xlabel('x (sensor positions)')
+ax_f.set_ylabel('t (sensor positions)')
+ax_f.set_title('Forcing Function at Sensor Locations')
+plt.colorbar(im_f, ax=ax_f)
+plt.tight_layout()
+plt.savefig(f'pi-operator/f_sensors_{timestamp}.png', dpi=150)
+plt.close()
 
 # Save the predicted solution
 np.savez(f'pi-operator/prediction_{timestamp}.npz', u_pred=u_pred, x=x, t=t)
