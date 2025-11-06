@@ -168,7 +168,7 @@ pde = dde.data.TimePDE(
 )
 
 # Function space - using spatiotemporal forcing v(x,t)
-func_space = SpatioTemporalGRF(length_scale_x=0.6, length_scale_t=0.3, f_scale=3.0)
+func_space = SpatioTemporalGRF(length_scale_x=0.3, length_scale_t=0.9, f_scale=3.0)
 
 # Data
 # Sensor points now need to cover both x and t
