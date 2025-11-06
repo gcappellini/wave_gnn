@@ -107,13 +107,13 @@ geomtime = dde.geometry.GeometryXTime(geom, timedomain)
 
 # BC and IC are enforced as hard constraints via output_transform
 # So we don't need to include them in the PDE (optional - you can keep them for extra enforcement)
-# bc = dde.icbc.DirichletBC(geomtime, lambda _: 0, lambda _, on_boundary: on_boundary)
-# ic = dde.icbc.IC(geomtime, lambda _: 0, lambda _, on_initial: on_initial)
+bc = dde.icbc.DirichletBC(geomtime, lambda _: 0, lambda _, on_boundary: on_boundary)
+ic = dde.icbc.IC(geomtime, lambda _: 0, lambda _, on_initial: on_initial)
 
 pde = dde.data.TimePDE(
     geomtime,
     pde,
-    [],  # No soft constraints needed - enforced via transform
+    [ic, bc],  # No soft constraints needed - enforced via transform
     num_domain=200,
     num_boundary=40,
     num_initial=20,
@@ -125,27 +125,27 @@ func_space = SpatioTemporalGRF(length_scale_x=0.6, length_scale_t=0.3, f_scale=3
 
 # Data
 # Sensor points now need to cover both x and t
-n_sensors_x = 20
-n_sensors_t = 20
+n_sensors_x = 5
+n_sensors_t = 5
 x_sensors = np.linspace(0, 1, n_sensors_x)
 t_sensors = np.linspace(0, 1, n_sensors_t)
 xv_sensors, tv_sensors = np.meshgrid(x_sensors, t_sensors)
-eval_pts = np.vstack((xv_sensors.ravel(), tv_sensors.ravel())).T  # shape: (400, 2)
+eval_pts = np.vstack((xv_sensors.ravel(), tv_sensors.ravel())).T  # shape: (25, 2)
 
 data = dde.data.PDEOperatorCartesianProd(
     pde, func_space, eval_pts, 1000, function_variables=[0, 1], num_test=100, batch_size=50
 )
 
-# Net - branch network now takes 400 inputs (20x20 spatiotemporal sensors)
+# Net - branch network now takes 25 inputs (5x5 spatiotemporal sensors)
 net = dde.nn.DeepONetCartesianProd(
-    [400, 128, 128, 128],  # Branch: 400 = 20x20 sensors for v(x,t)
+    [25, 128, 128, 128],  # Branch: 25 = 5x5 sensors for v(x,t)
     [2, 128, 128, 128],    # Trunk: still (x,t) coordinates
     "tanh",
     "Glorot normal",
 )
 
 # Apply output transform to enforce BC/IC as hard constraints
-net.apply_output_transform(output_transform)
+# net.apply_output_transform(output_transform)
 
 model = dde.Model(data, net)
 model.compile("adam", lr=0.0005)
