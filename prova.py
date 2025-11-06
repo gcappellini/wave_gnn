@@ -1,22 +1,11 @@
-from train import rk4_loss
-import torch
 import numpy as np
-import os
-from dataset import build_laplacian_matrix, WaveGNN1D, create_graph
+import matplotlib.pyplot as plt
 
-
-initial_graph = create_graph(282)
-nodes, elements = initial_graph.nodes, initial_graph.elements
-
-gn_solver = WaveGNN1D(initial_graph.laplacian)
-interior_mask = ~initial_graph.bc_mask
-
-features = gn_solver.forward(initial_graph.x)
-
-err, err_1, err_2 = rk4_loss(
-    interior_mask,
-    initial_graph.x,
-    features,
-    initial_graph.laplacian)
-
-print(err, err_1, err_2)
+gt_data = np.load('./ground_truth.npz')
+u_gt = gt_data['u_gt'][:100]
+t_history = gt_data['t_history'][:100]
+print(u_gt.shape, t_history.shape)
+# v = np.load('./v.npz')
+# print(v['v'].shape)
+# v_random = v['v']
+# xs = v['xs']
