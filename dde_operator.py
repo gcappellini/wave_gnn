@@ -22,8 +22,21 @@ else:
 # Create directory if it doesn't exist
 os.makedirs('pi-operator', exist_ok=True)
 
-c = 1.0
-k = 1.0
+# Physical parameters
+c = 1.0         # wave speed
+k = 1.0         # damping coefficient
+
+# Scaling parameters
+L = 1.0         # spatial domain length
+T_max = 1.0     # time domain length
+u_max = 0.04    # maximum displacement (output scale)
+f_max = 3.0     # maximum forcing (input scale)
+
+# Derived non-dimensional parameters for scaled PDE
+c_star = c**2 * T_max**2 / L**2      # scaled wave speed squared
+f_star = f_max * T_max**2 / u_max    # scaled forcing coefficient
+k_star = k * T_max                    # scaled damping coefficient
+
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
 dde.config.set_random_seed(35)
@@ -71,35 +84,54 @@ class ScaledGRF:
         values = self.grf.eval_batch(features, sensors)
         return self.f_scale * values + self.offset
     
-# PDE
+# PDE - using scaled variables
 def pde(x, y, v):
-    dy_t = dde.grad.jacobian(y, x, j=1)
-    dy_tt = dde.grad.hessian(y, x, j=1)
-    dy_xx = dde.grad.hessian(y, x, j=0)
-    return dy_tt - c**2 * dy_xx - v + k * dy_t 
+    """
+    Scaled PDE: all variables are non-dimensionalized to [0,1] range
+    
+    x: scaled coordinates [x_scaled, t_scaled] where both ∈ [0, 1]
+    y: scaled displacement u_scaled = u / u_max
+    v: scaled forcing f_scaled = f / f_max
+    
+    Original PDE: u_tt = c² u_xx + f - k u_t
+    Scaled PDE: u_scaled_tt = c_star * u_scaled_xx + f_star * f_scaled - k_star * u_scaled_t
+    """
+    dy_t = dde.grad.jacobian(y, x, j=1)       # ∂u_scaled/∂t_scaled
+    dy_tt = dde.grad.hessian(y, x, j=1)       # ∂²u_scaled/∂t_scaled²
+    dy_xx = dde.grad.hessian(y, x, j=0)       # ∂²u_scaled/∂x_scaled²
+    
+    return dy_tt - c_star * dy_xx - f_star * v + k_star * dy_t 
 
 def output_transform(x, y):
     """
     Transform network output to satisfy:
     - BC: u(0,t) = u(1,t) = 0 (spatial boundaries)
-    - IC: u(x,0) = 0 (initial condition)
+    - IC: u(x,0) = 0 (initial displacement)
+    - IC: du/dt(x,0) = 0 (initial velocity)
     
     For DeepONet:
     x is a tuple: (branch_input, trunk_input)
-    x[0]: branch input (function evaluations) - shape (n_functions, 50)
+    x[0]: branch input (function evaluations) - shape (n_functions, n_sensors)
     x[1]: trunk input (x, t coordinates) - shape (n_points, 2)
     y: raw network output - shape (n_functions, n_points)
+    
+    To enforce both u(x,0)=0 and du/dt(x,0)=0, we use:
+    u(x,t) = x*(1-x) * t^2 * y_network
+    
+    This gives:
+    - u(x,0) = 0 (displacement IC)
+    - du/dt = x*(1-x) * 2t * y_network, so du/dt(x,0) = 0 (velocity IC)
+    - u(0,t) = u(1,t) = 0 (spatial BC)
     """
     # Extract trunk input (spatiotemporal coordinates)
     trunk_input = x[1]  # shape: (n_points, 2)
     x_coord = trunk_input[:, 0:1]  # spatial coordinate, shape (n_points, 1)
     t_coord = trunk_input[:, 1:2]  # time coordinate, shape (n_points, 1)
     
-    # Compute transform: shape (n_points, 1)
-    transform = x_coord * (1 - x_coord) * t_coord
+    # Compute transform: t^2 instead of t to enforce velocity IC
+    transform = x_coord * (1 - x_coord) * t_coord**2
     
     # Transpose to shape (1, n_points) and broadcast multiply with y (n_functions, n_points)
-    # This applies the same spatial/temporal constraint to all functions
     return y * transform.T
 
 geom = dde.geometry.Interval(0, 1)
@@ -114,9 +146,13 @@ bc = dde.icbc.DirichletBC(geomtime, lambda _: 0, lambda _, on_boundary: on_bound
 ic_u = dde.icbc.IC(geomtime, lambda _: 0, lambda _, on_initial: on_initial)
 
 # Initial condition on velocity: du/dt(x,0) = 0
+def velocity_ic(x, y, v):
+    """Compute du/dt and enforce it to be 0 at t=0"""
+    return dde.grad.jacobian(y, x, j=1)  # This should be 0 at initial time
+
 ic_v = dde.icbc.OperatorBC(
     geomtime,
-    lambda x, y, _: dde.grad.jacobian(y, x, j=1),  # du/dt
+    velocity_ic,
     lambda _, on_initial: on_initial
 )
 
@@ -124,7 +160,7 @@ pde = dde.data.TimePDE(
     geomtime,
     pde,
     # [bc, ic_u, ic_v], 
-    [ic_v], 
+    [], 
     num_domain=100,
     num_boundary=20,
     num_initial=10,
@@ -136,8 +172,8 @@ func_space = SpatioTemporalGRF(length_scale_x=0.6, length_scale_t=0.3, f_scale=3
 
 # Data
 # Sensor points now need to cover both x and t
-n_sensors_x = 5
-n_sensors_t = 5
+n_sensors_x = 25
+n_sensors_t = 25
 branch_in = n_sensors_t * n_sensors_x
 x_sensors = np.linspace(0, 1, n_sensors_x)
 t_sensors = np.linspace(0, 1, n_sensors_t)
@@ -161,11 +197,8 @@ net.apply_output_transform(output_transform)
 
 model = dde.Model(data, net)
 model.compile("adam", lr=0.005)
-start_time = datetime.now()
-losshistory, train_state = model.train(iterations=4000)
-end_time = datetime.now()
-print(f"Training time: {end_time - start_time}")
-dde.utils.plot_loss_history(losshistory)
+losshistory, train_state = model.train(iterations=5000)
+dde.utils.plot_loss_history(losshistory, fname=f'pi-operator/loss_history_{timestamp}.png')
 
 func_feats = func_space.random(1)
 
@@ -177,78 +210,116 @@ xt_full = np.vstack((xv_full.ravel(), tv_full.ravel())).T
 
 gt_data = np.load('./ground_truth.npz')
 x = np.linspace(0, 1, num=100)[:, None]
-t = gt_data['t_history'][:100]
-u_true = gt_data['u_gt'][:100]
-f_gt = gt_data['f_gt'][:100]  # Assuming f_gt is also spatiotemporal forcing
+t = gt_data['t_history'][80:180]
+u_true = gt_data['u_gt'][80:180]  # Physical values
+f_gt = gt_data['f_gt'][80:180]    # Physical values
 
-# Convert f_gt to v_branch format
-# f_gt has shape (n_time, n_space), e.g., (100, 100)
+# Scale ground truth to [0, 1] range
+u_true_scaled = u_true / u_max
+f_gt_scaled = f_gt / f_max
+
+# Convert f_gt_scaled to v_branch format
+# f_gt_scaled has shape (n_time, n_space), e.g., (100, 100)
 # We need to interpolate it to the sensor grid (n_sensors_t, n_sensors_x)
 
-# Original grid for f_gt
-x_gt = np.linspace(0, 1, f_gt.shape[1])  # spatial points in f_gt
-t_gt = t.ravel()  # temporal points in f_gt
+# Original grid for f_gt_scaled
+x_gt = np.linspace(0, 1, f_gt_scaled.shape[1])  # spatial points in f_gt (0 to 1)
+t_gt = t.ravel()  # temporal points in f_gt (actual time values)
 
-# Create interpolator
-f_interp = RegularGridInterpolator((t_gt, x_gt), f_gt, method='cubic', bounds_error=False, fill_value=0)
+# Create interpolator using actual coordinates
+f_interp = RegularGridInterpolator(
+    (t_gt, x_gt), 
+    f_gt_scaled,  # Use scaled forcing
+    method='cubic', 
+    bounds_error=False, 
+    fill_value=0
+)
 
-# Sensor grid points
-x_sensors_arr = np.linspace(0, 1, n_sensors_x)
-t_sensors_arr = np.linspace(0, 1, n_sensors_t)
-xv_sensors, tv_sensors = np.meshgrid(x_sensors_arr, t_sensors_arr)
+# Sensor grid points in normalized [0, 1] space
+# Map from [0, 1] to actual time range
+t_min, t_max = t_gt.min(), t_gt.max()
+x_sensors_normalized = np.linspace(0, 1, n_sensors_x)  # Already in [0, 1]
+t_sensors_normalized = np.linspace(0, 1, n_sensors_t)  # Normalized time
 
-# Evaluate f_gt at sensor points: need (t, x) order for interpolator
-sensor_points = np.vstack((tv_sensors.ravel(), xv_sensors.ravel())).T  # shape: (n_sensors, 2)
+# Map normalized time sensors to actual time values
+t_sensors_actual = t_min + t_sensors_normalized * (t_max - t_min)
+
+# Create meshgrid with actual coordinates
+xv_sensors_actual, tv_sensors_actual = np.meshgrid(x_sensors_normalized, t_sensors_actual)
+
+# Evaluate f_gt at sensor points: (t, x) order for interpolator
+sensor_points = np.vstack((tv_sensors_actual.ravel(), xv_sensors_actual.ravel())).T
 f_at_sensors = f_interp(sensor_points)  # shape: (n_sensors,)
 
 # Reshape to v_branch format: (1, n_sensors)
 v_branch = f_at_sensors.reshape(1, -1)
-print(f"v_branch shape: {v_branch.shape}, created from f_gt shape: {f_gt.shape}")
 
 # Prepare x_trunk: query points for solution
 xv, tv = np.meshgrid(x, t)
 x_trunk = np.vstack((np.ravel(xv), np.ravel(tv))).T
 
-u_pred = model.predict((v_branch, x_trunk))
-u_pred = u_pred.reshape((len(t), 100))
+# Predict scaled output
+u_pred_scaled = model.predict((v_branch, x_trunk))
+u_pred_scaled = u_pred_scaled.reshape((len(t), 100))
+
+# Scale back to physical units
+u_pred = u_pred_scaled * u_max
 
 # Create a 3-subplot figure: predicted, ground truth, absolute error
 fig, axes = plt.subplots(1, 3, figsize=(15, 4))
 
-# Predicted solution
+# Predicted solution (physical units)
 im0 = axes[0].imshow(u_pred, extent=[0, 1, t[0], t[-1]], aspect='auto', origin='lower')
 axes[0].set_xlabel('x')
 axes[0].set_ylabel('t')
-axes[0].set_title('Predicted')
+axes[0].set_title('Predicted (Physical Units)')
 plt.colorbar(im0, ax=axes[0])
 
-# Ground truth solution
+# Ground truth solution (physical units)
 im1 = axes[1].imshow(u_true, extent=[0, 1, t[0], t[-1]], aspect='auto', origin='lower')
 axes[1].set_xlabel('x')
 axes[1].set_ylabel('t')
-axes[1].set_title('Ground Truth')
+axes[1].set_title('Ground Truth (Physical Units)')
 plt.colorbar(im1, ax=axes[1])
 
-# Absolute error
+# Absolute error (physical units)
 abs_error = np.abs(u_pred - u_true)
+rel_error = np.abs(u_pred - u_true) / (np.abs(u_true) + 1e-10)
 im2 = axes[2].imshow(abs_error, extent=[0, 1, t[0], t[-1]], aspect='auto', origin='lower')
 axes[2].set_xlabel('x')
 axes[2].set_ylabel('t')
-axes[2].set_title('Absolute Error')
+axes[2].set_title(f'Absolute Error (L2: {np.linalg.norm(abs_error)/np.linalg.norm(u_true):.4f})')
 plt.colorbar(im2, ax=axes[2])
 
 plt.tight_layout()
 plt.savefig(f'pi-operator/comparison_{timestamp}.png', dpi=150)
 plt.close()
 
-# Plot f_at_sensors (forcing function at sensor locations)
-fig_f, ax_f = plt.subplots(figsize=(8, 6))
+# Plot f_at_sensors and f_gt side by side
+fig_f, axes_f = plt.subplots(1, 3, figsize=(15, 4))
+
+# Left subplot: forcing function at sensor locations (scaled)
 f_sensors_2d = f_at_sensors.reshape((n_sensors_t, n_sensors_x))
-im_f = ax_f.imshow(f_sensors_2d, extent=[0, 1, 0, 1], aspect='auto', origin='lower')
-ax_f.set_xlabel('x (sensor positions)')
-ax_f.set_ylabel('t (sensor positions)')
-ax_f.set_title('Forcing Function at Sensor Locations')
-plt.colorbar(im_f, ax=ax_f)
+im_f0 = axes_f[0].imshow(f_sensors_2d, extent=[0, 1, t[0], t[-1]], aspect='auto', origin='lower')
+axes_f[0].set_xlabel('x (sensor positions)')
+axes_f[0].set_ylabel('t (sensor positions)')
+axes_f[0].set_title('Forcing at Sensors (Scaled)')
+plt.colorbar(im_f0, ax=axes_f[0])
+
+# Right subplot: entire f_gt (physical units)
+im_f1 = axes_f[1].imshow(f_gt_scaled, extent=[0, 1, t[0], t[-1]], aspect='auto', origin='lower')
+axes_f[1].set_xlabel('x')
+axes_f[1].set_ylabel('t')
+axes_f[1].set_title('Ground Truth Forcing (Scaled)')
+plt.colorbar(im_f1, ax=axes_f[1])
+
+# Right subplot: entire f_gt (physical units)
+im_f2 = axes_f[2].imshow(f_gt, extent=[0, 1, t[0], t[-1]], aspect='auto', origin='lower')
+axes_f[2].set_xlabel('x')
+axes_f[2].set_ylabel('t')
+axes_f[2].set_title('Ground Truth Forcing (Physical Units)')
+plt.colorbar(im_f2, ax=axes_f[2])
+
 plt.tight_layout()
 plt.savefig(f'pi-operator/f_sensors_{timestamp}.png', dpi=150)
 plt.close()
