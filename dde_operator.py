@@ -168,7 +168,7 @@ pde = dde.data.TimePDE(
 )
 
 # Function space - using spatiotemporal forcing v(x,t)
-func_space = SpatioTemporalGRF(length_scale_x=0.3, length_scale_t=0.9, f_scale=3.0)
+func_space = SpatioTemporalGRF(length_scale_x=0.3, length_scale_t=0.9, f_scale=1.0)
 
 # Data
 # Sensor points now need to cover both x and t
@@ -199,6 +199,65 @@ model = dde.Model(data, net)
 model.compile("adam", lr=0.005)
 losshistory, train_state = model.train(iterations=20000)
 dde.utils.plot_loss_history(losshistory, fname=f'pi-operator/loss_history_{timestamp}.png')
+
+# Visualize a sample from the training dataset
+print("\n=== Visualizing Training Dataset Sample ===")
+func_feats_train = func_space.random(1)
+
+# Create evaluation grid
+xs_train = np.linspace(0, 1, num=100)[:, None]
+ts_train = np.linspace(0, 1, num=100)[:, None]
+xv_train, tv_train = np.meshgrid(xs_train.ravel(), ts_train.ravel())
+xt_train = np.vstack((xv_train.ravel(), tv_train.ravel())).T
+
+# Evaluate the training forcing function
+v_train = func_space.eval_batch(func_feats_train, xt_train)[0]
+v_train_2d = v_train.reshape((100, 100))
+
+# Evaluate at sensor points to see what the network actually sees
+xv_sensors_train, tv_sensors_train = np.meshgrid(
+    np.linspace(0, 1, n_sensors_x),
+    np.linspace(0, 1, n_sensors_t)
+)
+sensors_train = np.vstack((xv_sensors_train.ravel(), tv_sensors_train.ravel())).T
+v_sensors_train = func_space.eval_batch(func_feats_train, sensors_train)[0]
+v_sensors_2d_train = v_sensors_train.reshape((n_sensors_t, n_sensors_x))
+
+# Predict solution for this training forcing
+v_branch_train = v_sensors_train.reshape(1, -1)
+u_pred_train_scaled = model.predict((v_branch_train, xt_train))
+u_pred_train_scaled = u_pred_train_scaled.reshape((100, 100))
+u_pred_train = u_pred_train_scaled * u_max  # Scale back to physical units
+
+# Plot the training sample
+fig_train, axes_train = plt.subplots(1, 3, figsize=(15, 4))
+
+# Training forcing function (full resolution)
+im_t0 = axes_train[0].imshow(v_train_2d, extent=[0, 1, 0, 1], aspect='auto', origin='lower')
+axes_train[0].set_xlabel('x')
+axes_train[0].set_ylabel('t')
+axes_train[0].set_title(f'Training Forcing (Scaled)\nRange: [{v_train_2d.min():.3f}, {v_train_2d.max():.3f}]')
+plt.colorbar(im_t0, ax=axes_train[0])
+
+# Training forcing at sensor points
+im_t1 = axes_train[1].imshow(v_sensors_2d_train, extent=[0, 1, 0, 1], aspect='auto', origin='lower')
+axes_train[1].set_xlabel('x')
+axes_train[1].set_ylabel('t')
+axes_train[1].set_title(f'At Sensors ({n_sensors_x}×{n_sensors_t})')
+plt.colorbar(im_t1, ax=axes_train[1])
+
+# Predicted solution for this forcing
+im_t2 = axes_train[2].imshow(u_pred_train, extent=[0, 1, 0, 1], aspect='auto', origin='lower')
+axes_train[2].set_xlabel('x')
+axes_train[2].set_ylabel('t')
+axes_train[2].set_title(f'Predicted Solution (Physical)\nRange: [{u_pred_train.min():.6f}, {u_pred_train.max():.6f}]')
+plt.colorbar(im_t2, ax=axes_train[2])
+
+plt.tight_layout()
+plt.savefig(f'pi-operator/training_sample_{timestamp}.png', dpi=150)
+plt.close()
+
+print(f"Training sample saved to: pi-operator/training_sample_{timestamp}.png")
 
 func_feats = func_space.random(1)
 
@@ -264,6 +323,7 @@ u_pred_scaled = u_pred_scaled.reshape((len(t), 100))
 
 # Scale back to physical units
 u_pred = u_pred_scaled * u_max
+
 
 # Create a 3-subplot figure: predicted, ground truth, absolute error
 fig, axes = plt.subplots(1, 3, figsize=(15, 4))
