@@ -129,7 +129,7 @@ def output_transform(x, y):
     t_coord = trunk_input[:, 1:2]  # time coordinate, shape (n_points, 1)
     
     # Compute transform: t^2 instead of t to enforce velocity IC
-    transform = x_coord * (1 - x_coord) * t_coord**2
+    transform = x_coord * (1 - x_coord) # * t_coord**2
     
     # Transpose to shape (1, n_points) and broadcast multiply with y (n_functions, n_points)
     return y * transform.T
@@ -160,11 +160,11 @@ pde = dde.data.TimePDE(
     geomtime,
     pde,
     # [bc, ic_u, ic_v], 
-    [], 
-    num_domain=100,
-    num_boundary=20,
-    num_initial=10,
-    num_test=250,
+    [ic_u, ic_v], 
+    num_domain=200,
+    num_boundary=40,
+    num_initial=20,
+    num_test=500,
 )
 
 # Function space - using spatiotemporal forcing v(x,t)
@@ -172,8 +172,8 @@ func_space = SpatioTemporalGRF(length_scale_x=0.6, length_scale_t=0.3, f_scale=3
 
 # Data
 # Sensor points now need to cover both x and t
-n_sensors_x = 25
-n_sensors_t = 25
+n_sensors_x = 50
+n_sensors_t = 50
 branch_in = n_sensors_t * n_sensors_x
 x_sensors = np.linspace(0, 1, n_sensors_x)
 t_sensors = np.linspace(0, 1, n_sensors_t)
@@ -197,7 +197,7 @@ net.apply_output_transform(output_transform)
 
 model = dde.Model(data, net)
 model.compile("adam", lr=0.005)
-losshistory, train_state = model.train(iterations=5000)
+losshistory, train_state = model.train(iterations=20000)
 dde.utils.plot_loss_history(losshistory, fname=f'pi-operator/loss_history_{timestamp}.png')
 
 func_feats = func_space.random(1)
