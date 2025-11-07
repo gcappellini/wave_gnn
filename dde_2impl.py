@@ -9,6 +9,10 @@ import matplotlib.pyplot as plt
 import os
 from datetime import datetime
 
+# Set Paddle as the backend
+dde.config.set_default_float("float32")
+dde.backend.set_default_backend("paddle")
+
 # Create directory if it doesn't exist
 output_fold = 'pi-operator/free_evol'
 os.makedirs(output_fold, exist_ok=True)
