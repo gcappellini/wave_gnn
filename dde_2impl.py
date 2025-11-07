@@ -174,7 +174,7 @@ initializer = "Glorot uniform"
 net = dde.nn.STMsFFN(
     layer_size, activation, initializer, sigmas_x=[1], sigmas_t=[1, 10]
 )
-net.apply_feature_transform(lambda x: (x - 0.5) * 2 * np.sqrt(3))
+# net.apply_feature_transform(lambda x: (x - 0.5) * 2 * np.sqrt(3))
 net.apply_output_transform(output_transform)
 
 model = dde.Model(data, net)
