@@ -212,7 +212,8 @@ losshistory, train_state = model.train(
     model_save_path=f"{output_fold}/model_{timestamp}.ckpt"
 )
 
-dde.saveplot(losshistory, train_state, issave=True, isplot=True)
+dde.saveplot(losshistory, train_state, issave=True, isplot=True, output_dir=output_fold, 
+             loss_fname=f"loss_{timestamp}", train_fname=f"train_{timestamp}", test_fname=f"test_{timestamp}")
 
 x = np.linspace(0, 1, 100)[:, None]
 t = np.linspace(0, 1, 100)[:, None]
