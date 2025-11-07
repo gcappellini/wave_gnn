@@ -7,11 +7,12 @@ import deepxde as dde
 import numpy as np
 import matplotlib.pyplot as plt
 import os
+import paddle
 from datetime import datetime
 
-# Set Paddle as the backend
-dde.config.set_default_float("float32")
-dde.backend.set_default_backend("paddle")
+# # Set Paddle as the backend
+# dde.config.set_default_float("float32")
+# dde.backend.set_default_backend("paddle")
 
 # Create directory if it doesn't exist
 output_fold = 'pi-operator/free_evol'
@@ -35,100 +36,157 @@ def output_transform(x, y):
     return transform * y
 
 def func(x):
-    x, t = np.split(x, 2, axis=1)
-    return np.sin(np.pi * x) * np.cos(C * np.pi * t) + np.sin(A * np.pi * x) * np.cos(
-        A * C * np.pi * t
-    )
+    # Handle both numpy arrays and Paddle tensors
+    if isinstance(x, paddle.Tensor):
+        x_coord, t_coord = paddle.split(x, 2, axis=1)
+        return paddle.sin(np.pi * x_coord) * paddle.cos(C * np.pi * t_coord) + \
+               paddle.sin(A * np.pi * x_coord) * paddle.cos(A * C * np.pi * t_coord)
+    else:
+        x_coord, t_coord = np.split(x, 2, axis=1)
+        return np.sin(np.pi * x_coord) * np.cos(C * np.pi * t_coord) + \
+               np.sin(A * np.pi * x_coord) * np.cos(A * C * np.pi * t_coord)
 
-# Compute NTK-based adaptive weights
+
 def compute_ntk_weights(model, data):
     """
-    Compute adaptive weights using NTK trace estimates per loss component (Paddle).
-    For PDE: trace based on residual r = u_tt - C^2 u_xx using model.predict(operator=pde)
-    For ICs: trace based on direct outputs u and u_t
-    Returns weights for [pde_loss, ic1_loss, ic2_loss].
+    Compute adaptive weights based on NTK theory using PaddlePaddle backend.
+    Returns weights for [pde_loss, ic1_loss, ic2_loss] and traces
+    
+    FIXED: Keep tensors in computational graph instead of converting to numpy
     """
-    import paddle
-
-    # Get training points (numpy) and split
+    
+    # Get training points
     train_x = data.train_x_all
     num_domain = data.num_domain
     num_initial = data.num_initial
-
-    pde_points_np = train_x[:num_domain]
-    ic_points_np = train_x[num_domain:num_domain + num_initial]
-
-    # Convert to Paddle tensors (float32, requires_grad)
-    pde_points = paddle.to_tensor(pde_points_np, dtype='float32', stop_gradient=False)
-    ic_points = paddle.to_tensor(ic_points_np, dtype='float32', stop_gradient=False)
-
-    def ntk_trace_pde_residual(x_tensor):
-        """Compute NTK trace for PDE residual using DeepXDE's operator interface"""
-        params = [p for p in model.net.parameters()]
-        total = paddle.to_tensor(0.0, dtype='float32')
-        n = x_tensor.shape[0]
-        
-        for i in range(n):
-            xi = x_tensor[i:i+1]
-            xi.stop_gradient = False
-            
-            # Use DeepXDE's predict with operator to get residual
-            # Note: predict expects numpy, but we need gradients, so we compute manually
-            yi = model.net(xi)
-            
-            # Compute residual using the pde function
-            residual = pde(xi, yi)
-            r_scalar = residual.sum()
-            
-            # Compute gradients of residual w.r.t. parameters
-            grads = paddle.grad(outputs=[r_scalar], inputs=params, create_graph=False, retain_graph=False, allow_unused=True)
-            sq_terms = [paddle.sum(g * g) for g in grads if g is not None]
-            if sq_terms:
-                total = total + paddle.add_n(sq_terms)
-                
-        return float(total.numpy().item())
-
-    def ntk_trace_for_output(x_tensor):
-        """Compute NTK trace for direct network output (for ICs)"""
-        params = [p for p in model.net.parameters()]
-        total = paddle.to_tensor(0.0, dtype='float32')
-        n = x_tensor.shape[0]
-        for i in range(n):
-            xi = x_tensor[i:i+1]
-            yi = model.net(xi)
-            y_scalar = yi.sum()
-            grads = paddle.grad(outputs=[y_scalar], inputs=params, create_graph=False, retain_graph=False, allow_unused=True)
-            sq_terms = [paddle.sum(g * g) for g in grads if g is not None]
-            if sq_terms:
-                total = total + paddle.add_n(sq_terms)
-        return float(total.numpy().item())
-
-    # NTK trace estimates
-    K_pde = ntk_trace_pde_residual(pde_points)
-    K_ic1 = ntk_trace_for_output(ic_points)
-    K_ic2 = K_ic1  # Both ICs use same points
-
-    print(f"  Raw NTK traces: K_pde={K_pde:.2e}, K_ic1={K_ic1:.2e}, K_ic2={K_ic2:.2e}")
-
-    total_trace = K_pde + K_ic1 + K_ic2 + 1e-12
-
-    # Adaptive weights (inverse proportional to each trace)
-    lambda_pde = total_trace / (K_pde + 1e-12)
-    lambda_ic1 = total_trace / (K_ic1 + 1e-12)
-    lambda_ic2 = total_trace / (K_ic2 + 1e-12)
-
-    # Normalize weights to prevent extreme values
-    weights = np.array([lambda_pde, lambda_ic1, lambda_ic2], dtype=np.float32)
-    weights = weights / np.mean(weights)  # Mean = 1
     
-    # Optional: Cap maximum weight ratio to prevent one loss dominating
-    max_weight = np.max(weights)
-    if max_weight > 100:  # If any weight > 100x the mean
-        print(f"  Warning: Large weight ratio detected ({max_weight:.1f}), clipping to 100x")
-        weights = np.clip(weights, None, 100)
-        weights = weights / np.mean(weights)  # Renormalize after clipping
+    pde_points = train_x[:num_domain]
+    ic_points = train_x[num_domain:num_domain + num_initial]
+    
+    # Convert to paddle tensors
+    pde_points_pd = paddle.to_tensor(pde_points, dtype='float32', stop_gradient=False)
+    ic_points_pd = paddle.to_tensor(ic_points, dtype='float32', stop_gradient=False)
+    
+    # Get trainable parameters
+    params = [p for p in model.net.parameters() if not p.stop_gradient]
+    
+    # Helper function to compute trace for PDE residual
+    def compute_trace_pde(points):
+        trace = 0.0
+        
+        for i in range(points.shape[0]):
+            point_tensor = points[i:i+1]
+            point_tensor.stop_gradient = False
+            
+            # Forward pass through network (keeps computational graph)
+            y = model.net(point_tensor)
+            
+            # Compute PDE residual (keeps computational graph)
+            residual = pde(point_tensor, y)
+            residual_scalar = residual.sum()
+            
+            # Compute gradients w.r.t. parameters
+            grads = paddle.grad(
+                outputs=residual_scalar,
+                inputs=params,
+                create_graph=False,
+                retain_graph=False,
+                allow_unused=True
+            )
+            
+            # Sum squared gradients
+            for g in grads:
+                if g is not None:
+                    trace += paddle.sum(g ** 2).item()
+        
+        return trace
+    
+    # Helper function for IC1 (y - func(x))
+    def compute_trace_ic1(points):
+        trace = 0.0
+        
+        for i in range(points.shape[0]):
+            point_tensor = points[i:i+1]
+            point_tensor.stop_gradient = False
+            
+            # Network output
+            y = model.net(point_tensor)
+            
+            # IC1: y - func(x)
+            target = func(point_tensor)
+            ic_residual = (y - target).sum()
+            
+            # Compute gradients
+            grads = paddle.grad(
+                outputs=ic_residual,
+                inputs=params,
+                create_graph=False,
+                retain_graph=False,
+                allow_unused=True
+            )
+            
+            for g in grads:
+                if g is not None:
+                    trace += paddle.sum(g ** 2).item()
+        
+        return trace
+    
+    # Helper function for IC2 (du/dt at t=0)
+    def compute_trace_ic2(points):
+        trace = 0.0
+        
+        for i in range(points.shape[0]):
+            point_tensor = points[i:i+1]
+            point_tensor.stop_gradient = False
+            
+            # Network output
+            y = model.net(point_tensor)
+            
+            # IC2: du/dt (using dde.grad which works with paddle)
+            y_t = dde.grad.jacobian(y, point_tensor, i=0, j=1)
+            y_t_scalar = y_t.sum()
+            
+            # Compute gradients
+            grads = paddle.grad(
+                outputs=y_t_scalar,
+                inputs=params,
+                create_graph=False,
+                retain_graph=False,
+                allow_unused=True
+            )
+            
+            for g in grads:
+                if g is not None:
+                    trace += paddle.sum(g ** 2).item()
+        
+        return trace
+    
+    # Compute traces for each loss component
+    print("  Computing K_pde...")
+    K_pde = compute_trace_pde(pde_points_pd)
+    
+    print("  Computing K_ic1...")
+    K_ic1 = compute_trace_ic1(ic_points_pd)
+    
+    print("  Computing K_ic2...")
+    K_ic2 = compute_trace_ic2(ic_points_pd)
+    
+    # Total trace
+    total_trace = K_pde + K_ic1 + K_ic2
+    
+    # Compute adaptive weights using Algorithm 1 formula
+    lambda_pde = total_trace / (K_pde + 1e-10)
+    lambda_ic1 = total_trace / (K_ic1 + 1e-10)
+    lambda_ic2 = total_trace / (K_ic2 + 1e-10)
+    
+    print(f"  Traces: K_pde={K_pde:.2e}, K_ic1={K_ic1:.2e}, K_ic2={K_ic2:.2e}")
+    print(f"  Weights: λ_pde={lambda_pde:.2f}, λ_ic1={lambda_ic1:.2f}, λ_ic2={lambda_ic2:.2f}")
+    
+    weights = np.array([lambda_pde, lambda_ic1, lambda_ic2])
+    traces = np.array([K_pde, K_ic1, K_ic2])
+    
+    return weights, traces
 
-    return weights
 
 class AdaptiveWeightCallback(dde.callbacks.Callback):
     def __init__(self, model, data, update_every=1000):
@@ -137,10 +195,30 @@ class AdaptiveWeightCallback(dde.callbacks.Callback):
         self.data = data
         self.update_every = update_every
         
+        # Initialize logging lists
+        self.epochs_log = []
+        self.K_pde_log = []
+        self.K_ic1_log = []
+        self.K_ic2_log = []
+        self.lambda_pde_log = []
+        self.lambda_ic1_log = []
+        self.lambda_ic2_log = []
+        
     def on_epoch_end(self):
         if self.model.train_state.epoch % self.update_every == 0:
-            weights = compute_ntk_weights(self.model, self.data)
+            weights, traces = compute_ntk_weights(self.model, self.data)
+            
+            # Log epoch, traces, and weights
+            self.epochs_log.append(self.model.train_state.epoch)
+            self.K_pde_log.append(traces[0])
+            self.K_ic1_log.append(traces[1])
+            self.K_ic2_log.append(traces[2])
+            self.lambda_pde_log.append(weights[0])
+            self.lambda_ic1_log.append(weights[1])
+            self.lambda_ic2_log.append(weights[2])
+            
             print(f"\nEpoch {self.model.train_state.epoch}: Updated weights = {weights}")
+            
             # Update loss weights
             self.model.compile(
                 "adam",
@@ -172,52 +250,134 @@ data = dde.data.TimePDE(
     num_test=10000,
 )
 
-layer_size = [2] + [100] * 3 + [1]
+layer_size = [2] + [200] * 3 + [1]
 activation = "tanh"
 initializer = "Glorot uniform"
+optimizer = "adam"
+learning_rate = 0.001
+iterations = 5000
+
 net = dde.nn.STMsFFN(
     layer_size, activation, initializer, sigmas_x=[1], sigmas_t=[1, 10]
 )
-# net.apply_feature_transform(lambda x: (x - 0.5) * 2 * np.sqrt(3))
+net.apply_feature_transform(lambda x: (x - 0.5) * 2 * np.sqrt(3))
 net.apply_output_transform(output_transform)
 
 model = dde.Model(data, net)
-# Initialize with equal weights
-    # (Removed TF-specific Jacobian; Paddle-based NTK trace computed directly above.)
+
+
+# Create custom optimizer with gradient clipping
+custom_optimizer = paddle.optimizer.Adam(
+    learning_rate=learning_rate,
+    parameters=net.parameters(),
+    # grad_clip=grad_clip
+)
+
 model.compile(
-    "adam",
-    lr=0.001,
+    custom_optimizer,
     metrics=["l2 relative error"],
     loss_weights=[1.0, 1.0, 1.0],
-    decay=("inverse time", 2000, 0.9),
 )
 
 # Compute initial NTK-based weights
 print("Computing initial NTK weights...")
-initial_weights = compute_ntk_weights(model, data)
+initial_weights, initial_traces = compute_ntk_weights(model, data)
 print(f"Initial adaptive weights: {initial_weights}")
+print(f"Initial traces: {initial_traces}")
 
-# Recompile with adaptive weights
+# Recompile with adaptive weights and gradient clipping
+custom_optimizer = paddle.optimizer.Adam(
+    learning_rate=learning_rate,
+    parameters=net.parameters(),
+    # grad_clip=grad_clip
+)
+
 model.compile(
-    "adam",
-    lr=0.001,
+    custom_optimizer,
     metrics=["l2 relative error"],
-    loss_weights=initial_weights,
+    loss_weights=[1.0, 1.0, 1.0], #initial_weights,
     decay=("inverse time", 2000, 0.9),
 )
 
 # pde_residual_resampler = dde.callbacks.PDEPointResampler(period=1)
-adaptive_weight_callback = AdaptiveWeightCallback(model, data, update_every=1000)
+adaptive_weight_callback = AdaptiveWeightCallback(model, data, update_every=100)
 
 losshistory, train_state = model.train(
-    iterations=40000, 
-    callbacks=[adaptive_weight_callback], 
-    display_every=500, 
+    iterations=iterations,
+    callbacks=[adaptive_weight_callback],
+    display_every=500,
     model_save_path=f"{output_fold}/model_{timestamp}.ckpt"
 )
 
-dde.saveplot(losshistory, train_state, issave=True, isplot=True, output_dir=output_fold, 
-             loss_fname=f"loss_{timestamp}", train_fname=f"train_{timestamp}", test_fname=f"test_{timestamp}")
+dde.utils.save_best_state(train_state, fname_train=f"train_{timestamp}", fname_test=f"test_{timestamp}")
+
+# Plot all loss components separately
+loss_train = np.array(losshistory.loss_train)
+loss_test = np.array(losshistory.loss_test)
+steps = np.array(losshistory.steps)
+
+fig = plt.figure(figsize=(10, 6))
+plt.semilogy(steps, loss_train[:, 0], label="PDE residual")
+plt.semilogy(steps, loss_train[:, 1], label="IC1")
+plt.semilogy(steps, loss_train[:, 2], label="IC2")
+plt.semilogy(steps, np.sum(loss_train, axis=1), label="Total loss", linestyle='--', linewidth=2)
+plt.semilogy(steps, np.sum(loss_test, axis=1), label="Total loss (test)", linestyle='--', linewidth=2)
+plt.xlabel("Iteration")
+plt.ylabel("Loss")
+plt.legend()
+plt.grid(True, alpha=0.3)
+plt.title("Loss Components Evolution")
+plt.savefig(f'{output_fold}/loss_components_{timestamp}.png', dpi=150, bbox_inches='tight')
+plt.close()
+
+# Plot NTK traces (K_pde, K_ic1, K_ic2) evolution
+if len(adaptive_weight_callback.epochs_log) > 0:
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+    
+    epochs_array = np.array(adaptive_weight_callback.epochs_log)
+    
+    # K_pde
+    axes[0].plot(epochs_array, adaptive_weight_callback.K_pde_log, 'o-', linewidth=2, markersize=6)
+    axes[0].set_xlabel('Epoch')
+    axes[0].set_ylabel('K_pde (NTK Trace)')
+    axes[0].set_title('PDE Residual NTK Trace')
+    axes[0].grid(True, alpha=0.3)
+    axes[0].set_yscale('log')
+    
+    # K_ic1
+    axes[1].plot(epochs_array, adaptive_weight_callback.K_ic1_log, 'o-', linewidth=2, markersize=6, color='orange')
+    axes[1].set_xlabel('Epoch')
+    axes[1].set_ylabel('K_ic1 (NTK Trace)')
+    axes[1].set_title('IC1 (u) NTK Trace')
+    axes[1].grid(True, alpha=0.3)
+    axes[1].set_yscale('log')
+    
+    # K_ic2
+    axes[2].plot(epochs_array, adaptive_weight_callback.K_ic2_log, 'o-', linewidth=2, markersize=6, color='green')
+    axes[2].set_xlabel('Epoch')
+    axes[2].set_ylabel('K_ic2 (NTK Trace)')
+    axes[2].set_title('IC2 (u_t) NTK Trace')
+    axes[2].grid(True, alpha=0.3)
+    axes[2].set_yscale('log')
+    
+    plt.tight_layout()
+    plt.savefig(f'{output_fold}/ntk_traces_{timestamp}.png', dpi=150, bbox_inches='tight')
+    plt.close()
+    
+    # Plot adaptive weights evolution (all in one plot)
+    fig = plt.figure(figsize=(10, 6))
+    plt.plot(epochs_array, adaptive_weight_callback.lambda_pde_log, 'o-', label='λ_pde', linewidth=2, markersize=6)
+    plt.plot(epochs_array, adaptive_weight_callback.lambda_ic1_log, 'o-', label='λ_ic1', linewidth=2, markersize=6)
+    plt.plot(epochs_array, adaptive_weight_callback.lambda_ic2_log, 'o-', label='λ_ic2', linewidth=2, markersize=6)
+    plt.xlabel('Epoch')
+    plt.ylabel('Adaptive Weight Value')
+    plt.title('Adaptive Loss Weights Evolution')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.savefig(f'{output_fold}/adaptive_weights_{timestamp}.png', dpi=150, bbox_inches='tight')
+    plt.close()
+    
+    print(f"\nNTK traces and weights plots saved to {output_fold}/")
 
 x = np.linspace(0, 1, 100)[:, None]
 t = np.linspace(0, 1, 100)[:, None]
