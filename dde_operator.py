@@ -152,8 +152,10 @@ def velocity_ic(x, y, v):
 
 ic_v = dde.icbc.OperatorBC(
     geomtime,
-    velocity_ic,
-    lambda _, on_initial: on_initial
+    # velocity_ic,
+    # lambda _, on_initial: on_initial
+    lambda x, y, _: dde.grad.jacobian(y, x, i=0, j=1),
+    lambda x, _: dde.utils.isclose(x[1], 0),
 )
 
 pde = dde.data.TimePDE(

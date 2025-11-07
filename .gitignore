@@ -16,6 +16,7 @@ ENV/
 
 # Hydra outputs
 outputs/
+pi-operator/
 multirun/
 .hydra/
 
