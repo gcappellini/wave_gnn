@@ -34,7 +34,7 @@ num_initial = 20  # Total points = 600 + 100 = 700; 700/50 = 14 batches exactly
 num_test = 500
 
 eval_fcts = 200
-batch_size = 50
+batch_size = 20
 
 ic_points = 20
 hidden_feats = 64
@@ -127,10 +127,9 @@ def ic_func(x, v):
     Works with both numpy arrays and PyTorch tensors.
     """
     # For initial conditions, x is directly the coordinate array, not a tuple
+    print(f"ic_func: x shape = {x.shape}, v shape = {v.shape}")
     x_spatial = x[:, 0:1]  # Extract spatial coordinate (first column)
-    
-    # FIXED: Extract only function values from v (second column)
-    # v[:, 0] are the spatial coordinates, v[:, 1] are the function values
+
     if torch.is_tensor(v):
         v_vals = v[:, 1:2]  # Extract function values (second column)
     else:
@@ -448,14 +447,16 @@ if __name__ == "__main__":
     )
 
     # Function space - represents the distribution of initial displacements u0(x)
-    # GRF generates smooth random functions with correlation length_scale=0.2
-    func_space = dde.data.GRF(length_scale=0.4)
+    # Using sine series with modes to ensure BC compatibility
+    # Characteristic length ~ 0.4 corresponds to dominant wavelength ~ 2.5, so k ~ 2-3
+    # We use modes 1-5 to get a characteristic length around 0.4
+    func_space = dde.data.PowerSeries(N=5)  # Sine series with modes k=1,2,3,4,5
 
     # Data - now learning operator from initial conditions u0(x) to solution u(x,t)
     eval_pts = np.linspace(0, 1, num=ic_points)[:, None]
     data = dde.data.PDEOperatorCartesianProd(
         pde, func_space, eval_pts, eval_fcts, 
-        function_variables=[0],  # Function variable is used in IC, not PDE
+        function_variables=[0],
         num_test=num_test, 
         batch_size=batch_size
     )
@@ -535,11 +536,11 @@ if __name__ == "__main__":
         v_sample = func_space.eval_batch(func_feats_samples[i:i+1], xs)[0]
         # Apply ic_func transform to match IC
         v_transformed = ic_func(xs, v_sample)
-        plt.plot(xs, v_transformed, '--', alpha=0.6, label=f'GRF sample {i+1}')
+        plt.plot(xs, v_transformed, '--', alpha=0.6, label=f'Sine series sample {i+1}')
 
     plt.xlabel('x')
     plt.ylabel('u(x, 0)')
-    plt.title('Comparison: Target Initial Condition vs GRF Samples')
+    plt.title('Comparison: Target Initial Condition vs Sine Series Samples')
     plt.legend()
     plt.grid(True, alpha=0.3)
     plt.savefig(os.path.join(log_dir, 'ic_comparison.png'), dpi=150, bbox_inches='tight')
