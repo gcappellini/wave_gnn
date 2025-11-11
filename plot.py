@@ -4,6 +4,8 @@ Utility functions for plotting mesh-based features as animations.
 
 import numpy as np
 import matplotlib.pyplot as plt
+import os
+
 
 
 
@@ -251,3 +253,216 @@ def plot_loss_history(
     plt.close(fig)
     
     print(f"Saved loss history plot to '{output_file}'")
+
+
+def plot_loss_components(
+    losshistory,
+    log_dir,
+):
+    """
+    Plot all loss components separately from the training history.
+    
+    Parameters
+    ----------
+    losshistory : object
+        Loss history object with attributes:
+        - loss_train: list of training loss components per iteration
+        - loss_test: list of test loss components per iteration
+        - steps: list of iteration steps
+    log_dir : str
+        Directory to save the output plot
+    """
+
+
+    # Extract loss data
+    loss_train = np.array(losshistory.loss_train)
+    loss_test = np.array(losshistory.loss_test)
+    steps = np.array(losshistory.steps)
+
+    fig = plt.figure(figsize=(10, 6))
+    plt.semilogy(steps, loss_train[:, 0], label="PDE residual")
+    # plt.semilogy(steps, loss_train[:, 1], label="BC")
+    plt.semilogy(steps, loss_train[:, 1], label="IC1")
+    plt.semilogy(steps, loss_train[:, 2], label="IC2")
+    plt.semilogy(steps, np.sum(loss_train, axis=1), label="Total loss", linestyle='--', linewidth=2)
+    plt.semilogy(steps, np.sum(loss_test, axis=1), label="Total loss (test)", linestyle='--', linewidth=2)
+    plt.xlabel("Iteration")
+    plt.ylabel("Loss")
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.title("Loss Components Evolution")
+    plt.savefig(f'{log_dir}/Loss_components.png', dpi=150, bbox_inches='tight')
+    plt.close()
+
+def plot_weights_NTK(adaptive_weight_callback, log_dir):
+        fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+        
+        epochs_array = np.array(adaptive_weight_callback.epochs_log)
+        
+        # K_pde
+        axes[0].plot(epochs_array, adaptive_weight_callback.K_pde_log, linewidth=2, markersize=6)
+        axes[0].set_xlabel('Epoch')
+        axes[0].set_ylabel('K_pde (NTK Trace)')
+        axes[0].set_title('PDE Residual NTK Trace')
+        axes[0].grid(True, alpha=0.3)
+        axes[0].set_yscale('log')
+        axes[0].set_xscale('log')
+        
+        # K_ic1
+        axes[1].plot(epochs_array, adaptive_weight_callback.K_ic1_log, linewidth=2, markersize=6, color='orange')
+        axes[1].set_xlabel('Epoch')
+        axes[1].set_ylabel('K_ic1 (NTK Trace)')
+        axes[1].set_title('IC1 (u) NTK Trace')
+        axes[1].grid(True, alpha=0.3)
+        axes[1].set_yscale('log')
+        axes[1].set_xscale('log')
+        
+        # K_ic2
+        axes[2].plot(epochs_array, adaptive_weight_callback.K_ic2_log, linewidth=2, markersize=6, color='green')
+        axes[2].set_xlabel('Epoch')
+        axes[2].set_ylabel('K_ic2 (NTK Trace)')
+        axes[2].set_title('IC2 (u_t) NTK Trace')
+        axes[2].grid(True, alpha=0.3)
+        axes[2].set_yscale('log')
+        axes[2].set_xscale('log')
+        
+        plt.tight_layout()
+        plt.savefig(f'{log_dir}/NTK_traces.png', dpi=150, bbox_inches='tight')
+        plt.close()
+        
+        # Plot adaptive weights evolution (all in one plot)
+        fig = plt.figure(figsize=(10, 6))
+        plt.plot(epochs_array, adaptive_weight_callback.lambda_pde_log, label='$\lambda_{pde}$', linewidth=2, markersize=6)
+        plt.plot(epochs_array, adaptive_weight_callback.lambda_ic1_log, label='$\lambda_{ic1}$', linewidth=2, markersize=6)
+        plt.plot(epochs_array, adaptive_weight_callback.lambda_ic2_log, label='$\lambda_{ic2}$', linewidth=2, markersize=6)
+        plt.xlabel('Epoch')
+        plt.ylabel('Adaptive Weight Value')
+        plt.title('Adaptive Loss Weights Evolution')
+        plt.yscale('log')
+        plt.xscale('log')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        plt.savefig(f'{log_dir}/Adaptive_weights.png', dpi=150, bbox_inches='tight')
+        plt.close()
+        
+        print(f"\nNTK traces and weights plots saved to {log_dir}/")
+
+def plot_eigenvalues_spectra(adaptive_weight_callback, iters, log_dir):
+        
+        # Extract eigenvalues for each checkpoint
+        lambda_K_pde_log = []
+        lambda_K_ic1_log = []
+        lambda_K_ic2_log = []
+        
+        for k in range(len(adaptive_weight_callback.checkpoint_K_pde)):
+            K_pde = adaptive_weight_callback.checkpoint_K_pde[k]
+            K_ic1 = adaptive_weight_callback.checkpoint_K_ic1[k]
+            K_ic2 = adaptive_weight_callback.checkpoint_K_ic2[k]
+            
+            epoch = adaptive_weight_callback.checkpoint_epochs[k]
+            print(f"  Checkpoint {k}: epoch={epoch}, K_pde trace={np.trace(K_pde):.2e}, K_ic1 trace={np.trace(K_ic1):.2e}, K_ic2 trace={np.trace(K_ic2):.2e}")
+            
+            # Compute eigenvalues
+            lambda_K_pde, _ = np.linalg.eig(K_pde)
+            lambda_K_ic1, _ = np.linalg.eig(K_ic1)
+            lambda_K_ic2, _ = np.linalg.eig(K_ic2)
+            
+            # Sort in decreasing order
+            lambda_K_pde = np.sort(np.real(lambda_K_pde))[::-1]
+            lambda_K_ic1 = np.sort(np.real(lambda_K_ic1))[::-1]
+            lambda_K_ic2 = np.sort(np.real(lambda_K_ic2))[::-1]
+            
+            # Store eigenvalues
+            lambda_K_pde_log.append(lambda_K_pde)
+            lambda_K_ic1_log.append(lambda_K_ic1)
+            lambda_K_ic2_log.append(lambda_K_ic2)
+        
+        # Plot eigenvalue spectra
+        fig = plt.figure(figsize=(18, 5))
+        
+        # PDE eigenvalues
+        plt.subplot(1, 3, 1)
+        for k, epoch in enumerate(adaptive_weight_callback.checkpoint_epochs):
+            percent = int(100 * epoch / iters)
+            linestyle = '-' if k == 0 else '--'
+            n_eigs = len(lambda_K_pde_log[k])
+            indices = np.arange(1, n_eigs + 1)  # Start from 1 for log scale
+            plt.plot(indices, lambda_K_pde_log[k], linestyle, label=f'$n={epoch}$ ({percent}%)')
+        plt.xlabel('Index')
+        plt.xscale('log')
+        plt.yscale('log')
+        plt.legend()
+        plt.title(r'Eigenvalues of $K_{pde}$')
+        plt.grid(True, alpha=0.3)
+        
+        # IC1 eigenvalues
+        plt.subplot(1, 3, 2)
+        for k, epoch in enumerate(adaptive_weight_callback.checkpoint_epochs):
+            percent = int(100 * epoch / iters)
+            linestyle = '-' if k == 0 else '--'
+            n_eigs = len(lambda_K_ic1_log[k])
+            indices = np.arange(1, n_eigs + 1)  # Start from 1 for log scale
+            plt.plot(indices, lambda_K_ic1_log[k], linestyle, label=f'$n={epoch}$ ({percent}%)')
+        plt.xlabel('Index')
+        plt.xscale('log')
+        plt.yscale('log')
+        plt.legend()
+        plt.title(r'Eigenvalues of $K_{ic1}$ (u)')
+        plt.grid(True, alpha=0.3)
+        
+        # IC2 eigenvalues
+        plt.subplot(1, 3, 3)
+        for k, epoch in enumerate(adaptive_weight_callback.checkpoint_epochs):
+            percent = int(100 * epoch / iters)
+            linestyle = '-' if k == 0 else '--'
+            n_eigs = len(lambda_K_ic2_log[k])
+            indices = np.arange(1, n_eigs + 1)  # Start from 1 for log scale
+            plt.plot(indices, lambda_K_ic2_log[k], linestyle, label=f'$n={epoch}$ ({percent}%)')
+        plt.xlabel('Index')
+        plt.xscale('log')
+        plt.yscale('log')
+        plt.legend()
+        plt.title(r'Eigenvalues of $K_{ic2}$ (u_t)')
+        plt.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(log_dir, 'Eigenvalues.png'), dpi=150, bbox_inches='tight')
+        plt.close()
+        
+        print(f"Eigenvalue spectra plot saved to {log_dir}/Eigenvalues.png")
+
+def plot_comparison(u_true, u_pred, l2_err, log_dir):
+    """
+    Plot comparison between true and predicted solutions.
+    """
+
+    # Visualization
+    plt.figure(figsize=(15, 5))
+
+    # Plot forcing function v(t,x)
+    plt.subplot(1, 3, 1)
+    plt.imshow(u_true, extent=[0, 1, 0, 1], origin='lower', aspect='auto', cmap='viridis')
+    plt.colorbar()
+    plt.xlabel('x')
+    plt.ylabel('t')
+    plt.title('True u(x,t)')
+
+    # Plot branch input (downsampled v on 6x6 grid)
+    plt.subplot(1, 3, 2)
+    plt.imshow(u_pred, extent=[0, 1, 0, 1], origin='lower', aspect='auto', cmap='viridis')
+    plt.colorbar()
+    plt.xlabel('x')
+    plt.ylabel('t')
+    plt.title('Predicted u(x,t)')
+
+    # Plot predicted solution u(t,x)
+    plt.subplot(1, 3, 3)
+    plt.imshow(np.abs(u_pred-u_true), extent=[0, 1, 0, 1], origin='lower', aspect='auto', cmap='jet')
+    plt.colorbar()
+    plt.xlabel('x')
+    plt.ylabel('t')
+    plt.title('Absolute Error, l2 rel error: %.2e' % (l2_err))
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(log_dir, 'comparison.png'))
+    plt.close()

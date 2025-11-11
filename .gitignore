@@ -19,6 +19,7 @@ outputs/
 pi-operator/
 multirun/
 .hydra/
+logs_*/
 
 # Checkpoints and models
 checkpoints/

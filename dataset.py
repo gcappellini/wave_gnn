@@ -986,6 +986,75 @@ class WaveGNN1D:
             new_features = torch.tensor(new_features, dtype=torch.float32, device=device)
         
         return new_features
+    
+    def solve(self, x_grid, t_grid, u0_func, v0_func, f_func=None):
+        """
+        Solve the 1D damped wave equation over time.
+        
+        Args:
+            x_grid: 1D array of spatial coordinates (N,)
+            t_grid: 1D array of time instants (Nt,)
+            u0_func: Function u0(x) for initial displacement
+            v0_func: Function v0(x) for initial velocity
+            f_func: Optional function f(x, t) for forcing term (default: zero)
+            
+        Returns:
+            u_xt: Displacement solution, shape (Nt, N)
+            v_xt: Velocity solution, shape (Nt, N)
+        """
+        N = len(x_grid)
+        Nt = len(t_grid)
+        
+        # Initialize solution arrays
+        u_xt = np.zeros((Nt, N))
+        v_xt = np.zeros((Nt, N))
+        
+        # Set initial conditions
+        u0 = u0_func(x_grid)
+        v0 = v0_func(x_grid)
+        
+        # Handle 2D output from functions
+        if u0.ndim > 1:
+            u0 = u0.flatten()
+        if v0.ndim > 1:
+            v0 = v0.flatten()
+        
+        # Enforce boundary conditions
+        u0[0] = 0.0
+        u0[-1] = 0.0
+        v0[0] = 0.0
+        v0[-1] = 0.0
+        
+        # Store initial state
+        u_xt[0, :] = u0
+        v_xt[0, :] = v0
+        
+        # Time stepping
+        for i in range(1, Nt):
+            t = t_grid[i]
+            
+            # Compute forcing at current time
+            if f_func is not None:
+                f = f_func(x_grid, t)
+                if f.ndim > 1:
+                    f = f.flatten()
+            else:
+                f = np.zeros(N)
+            
+            # Build node features [u, v, f]
+            node_features = np.stack([u_xt[i-1, :], v_xt[i-1, :], f], axis=1)
+            
+            # Forward one time step
+            new_features = self.forward(node_features)
+            
+            # Extract and store results
+            if torch.is_tensor(new_features):
+                new_features = new_features.cpu().numpy()
+            
+            u_xt[i, :] = new_features[:, 0]
+            v_xt[i, :] = new_features[:, 1]
+        
+        return u_xt, v_xt
 
 def create_dataset(num_graphs=64, cfg=None):
     """Create a list of Data objects (dataset) with Dirichlet BCs for graph-level batching."""
