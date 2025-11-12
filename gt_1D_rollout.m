@@ -60,7 +60,7 @@ cpu_time_end = cputime-cpu_time_start
 output_data = [];
 for i = 1:length(t)
     for j = 1:length(x)
-        output_data = [output_data; t(i), x(j), sol(i, j, 1), stringforce(x(j), t(i))];
+        output_data = [output_data; x(j), t(i), stringforce(x(j), t(i)), sol(i, j, 1)];
     end
 end
 writematrix(output_data, '/Users/guglielmocappellini/Desktop/research/code/pinns-wave/wave-gnn/1_gcn_string/gt_wave1D_rollout.csv');
