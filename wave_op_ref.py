@@ -17,6 +17,9 @@ dde.config.set_random_seed(seed)
 c = 1.0
 k = 1.0
 
+training = True
+load_from = 'logs_pideeponet/20251112-140819'  #
+
 # PDE
 def pde(x, y, v):
 
@@ -93,42 +96,41 @@ net = dde.nn.DeepONetCartesianProd(
 net.apply_output_transform(output_transform)
 model = dde.zcs.Model(data, net)
 model.compile("adam", lr=0.0005)
-start = datetime.now()
-losshistory, train_state = model.train(iterations=20000, model_save_path=f"{log_dir}/model.ckpt")
-end = datetime.now()
-tr_t = end - start
-plot_loss_components(losshistory, log_dir)
 
-func_feats = func_space.random(1)
-# xs = np.linspace(0, 1, num=100)[:, None]
-# v = func_space.eval_batch(func_feats, xs)[0]
-# x, t, u_true = solve_ADR(
-#     0,
-#     1,
-#     0,
-#     1,
-#     lambda x: 0.01 * np.ones_like(x),
-#     lambda x: np.zeros_like(x),
-#     lambda u: 0.01 * u**2,
-#     lambda u: 0.02 * u,
-#     lambda x, t: np.tile(v[:, None], (1, len(t))),
-#     lambda x: np.zeros_like(x),
-#     100,
-#     100,
-# )
-# u_true = u_true.T
-# plt.figure()
-# plt.imshow(u_true)
-# plt.colorbar()
+if load_from is not None:
+    model_files = [f for f in os.listdir(load_from) if f.startswith("model.ckpt")]
+    if not model_files:
+        raise FileNotFoundError(f"No model checkpoint found in {load_from}")
+    model_path = os.path.join(load_from, model_files[0])
+    model.restore(model_path, verbose=1)
 
-x= np.linspace(0, 1, num=100)
-t= np.linspace(0, 1, num=100)
+if training:
+    start = datetime.now()
+    losshistory, train_state = model.train(iterations=20000, model_save_path=f"{log_dir}/model.ckpt")
+    end = datetime.now()
+    tr_t = end - start
+    plot_loss_components(losshistory, log_dir)
+else:
+    tr_t=0
 
-v_branch = func_space.eval_batch(func_feats, np.linspace(0, 1, num=50)[:, None])
+
+
+v_branch = np.loadtxt('./v_branch.csv', delimiter=',')
+
+# Reshape v_branch to (1, 50) for DeepONet branch network
+# DeepONet expects shape (batch_size, num_sensors)
+if v_branch.ndim == 1:
+    v_branch = v_branch.reshape(1, -1)  # (50,) -> (1, 50)
+
+xv = np.loadtxt('gt_wave1D.csv', delimiter=',', usecols=0)
+tv = np.loadtxt('gt_wave1D.csv', delimiter=',', usecols=1)
+u_true = np.loadtxt('gt_wave1D.csv', delimiter=',', usecols=2)
+
+u_true = u_true.reshape((100, 100))
 
 
 plt.figure(figsize=(10, 6))
-plt.plot(np.linspace(0, 1, num=50), v_branch[0], 'b-', linewidth=2)
+plt.plot(np.linspace(0, 1, num=50), v_branch.ravel(), 'b-', linewidth=2)
 plt.xlabel('x')
 plt.ylabel('v(x)')
 plt.title('Force v(x)')
@@ -136,12 +138,13 @@ plt.grid(True)
 plt.savefig(os.path.join(log_dir, 'v_branch.png'), dpi=300, bbox_inches='tight')
 plt.close()
 
-xv, tv = np.meshgrid(x, t)
+
 x_trunk = np.vstack((np.ravel(xv), np.ravel(tv))).T
 u_pred = model.predict((v_branch, x_trunk))
-u_pred = u_pred.reshape((100, 100))
+u_pred = u_pred.reshape((100, 100)).T
+l2_err = dde.metrics.l2_relative_error(u_true, u_pred)
 
-plot_comparison(0*u_pred, u_pred, 0, log_dir)
+plot_comparison(u_true, u_pred, l2_err, log_dir)
 
 # Save inputs and predictions to CSV
 np.savetxt(os.path.join(log_dir, 'v_branch.csv'), v_branch, delimiter=',')
