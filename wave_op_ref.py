@@ -4,6 +4,7 @@ import numpy as np
 import os
 from datetime import datetime
 from plot import plot_loss_components, plot_comparison
+import matplotlib.pyplot as plt
 
 timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
 log_dir = os.path.join('logs_pideeponet', timestamp)
@@ -23,14 +24,37 @@ def pde(x, y, v):
     dy_t = grad_y.compute((0, 1))
     dy_tt = grad_y.compute((0, 2))
     dy_xx = grad_y.compute((2, 0))
-    return dy_tt - c * dy_xx + k * dy_t - v
+    return dy_tt - c * dy_xx + k * dy_t - 10 * v
 
+def output_transform(x, y):
+    """
+    Enforce boundary conditions through output transformation.
+    
+    In DeepONet, x can be:
+    - A tuple (x_branch, x_trunk) during training
+    - Just x_trunk array during prediction
+    
+    We need x_trunk which has shape (n_points, 2) where columns are [x_space, t_time]
+    """
+    # Handle both tuple and array cases
+    if isinstance(x, tuple):
+        x_trunk = x[1]  # Extract trunk coordinates from tuple
+    else:
+        x_trunk = x
+    
+    x_coord = x_trunk[:, 0:1]  # Spatial coordinate (first column)
+    
+    # Boundary transform: x*(1-x) vanishes at x=0 and x=1
+    bc_transform = x_coord * (1.0 - x_coord)
+    
+    # Apply transform: u_transformed = u_net * x * (1-x)
+    return y * bc_transform.T
 
 geom = dde.geometry.Interval(0, 1)
 timedomain = dde.geometry.TimeDomain(0, 1)
 geomtime = dde.geometry.GeometryXTime(geom, timedomain)
 
-bc = dde.icbc.DirichletBC(geomtime, lambda _: 0, lambda _, on_boundary: on_boundary)
+# bc = dde.icbc.DirichletBC(geomtime, lambda _: 0, lambda _, on_boundary: on_boundary)
 ic = dde.icbc.IC(geomtime, lambda _: 0, lambda _, on_initial: on_initial)
 
 ic_2 = dde.icbc.OperatorBC(
@@ -43,7 +67,7 @@ ic_2 = dde.icbc.OperatorBC(
 pde = dde.data.TimePDE(
     geomtime,
     pde,
-    [bc, ic, ic_2],
+    [ic, ic_2],
     num_domain=200,
     num_boundary=40,
     num_initial=20,
@@ -66,7 +90,7 @@ net = dde.nn.DeepONetCartesianProd(
     "tanh",
     "Glorot normal",
 )
-
+net.apply_output_transform(output_transform)
 model = dde.zcs.Model(data, net)
 model.compile("adam", lr=0.0005)
 start = datetime.now()
@@ -101,6 +125,17 @@ x= np.linspace(0, 1, num=100)
 t= np.linspace(0, 1, num=100)
 
 v_branch = func_space.eval_batch(func_feats, np.linspace(0, 1, num=50)[:, None])
+
+
+plt.figure(figsize=(10, 6))
+plt.plot(np.linspace(0, 1, num=50), v_branch[0], 'b-', linewidth=2)
+plt.xlabel('x')
+plt.ylabel('v(x)')
+plt.title('Force v(x)')
+plt.grid(True)
+plt.savefig(os.path.join(log_dir, 'v_branch.png'), dpi=300, bbox_inches='tight')
+plt.close()
+
 xv, tv = np.meshgrid(x, t)
 x_trunk = np.vstack((np.ravel(xv), np.ravel(tv))).T
 u_pred = model.predict((v_branch, x_trunk))
