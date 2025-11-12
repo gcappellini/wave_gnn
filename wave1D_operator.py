@@ -8,6 +8,70 @@ from datetime import datetime
 import json
 import torch
 
+class SineSeries:
+    r"""Sine series with boundary-compatible modes.
+    
+    f(x) = \sum_{k=1}^{N} a_k sin(k*pi*x)
+    
+    This ensures f(0) = f(1) = 0, making it suitable for boundary conditions.
+    
+    Args:
+        N (int): Number of sine modes
+        M (float): Coefficient range. a_k sampled from [-M, M]
+    """
+    
+    def __init__(self, N=10, M=1):
+        self.N = N
+        self.M = M
+        
+    def random(self, size):
+        """Generate random coefficients for sine modes.
+        
+        Args:
+            size (int): Number of random functions to generate
+            
+        Returns:
+            np.ndarray: Shape (size, N) with random coefficients
+        """
+        return 2 * self.M * np.random.rand(size, self.N).astype(np.float32) - self.M
+    
+    def eval_one(self, feature, x):
+        """Evaluate one function at point x.
+        
+        Args:
+            feature: (N,) array of coefficients
+            x: Evaluation point(s)
+            
+        Returns:
+            Function value(s) at x
+        """
+        x = np.asarray(x).ravel()
+        result = np.zeros_like(x, dtype=np.float32)
+        for k in range(1, self.N + 1):
+            result += feature[k-1] * np.sin(k * np.pi * x)
+        return result
+    
+    def eval_batch(self, features, xs):
+        """Evaluate batch of functions at points xs.
+        
+        Args:
+            features: (n_functions, N) coefficients
+            xs: (n_points, 1) or (n_points,) evaluation points
+            
+        Returns:
+            (n_functions, n_points) function values
+        """
+        xs = np.asarray(xs).ravel()
+        n_functions = features.shape[0]
+        n_points = len(xs)
+        result = np.zeros((n_functions, n_points), dtype=np.float32)
+        
+        for k in range(1, self.N + 1):
+            # sin(k*pi*x) for all x, broadcasted over functions
+            result += features[:, k-1:k] * np.sin(k * np.pi * xs)
+        
+        return result
+
 timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
 log_dir = os.path.join('logs_pideeponet', timestamp)
 os.makedirs(log_dir, exist_ok=True)
@@ -30,27 +94,39 @@ epochs_decay = 5000
 
 num_domain = 600
 num_boundary = 0
-num_initial = 20  # Total points = 600 + 100 = 700; 700/50 = 14 batches exactly
+num_initial = 100
 num_test = 500
 
-eval_fcts = 200
-batch_size = 20
+eval_fcts = 400
+batch_size = 50
 
-ic_points = 20
-hidden_feats = 64
+ic_points = 30
+hidden_feats = 128
 
 ic_scale=1.75
 
-# PDE (homogeneous wave equation - no forcing needed)
+# PDE for standard gradient computation (used in NTK calculation)
+def pde_op_standard(x, y, v):
+    """Wave equation PDE: u_tt - c^2 * u_xx = 0
+    Uses standard gradient computation for NTK compatibility.
+    """
+    dy_xx = dde.grad.hessian(y, x, i=0, j=0)
+    dy_tt = dde.grad.hessian(y, x, i=1, j=1)
+    return dy_tt - c**2 * dy_xx
+
+
+# PDE for ZCS (used in training)
 def pde_op(x, y, v):
     """Wave equation PDE: u_tt - c^2 * u_xx = 0
-    No forcing term since func_space is used for initial conditions only.
+    Uses ZCS LazyGrad for efficient gradient computation during training.
     """
-    u_t = dde.grad.jacobian(y, x, i=0, j=1)
-    u_xx = dde.grad.hessian(y, x, i=0, j=0)
-    u_tt = dde.grad.hessian(y, x, i=1, j=1)
-    
-    return u_tt - c**2 * u_xx
+    grad_y = dde.zcs.LazyGrad(x, y)
+
+    # compute derivatives
+    dy_tt = grad_y.compute((0, 2))  # second derivative wrt t
+    dy_xx = grad_y.compute((2, 0))  # second derivative wrt x
+
+    return dy_tt - c**2 * dy_xx
 
 # Define u0_func from the sampled function for analytical solution
 def u0_func(x):
@@ -115,47 +191,6 @@ def analytical_solution(ins, u0_func, c):
     u_right = u0_func(x_right.reshape(-1, 1))
     
     return 0.5 * (u_left + u_right)
-
-# Initial conditions now depend on the function from func_space
-# func_space will provide u0(x) - the initial displacement
-# Apply boundary transform to ensure u0(0) = u0(1) = 0
-def ic_func(x, v):
-    """Initial condition with boundary compatibility.
-    In IC/BC context, x is typically just the coordinates (not a tuple).
-    x has shape (n_points, 2) where columns are [x_space, t_time].
-    v has shape (n_points, 2) where columns are [x_space, function_values].
-    Works with both numpy arrays and PyTorch tensors.
-    """
-    # For initial conditions, x is directly the coordinate array, not a tuple
-    print(f"ic_func: x shape = {x.shape}, v shape = {v.shape}")
-    x_spatial = x[:, 0:1]  # Extract spatial coordinate (first column)
-
-    if torch.is_tensor(v):
-        v_vals = v[:, 1:2]  # Extract function values (second column)
-    else:
-        v_vals = v[:, 1:2] if v.ndim == 2 else v.reshape(-1, 1)
-    
-    # Apply boundary transform: u0(x) = v(x) * x * (1-x)
-    # This ensures u0(0) = u0(1) = 0
-    
-    # Check if inputs are tensors or numpy arrays
-    if torch.is_tensor(x_spatial):
-        x_spatial = x_spatial.squeeze()
-        if not torch.is_tensor(v_vals):
-            v_vals = torch.tensor(v_vals, dtype=x_spatial.dtype, device=x_spatial.device)
-        v_vals = v_vals.squeeze()
-
-        shape = v_vals * x_spatial * (1.0 - x_spatial)
-        shape = ic_scale * shape / torch.max(torch.abs(shape))
-    else:
-        # NumPy path
-        v_arr = np.asarray(v_vals).squeeze()
-        x_spatial = np.asarray(x_spatial).squeeze()
-        
-        shape = v_arr * x_spatial * (1.0 - x_spatial)
-        shape = ic_scale * shape / np.max(np.abs(shape))
-    
-    return shape
 
 def compute_ntk_weights_from_matrices(K_pde, K_ic1, K_ic2):
     """
@@ -256,8 +291,8 @@ def compute_ntk_matrices(model, data):
             v_val = v_aux_train[func_idx, trunk_idx]
             v_tensor = torch.tensor([[v_val]], dtype=torch.float32)
             
-            # Compute PDE residual
-            residual = pde_op(x_trunk, y, v_tensor)
+            # Compute PDE residual using STANDARD gradients (not ZCS) for NTK compatibility
+            residual = pde_op_standard(x_trunk, y, v_tensor)
             residual_scalar = residual.sum()
             
             # Compute gradients w.r.t. parameters
@@ -284,11 +319,9 @@ def compute_ntk_matrices(model, data):
             # Forward pass
             y = model.net((v_branch, x_trunk))
             
-            # Target: ic_func(x, v) with the function sample
-            x_np = x_trunk.detach().cpu().numpy()
-            v_np = v_aux_train[func_idx, trunk_idx]
-            target_np = ic_func(x_np, v_np)
-            target = torch.tensor(target_np, dtype=torch.float32)
+            # Target: v[:, 1] - the function values (same as IC definition on line 499)
+            # v_aux_train has shape (n_functions, n_points) containing function values
+            target = torch.tensor(v_aux_train[func_idx, trunk_idx], dtype=torch.float32)
             
             loss = (y - target).sum()
             
@@ -424,7 +457,7 @@ if __name__ == "__main__":
 
     ic = dde.icbc.OperatorBC(
         geomtime, 
-        lambda x, y, v: y - ic_func(x, v), 
+        lambda x, y, v: torch.tensor(v[:, 1:2]), 
         lambda _, on_initial: on_initial
     )
 
@@ -439,7 +472,7 @@ if __name__ == "__main__":
     pde = dde.data.TimePDE(
         geomtime,
         pde_op,
-        [ic, ic_2],
+        [ic_2],
         num_domain=num_domain,
         num_boundary=num_boundary,
         num_initial=num_initial,
@@ -448,13 +481,13 @@ if __name__ == "__main__":
 
     # Function space - represents the distribution of initial displacements u0(x)
     # Using sine series with modes to ensure BC compatibility
-    # Characteristic length ~ 0.4 corresponds to dominant wavelength ~ 2.5, so k ~ 2-3
-    # We use modes 1-5 to get a characteristic length around 0.4
-    func_space = dde.data.PowerSeries(N=5)  # Sine series with modes k=1,2,3,4,5
+    # sin(k*pi*x) modes automatically satisfy u(0) = u(1) = 0
+    # Using N modes gives flexibility to represent different initial conditions
+    func_space = SineSeries(N=3)  
 
     # Data - now learning operator from initial conditions u0(x) to solution u(x,t)
     eval_pts = np.linspace(0, 1, num=ic_points)[:, None]
-    data = dde.data.PDEOperatorCartesianProd(
+    data = dde.zcs.PDEOperatorCartesianProd(
         pde, func_space, eval_pts, eval_fcts, 
         function_variables=[0],
         num_test=num_test, 
@@ -471,7 +504,7 @@ if __name__ == "__main__":
 
     net.apply_output_transform(output_transform)
 
-    model = dde.Model(data, net)
+    model = dde.zcs.Model(data, net)
     model.compile("adam", lr=lr_0, decay=("inverse time", epochs_decay, decay))
 
     if iters>0:
@@ -535,8 +568,8 @@ if __name__ == "__main__":
     for i in range(n_samples):
         v_sample = func_space.eval_batch(func_feats_samples[i:i+1], xs)[0]
         # Apply ic_func transform to match IC
-        v_transformed = ic_func(xs, v_sample)
-        plt.plot(xs, v_transformed, '--', alpha=0.6, label=f'Sine series sample {i+1}')
+        # v_transformed = ic_func(xs, v_sample)
+        plt.plot(xs, v_sample, '--', alpha=0.6, label=f'Sine series sample {i+1}')
 
     plt.xlabel('x')
     plt.ylabel('u(x, 0)')

@@ -19,12 +19,13 @@ seed = 2
 np.random.seed(seed)
 dde.config.set_random_seed(seed)
 
-c = 10.0
+c = 5.0
 k = 0.0  # Damping coefficient
 a = 2.0
 
 load_from = None  # "./logs_pinn/20251110-184906_undamped_c1_plateau"
 apply_fft = True
+adaptive_weights = True  # Use adaptive NTK weighting; if False, equalize losses at epoch 0
 
 num_domain = 600
 num_boundary = 0
@@ -33,7 +34,7 @@ num_test = 500
 
 # Number of Fourier features per scale
 # m = 4 # (16)
-iters = 20000  # Number of training iterations (40000)
+iters = 5000  # Number of training iterations (40000)
 
 lr_0 = 0.001
 epochs_decay = 10000
@@ -45,7 +46,44 @@ hidden_layers = 3
 m_spatial=32       
 m_temporal=32      
 sigma_spatial=1.0  # Moderate spatial frequencies
-sigma_temporal_list=[1.0, 10.0]  # Low and high temporal frequencies
+sigma_temporal_list=[1.0, 3.0]  # Low and high temporal frequencies
+
+def compute_loss_based_weights(model, data):
+    """
+    Compute weights to equalize individual loss components at initialization.
+    
+    Returns:
+        weights: [lambda_pde, lambda_ic1, lambda_ic2] that balance losses
+        losses: [loss_pde, loss_ic1, loss_ic2] initial loss values
+    """
+    # Temporarily compile with equal weights to get initial losses
+    model.compile("adam", lr=0.001, loss_weights=[1.0, 1.0, 1.0])
+    
+    # Evaluate initial losses (train for 0 iterations)
+    losshistory, _ = model.train(0)
+    
+    # Extract individual loss components from the first (and only) entry
+    # losshistory.loss_train has shape (1, 3) for [pde_loss, ic1_loss, ic2_loss]
+    losses = losshistory.loss_train[0]
+    loss_pde, loss_ic1, loss_ic2 = losses[0], losses[1], losses[2]
+    
+    print(f"  Initial losses: PDE={loss_pde:.2e}, IC1={loss_ic1:.2e}, IC2={loss_ic2:.2e}")
+    
+    # Compute mean loss
+    mean_loss = np.mean([loss_pde, loss_ic1, loss_ic2])
+    
+    # Weights that equalize: lambda_i = mean / loss_i
+    # This makes weighted_loss_i = lambda_i * loss_i ≈ mean for all i
+    lambda_pde = mean_loss / (loss_pde + 1e-10)
+    lambda_ic1 = mean_loss / (loss_ic1 + 1e-10)
+    lambda_ic2 = mean_loss / (loss_ic2 + 1e-10)
+    
+    weights = np.array([lambda_pde, lambda_ic1, lambda_ic2])
+    losses_array = np.array([loss_pde, loss_ic1, loss_ic2])
+    
+    print(f"  Equalizing weights: λ_pde={lambda_pde:.2e}, λ_ic1={lambda_ic1:.2e}, λ_ic2={lambda_ic2:.2e}")
+    
+    return weights, losses_array
 
 def compute_ntk_weights_from_matrices(K_pde, K_ic1, K_ic2):
     """
@@ -276,6 +314,7 @@ class FFTWrapper(torch.nn.Module):
         super().__init__()
         self.fnn_net = fnn_net
         self.feature_transform = feature_transform
+        self._output_transform = None  # Store output transform separately
         
     def forward(self, x):
         """
@@ -285,8 +324,18 @@ class FFTWrapper(torch.nn.Module):
         # Apply FFT transform (buffers don't require grad)
         x_spectral = self.feature_transform(x)
         
-        # Pass through FNN
-        return self.fnn_net(x_spectral)
+        # Pass through FNN (without output transform)
+        y = self.fnn_net(x_spectral)
+        
+        # Apply output transform with ORIGINAL physical coordinates, not FFT features
+        if self._output_transform is not None:
+            y = self._output_transform(x, y)  # Use x (physical), not x_spectral
+        
+        return y
+    
+    def apply_output_transform(self, transform):
+        """Store output transform to apply with physical coordinates."""
+        self._output_transform = transform
     
     def parameters(self, recurse=True):
         """Only return FNN parameters, not FFT buffers."""
@@ -429,12 +478,11 @@ if __name__ == "__main__":
     # Conditionally wrap with FFT transform
     if apply_fft:
         net = FFTWrapper(fnn_net, feature_transform)
-        # Apply output transform through fnn_net
-        net.apply_output_transform = lambda f: setattr(fnn_net, '_output_transform', f)
+        # Apply output transform through wrapper (it will use physical coordinates)
+        net.apply_output_transform(output_transform)
     else:
         net = fnn_net
-    
-    net.apply_output_transform(output_transform)
+        net.apply_output_transform(output_transform)
 
     # Note: We're NOT using apply_feature_transform because it causes dimension mismatch
     # during PDE evaluation. Instead, we'll use the standard trunk network and rely on
@@ -448,11 +496,16 @@ if __name__ == "__main__":
         decay=("inverse time", epochs_decay, decay),)
     
     if iters>0:
-        print("Computing initial NTK matrices and weights...")
-        K_pde_init, K_ic1_init, K_ic2_init = compute_ntk_matrices(model, data)
-        initial_weights, initial_traces = compute_ntk_weights_from_matrices(K_pde_init, K_ic1_init, K_ic2_init)
-        print(f"Initial adaptive weights: {initial_weights}")
-        print(f"Initial traces: {initial_traces}")
+        if adaptive_weights:
+            print("Computing initial NTK matrices and adaptive weights...")
+            K_pde_init, K_ic1_init, K_ic2_init = compute_ntk_matrices(model, data)
+            initial_weights, initial_traces = compute_ntk_weights_from_matrices(K_pde_init, K_ic1_init, K_ic2_init)
+            print(f"Initial adaptive weights: {initial_weights}")
+            print(f"Initial traces: {initial_traces}")
+        else:
+            print("Computing loss-based weights to equalize losses at epoch 0...")
+            initial_weights, initial_losses = compute_loss_based_weights(model, data)
+            K_pde_init, K_ic1_init, K_ic2_init = None, None, None  # Not needed for non-adaptive
 
         model.compile("adam", lr=lr_0,     
                     # metrics=["l2 relative error"],
@@ -468,23 +521,30 @@ if __name__ == "__main__":
         print(f"✓ Model loaded successfully from {model_path}")
 
     if iters>0:
-        # Define checkpoints: 0%, 25%, 50%, 75%, 100% of training
-        plot_checkpoints = [0, iters // 4, iters // 2, 3 * iters // 4, iters]
-        print(f"Eigenvalue plots will be saved at epochs: {plot_checkpoints}")
+        callbacks = []
         
-        adaptive_weight_callback = AdaptiveWeightCallback(model, data, update_every=100, plot_checkpoints=plot_checkpoints)
-        
-        # Store initial matrices (epoch 0) in the callback
-        adaptive_weight_callback.checkpoint_K_pde.append(K_pde_init)
-        adaptive_weight_callback.checkpoint_K_ic1.append(K_ic1_init)
-        adaptive_weight_callback.checkpoint_K_ic2.append(K_ic2_init)
-        adaptive_weight_callback.checkpoint_epochs.append(0)
+        if adaptive_weights:
+            # Define checkpoints: 0%, 25%, 50%, 75%, 100% of training
+            plot_checkpoints = [0, iters // 4, iters // 2, 3 * iters // 4, iters]
+            print(f"Using adaptive NTK weights. Eigenvalue plots will be saved at epochs: {plot_checkpoints}")
+            
+            adaptive_weight_callback = AdaptiveWeightCallback(model, data, update_every=100, plot_checkpoints=plot_checkpoints)
+            
+            # Store initial matrices (epoch 0) in the callback
+            adaptive_weight_callback.checkpoint_K_pde.append(K_pde_init)
+            adaptive_weight_callback.checkpoint_K_ic1.append(K_ic1_init)
+            adaptive_weight_callback.checkpoint_K_ic2.append(K_ic2_init)
+            adaptive_weight_callback.checkpoint_epochs.append(0)
+            
+            callbacks.append(adaptive_weight_callback)
+        else:
+            print(f"Using fixed loss-based weights (no adaptation during training)")
 
         start = datetime.now()
         losshistory, train_state = model.train(iterations=iters, 
                                             display_every=500, 
                                             model_save_path=f"{log_dir}/model.ckpt",
-                                            callbacks=[adaptive_weight_callback])
+                                            callbacks=callbacks)
         end = datetime.now()
         tr_time = end - start
         print(f"Training time: {tr_time}")
@@ -533,6 +593,7 @@ if __name__ == "__main__":
         'hidden_feats': hidden_feats,
         'hidden_layers': hidden_layers,
         'apply_fft': apply_fft,
+        'adaptive_weights': adaptive_weights,
         'iters': iters,
         'lr_0': lr_0,
         'epochs_decay': epochs_decay,
@@ -559,16 +620,17 @@ if __name__ == "__main__":
     with open(os.path.join(log_dir, 'params.json'), 'w') as f:
         json.dump(params, f, indent=2)
 
-if iters > 0:
+    if iters > 0:
         # Plot all loss components separately
         plot_loss_components(losshistory, log_dir)
 
-
-        if len(adaptive_weight_callback.epochs_log) > 0:
-            plot_weights_NTK(adaptive_weight_callback, log_dir)
-        
-        # Plot eigenvalue spectra at checkpoints
-        if len(adaptive_weight_callback.checkpoint_epochs) > 0:
-            plot_eigenvalues_spectra(adaptive_weight_callback, iters, log_dir)
+        # Only plot NTK-related plots if adaptive weighting was used
+        if adaptive_weights:
+            if len(adaptive_weight_callback.epochs_log) > 0:
+                plot_weights_NTK(adaptive_weight_callback, log_dir)
+            
+            # Plot eigenvalue spectra at checkpoints
+            if len(adaptive_weight_callback.checkpoint_epochs) > 0:
+                plot_eigenvalues_spectra(adaptive_weight_callback, iters, log_dir)
 
 
