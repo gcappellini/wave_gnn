@@ -6,6 +6,7 @@ from datetime import datetime
 from plot import plot_loss_components, plot_comparison
 import matplotlib.pyplot as plt
 from wave1D_operator import SineSeries
+import torch
 
 # Get script directory for absolute paths
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -44,8 +45,8 @@ dde.config.set_random_seed(seed)
 c = 1.0
 k = 1.0
 
-training = False
-load_from = os.path.join(SCRIPT_DIR, 'logs_pideeponet/20251113-123841_u0_f')  #
+training = True 
+load_from = None #os.path.join(SCRIPT_DIR, 'logs_pideeponet/20251113-123841_u0_f')  #
 
 # PDE
 def pde(x, y, v):
@@ -78,15 +79,23 @@ def output_transform(x, y):
     bc_transform = x_coord * (1.0 - x_coord)
     
     # Apply transform: u_transformed = u_net * x * (1-x)
-    return y * bc_transform.T
+    return y * bc_transform.T 
+
+def ic_u0(x, y, v):
+    u0 = torch.Tensor(v[:, 1:2])  # Extract u0 from function space
+    return u0
 
 if __name__ == "__main__":
     geom = dde.geometry.Interval(0, 1)
     timedomain = dde.geometry.TimeDomain(0, 1)
     geomtime = dde.geometry.GeometryXTime(geom, timedomain)
 
-    # bc = dde.icbc.DirichletBC(geomtime, lambda _: 0, lambda _, on_boundary: on_boundary)
     ic = dde.icbc.IC(geomtime, lambda _: 0, lambda _, on_initial: on_initial)
+    # ic = dde.icbc.OperatorBC(
+    #     geomtime,
+    #     lambda x, y, v: 0,  # u(x,0) should match u0
+    #     lambda _, on_initial: on_initial
+    # )
 
     ic_2 = dde.icbc.OperatorBC(
         geomtime,
@@ -128,6 +137,7 @@ if __name__ == "__main__":
         "tanh",
         "Glorot normal",
     )
+
     net.apply_output_transform(output_transform)
     model = dde.zcs.Model(data, net)
     model.compile("adam", lr=0.0005)
@@ -254,10 +264,10 @@ if __name__ == "__main__":
         if idx % look_up_every == 0:
             print(f"Updating u0 at time step {idx}, t={t:.2f}")
             u0_t0 = rollout[rollout[:, 1]==t, 3]
-            u0_t0_interp = np.interp(eval_pts.ravel(), x_unique, u0_t0)
+            u0_t0_interp = np.interp(x_unique, eval_pts.ravel(), u0_t0)
 
             f_t0 = rollout[rollout[:, 1]==t, 2]
-            f_t0_interp = np.interp(eval_pts.ravel(), x_unique, f_t0)
+            f_t0_interp = np.interp( x_unique, eval_pts.ravel(), f_t0)
 
             branch_t0 = np.hstack([
                 f_t0_interp.reshape(-1, 1).T,
