@@ -431,7 +431,7 @@ def plot_eigenvalues_spectra(adaptive_weight_callback, iters, log_dir):
         
         print(f"Eigenvalue spectra plot saved to {log_dir}/Eigenvalues.png")
 
-def plot_comparison(u_true, u_pred, l2_err, log_dir, roll=False):
+def plot_comparison(u_true, u_pred, l2_err, log_dir, roll=False, t_max=1):
     """
     Plot comparison between true and predicted solutions.
     """
@@ -442,7 +442,7 @@ def plot_comparison(u_true, u_pred, l2_err, log_dir, roll=False):
     # Plot forcing function v(t,x)
     plt.subplot(1, 3, 1)
     vmin, vmax = min(u_true.min(), u_pred.min()), max(u_true.max(), u_pred.max())
-    plt.imshow(u_true, extent=[0, 1, 0, 1], origin='lower', aspect='auto', cmap='viridis', vmin=vmin, vmax=vmax)
+    plt.imshow(u_true, extent=[0, 1, 0, t_max], origin='lower', aspect='auto', cmap='viridis', vmin=vmin, vmax=vmax)
     plt.colorbar()
     plt.xlabel('x')
     plt.ylabel('t')
@@ -450,7 +450,7 @@ def plot_comparison(u_true, u_pred, l2_err, log_dir, roll=False):
 
     # Plot branch input (downsampled v on 6x6 grid)
     plt.subplot(1, 3, 2)
-    plt.imshow(u_pred, extent=[0, 1, 0, 1], origin='lower', aspect='auto', cmap='viridis', vmin=vmin, vmax=vmax)
+    plt.imshow(u_pred, extent=[0, 1, 0, t_max], origin='lower', aspect='auto', cmap='viridis', vmin=vmin, vmax=vmax)
     plt.colorbar()
     plt.xlabel('x')
     plt.ylabel('t')
@@ -458,7 +458,7 @@ def plot_comparison(u_true, u_pred, l2_err, log_dir, roll=False):
 
     # Plot predicted solution u(t,x)
     plt.subplot(1, 3, 3)
-    plt.imshow(np.abs(u_pred-u_true), extent=[0, 1, 0, 1], origin='lower', aspect='auto', cmap='jet')
+    plt.imshow(np.abs(u_pred-u_true), extent=[0, 1, 0, t_max], origin='lower', aspect='auto', cmap='jet')
     plt.colorbar()
     plt.xlabel('x')
     plt.ylabel('t')
@@ -468,3 +468,4 @@ def plot_comparison(u_true, u_pred, l2_err, log_dir, roll=False):
     strng_name = 'rolled_' if roll else ''
     plt.savefig(os.path.join(log_dir, f'{strng_name}comparison.png'))
     plt.close()
+

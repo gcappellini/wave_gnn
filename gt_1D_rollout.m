@@ -21,14 +21,40 @@ t = linspace(0,t_f,t_f*100);
 cpu_time_start = cputime;
 
 function f = stringforce(x, t)
-persistent v_branch_data v_branch_x
+% f(x,t): interpolates spatial profiles from v_branches.csv
+% and envelopes them in time with Gaussian pulses centered at [1,3,5,7,9]
+
+persistent v_branch_data v_branch_x t_centers
+
 if isempty(v_branch_data)
-    data = readmatrix('/Users/guglielmocappellini/Desktop/research/code/pinns-wave/wave-gnn/1_gcn_string/v_branch.csv');
-    v_branch_x = linspace(0, 1, length(data));
-    v_branch_data = data;
+    % Load CSV: rows correspond to different spatial profiles
+    data = readmatrix('/Users/guglielmocappellini/Desktop/research/code/pinns-wave/wave-gnn/1_gcn_string/v_branches.csv');
+    
+    % Each row corresponds to one spatial profile
+    v_branch_data = data(1:5, :); % shape: (5, nx)
+    
+    % Spatial grid corresponding to data
+    v_branch_x = linspace(0, 1, size(data, 2));
+    
+    % Gaussian centers for each profile
+    t_centers = [1, 3, 5, 7, 9];
 end
-space = interp1(v_branch_x, v_branch_data, x, 'spline', 0);
-f = exp(-((t - 2).^2) / (2 * 0.5^2)) .* space;
+
+sigma = 0.5; % standard deviation of Gaussian
+
+% --- Interpolate along x for all 5 spatial profiles ---
+% vectorized: get 5 interpolated spatial values
+space_vals = zeros(1, 5);
+for i = 1:5
+    space_vals(i) = interp1(v_branch_x, v_branch_data(i, :), x, 'spline', 0);
+end
+
+% --- Compute Gaussian envelopes at time t ---
+gaussians = exp(-((t - t_centers).^2) / (2 * sigma^2));
+
+% --- Combine: weighted sum of all 5 profiles ---
+f = sum(space_vals .* gaussians);
+
 end
 
 function [c,f,s] = stringpde(x, t, u, dudx)

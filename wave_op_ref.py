@@ -65,7 +65,6 @@ if __name__ == "__main__":
         geomtime,
         lambda x, y, _: dde.grad.jacobian(y, x, i=0, j=1),
         lambda _, on_initial: on_initial
-        # lambda x, _: dde.utils.isclose(x[1], 0),
     )
 
     pde = dde.data.TimePDE(
@@ -158,13 +157,10 @@ if __name__ == "__main__":
     tv_rollout = rollout[:, 1]  # Time coordinates
     f_rollout = rollout[:, 2]   # Force values
     u_true_rollout = rollout[:, 3]  # Solution values
-
-    print(f"Rollout data shape: {rollout.shape}")
     
     # Get dimensions
     n_time = len(np.unique(tv_rollout))  # Number of unique time points
     n_space = len(np.unique(xv_rollout))  # Number of unique spatial points
-    print(f"Time points: {n_time}, Space points: {n_space}")
     
     # Reshape from 1D to 2D: (time, space)
     # MATLAB loop: outer=time, inner=space → fills space (columns) first
@@ -203,8 +199,37 @@ if __name__ == "__main__":
 
 
     x_trunk_rollout = np.vstack((xv_rollout, tv_rollout)).T
-    u_pred = model.predict((v_branch, x_trunk_rollout))
-    u_pred_rollout_2d = u_pred.reshape((len(np.unique(tv_rollout)), len(np.unique(xv_rollout))))
+    
+    # Get unique x and t values (must form a regular grid)
+    x_unique = np.unique(xv_rollout)
+    t_unique = np.unique(tv_rollout)
+
+    # Reshape f_rollout into a 2D array: shape (nx, nt)
+    # where nx = number of spatial points, nt = number of time instants
+    nx = len(x_unique)
+    nt = len(t_unique)
+    f_grid = f_rollout.reshape(nx, nt, order='F' if tv_rollout[:nx].var() == 0 else 'C')
+
+    # Interpolate along the x dimension to get f_branch
+    # np.interp operates row-wise, so we broadcast properly:
+    f_branch = np.array([
+        np.interp(eval_pts.flatten(), x_unique, f_grid[:, j])
+        for j in range(nt)
+    ]).T
+
+    u_pred = []
+
+    for i in range(len(t_unique)):
+        t_pred = t_unique[i] if t_unique[i] <= 1 else t_unique[i] % 1
+        f_branch_i = f_branch[:, i].reshape(1, -1)  # Shape: (1, 50)
+        t_i = np.full((nx, 1), t_pred)  # Shape: (nx, 1)
+        x_trunk_i = np.hstack((x_unique.reshape(-1, 1), t_i))  # Shape: (nx, 2)
+        u_pred_i = model.predict((f_branch_i, x_trunk_i)).flatten()  # Shape: (nx, 1)
+
+        u_pred.append(u_pred_i)
+
+    u_pred_rollout = np.array(u_pred)
+    u_pred_rollout_2d = u_pred_rollout.reshape((len(np.unique(tv_rollout)), len(np.unique(xv_rollout))))
     l2_err = dde.metrics.l2_relative_error(u_true_rollout_2d, u_pred_rollout_2d)  # Shape: (time, space)
 
-    plot_comparison(u_true_rollout_2d, u_pred_rollout_2d, l2_err, log_dir, roll=True)
+    plot_comparison(u_true_rollout_2d, u_pred_rollout_2d, l2_err, log_dir, roll=True, t_max=t_max)
