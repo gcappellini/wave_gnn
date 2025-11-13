@@ -7,6 +7,9 @@ from plot import plot_loss_components, plot_comparison
 import matplotlib.pyplot as plt
 from wave1D_operator import SineSeries
 
+# Get script directory for absolute paths
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
 class CombinedFunctionSpace:
     def __init__(self, func_space_1, func_space_2):
         self.func_space_1 = func_space_1
@@ -31,7 +34,7 @@ class CombinedFunctionSpace:
         return np.hstack([f1, f2]).astype(np.float32)
 
 timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-log_dir = os.path.join('logs_pideeponet', timestamp)
+log_dir = os.path.join(SCRIPT_DIR, 'logs_pideeponet', timestamp)
 os.makedirs(log_dir, exist_ok=True)
 
 seed = 2
@@ -42,7 +45,7 @@ c = 1.0
 k = 1.0
 
 training = False
-load_from = 'logs_pideeponet/20251113-123841_u0_f'  #
+load_from = os.path.join(SCRIPT_DIR, 'logs_pideeponet/20251113-123841_u0_f')  #
 
 # PDE
 def pde(x, y, v):
@@ -145,7 +148,7 @@ if __name__ == "__main__":
     else:
         tr_t=0
 
-    v_branch = np.loadtxt('./v_branch.csv', delimiter=',')
+    v_branch = np.loadtxt(os.path.join(SCRIPT_DIR, 'v_branch.csv'), delimiter=',')
 
     if v_branch.ndim == 1:
         v_branch = v_branch.reshape(1, -1)
@@ -154,9 +157,9 @@ if __name__ == "__main__":
     
     combined_branch = np.hstack([v_branch, u0_branch])
 
-    xv = np.loadtxt('gt_wave1D.csv', delimiter=',', usecols=0)
-    tv = np.loadtxt('gt_wave1D.csv', delimiter=',', usecols=1)
-    u_true = np.loadtxt('gt_wave1D.csv', delimiter=',', usecols=2)
+    xv = np.loadtxt(os.path.join(SCRIPT_DIR, 'gt_wave1D.csv'), delimiter=',', usecols=0)
+    tv = np.loadtxt(os.path.join(SCRIPT_DIR, 'gt_wave1D.csv'), delimiter=',', usecols=1)
+    u_true = np.loadtxt(os.path.join(SCRIPT_DIR, 'gt_wave1D.csv'), delimiter=',', usecols=2)
 
     u_true = u_true.reshape((len(np.unique(tv)), len(np.unique(xv))))
 
@@ -184,7 +187,7 @@ if __name__ == "__main__":
     with open(os.path.join(log_dir, 'training_time.txt'), 'w') as f:
         f.write(f"Training time: {tr_t}\n")
 
-    rollout = np.loadtxt('gt_wave1D_rollout.csv', delimiter=',')
+    rollout = np.loadtxt(os.path.join(SCRIPT_DIR, 'gt_wave1D_rollout.csv'), delimiter=',')
     
     # Extract columns from MATLAB CSV: [x, t, force, u]
     xv_rollout = rollout[:, 0]  # Spatial coordinates
@@ -231,8 +234,6 @@ if __name__ == "__main__":
     plt.close()
     print(f"Force rollout plot saved to {log_dir}/f_rollout.png")
 
-
-    x_trunk_rollout = np.vstack((xv_rollout, tv_rollout)).T
     
     # Get unique x and t values (must form a regular grid)
     x_unique = np.unique(xv_rollout)
@@ -240,57 +241,33 @@ if __name__ == "__main__":
 
     nx = len(x_unique)
     nt = len(t_unique)
-    
-    # Reshape into 2D grids: (nt, nx) to match the way data is organized
-    f_grid = f_rollout.reshape(nt, nx)
-    u_grid = u_true_rollout.reshape(nt, nx)
-    
-    # Find indices for integer time values t=0, 1, 2, ..., 9
-    integer_times = np.arange(0, 10)
-    integer_time_indices = []
-    for t_int in integer_times:
-        idx = np.argmin(np.abs(t_unique - t_int))
-        if np.abs(t_unique[idx] - t_int) < 1e-6:
-            integer_time_indices.append(idx)
-    
+
+    # Create trunk input for prediction on [0,1] time range
+    x_trunk_pred = np.vstack((np.ravel(xv), np.ravel(tv))).T
+
     # Prepare storage for predictions
-    u_pred_rollout = []
-    
-    # For each time interval [t_i, t_i+1]
-    for i in range(len(integer_time_indices) - 1):
-        t_start_idx = integer_time_indices[i]
-        t_end_idx = integer_time_indices[i + 1]
-        
-        # Extract initial condition at t=t_i
-        u0_values = u_grid[t_start_idx, :]  # Shape: (nx,)
-        u0_branch = np.interp(eval_pts.flatten(), x_unique, u0_values).reshape(1, -1)
-        
-        # Process each time step in the interval
-        for t_idx in range(t_start_idx, t_end_idx):
-            # Normalize time to [0, 1] within the interval
-            t_normalized = (t_unique[t_idx] - t_unique[t_start_idx]) / (t_unique[t_end_idx] - t_unique[t_start_idx])
-            
-            # Extract force at current time
-            f_values = f_grid[t_idx, :]
-            f_branch_i = np.interp(eval_pts.flatten(), x_unique, f_values).reshape(1, -1)
-            
-            # Combine force and initial condition
-            combined_branch_i = np.hstack([f_branch_i, u0_branch])
-            
-            # Create trunk input for all spatial points at normalized time
-            t_i = np.full((nx, 1), t_normalized)
-            x_trunk_i = np.hstack((x_unique.reshape(-1, 1), t_i))
-            
-            # Predict
-            u_pred_i = model.predict((combined_branch_i, x_trunk_i)).flatten()
-            u_pred_rollout.append(u_pred_i)
-    
-    u_pred_rollout = np.array(u_pred_rollout)
-    u_pred_rollout_2d = u_pred_rollout.reshape((-1, nx))
-    
-    # Only compare up to the predicted time steps
-    n_pred_steps = u_pred_rollout_2d.shape[0]
-    u_true_rollout_2d_subset = u_true_rollout_2d[:n_pred_steps, :]
+    look_up_every = 100
+    u_pred_rollout = np.zeros((int(n_time/look_up_every), n_space))
+
+    u_store = []
+    for idx, t in enumerate(t_unique):
+        if idx % look_up_every == 0:
+            print(f"Updating u0 at time step {idx}, t={t:.2f}")
+            u0_t0 = rollout[rollout[:, 1]==t, 3]
+            u0_t0_interp = np.interp(eval_pts.ravel(), x_unique, u0_t0)
+
+            f_t0 = rollout[rollout[:, 1]==t, 2]
+            f_t0_interp = np.interp(eval_pts.ravel(), x_unique, f_t0)
+
+            branch_t0 = np.hstack([
+                f_t0_interp.reshape(-1, 1).T,
+                u0_t0_interp.reshape(-1, 1).T
+            ])
+
+            u_pred_t = model.predict((branch_t0, x_trunk_pred))
+            u_store.extend(u_pred_t.ravel())
+ 
+    u_pred_rollout_2d = np.array(u_store).reshape(n_time, n_space)
     
     l2_err = dde.metrics.l2_relative_error(u_true_rollout_2d, u_pred_rollout_2d)
     plot_comparison(u_true_rollout_2d, u_pred_rollout_2d, l2_err, log_dir, roll=True, t_max=t_unique[-1])
