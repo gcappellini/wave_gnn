@@ -17,8 +17,8 @@ dde.config.set_random_seed(seed)
 c = 1.0
 k = 1.0
 
-training = False
-load_from = 'logs_pideeponet/20251112-162220_warmstart'  #
+training = True
+load_from = None  # 'logs_pideeponet/20251112-162220_warmstart'  #
 
 # PDE
 def pde(x, y, v):
@@ -88,8 +88,8 @@ if __name__ == "__main__":
 
     # Net
     net = dde.nn.DeepONetCartesianProd(
-        [50, 128, 128, 128],
-        [2, 128, 128, 128],
+        [50, 32, 32, 32],
+        [2, 32, 32, 32],
         "tanh",
         "Glorot normal",
     )

@@ -52,25 +52,13 @@ class SineSeries:
         return result
     
     def eval_batch(self, features, xs):
-        """Evaluate batch of functions at points xs.
-        
-        Args:
-            features: (n_functions, N) coefficients
-            xs: (n_points, 1) or (n_points,) evaluation points
-            
-        Returns:
-            (n_functions, n_points) function values
-        """
         xs = np.asarray(xs).ravel()
         n_functions = features.shape[0]
-        n_points = len(xs)
-        result = np.zeros((n_functions, n_points), dtype=np.float32)
-        
-        for k in range(1, self.N + 1):
-            # sin(k*pi*x) for all x, broadcasted over functions
-            result += features[:, k-1:k] * np.sin(k * np.pi * xs)
-        
-        return result
+        # Precompute the sine basis matrix: (N, n_points)
+        k = np.arange(1, self.N + 1)[:, None]  # (N, 1)
+        basis = np.sin(k * np.pi * xs[None, :])  # (N, n_points)
+        # Matrix multiply: (n_functions, N) @ (N, n_points)
+        return features @ basis
 
 timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
 log_dir = os.path.join('logs_pideeponet', timestamp)
