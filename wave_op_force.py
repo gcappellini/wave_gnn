@@ -88,8 +88,8 @@ if __name__ == "__main__":
 
     # Net
     net = dde.nn.DeepONetCartesianProd(
-        [50, 32, 32, 32],
-        [2, 32, 32, 32],
+        [50, 128, 128, 32],
+        [2, 128, 128, 32],
         "tanh",
         "Glorot normal",
     )

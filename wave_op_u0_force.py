@@ -12,26 +12,38 @@ import torch
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 class CombinedFunctionSpace:
-    def __init__(self, func_space_1, func_space_2):
+    def __init__(self, func_space_1, func_space_2, func_space_3=None):
         self.func_space_1 = func_space_1
         self.func_space_2 = func_space_2
+        self.func_space_3 = func_space_3
         self.n1 = func_space_1.N
         self.n2 = func_space_2.N
+        self.n3 = func_space_3.N if func_space_3 is not None else 0
         
     def random(self, size):
         features_1 = self.func_space_1.random(size)
         features_2 = self.func_space_2.random(size)
+        if self.func_space_3 is not None:
+            features_3 = self.func_space_3.random(size)
+            return np.hstack([features_1, features_2, features_3]).astype(np.float32)
         return np.hstack([features_1, features_2]).astype(np.float32)
     
     def eval_one(self, feature, x):
         f1 = self.func_space_1.eval_one(feature[:self.n1], x)
         f2 = self.func_space_2.eval_one(feature[self.n1:self.n1+self.n2], x)
-        result = np.concatenate([f1.ravel(), f2.ravel()])
+        if self.func_space_3 is not None:
+            f3 = self.func_space_3.eval_one(feature[self.n1+self.n2:self.n1+self.n2+self.n3], x)
+            result = np.concatenate([f1.ravel(), f2.ravel(), f3.ravel()])
+        else:
+            result = np.concatenate([f1.ravel(), f2.ravel()])
         return result.astype(np.float32)
     
     def eval_batch(self, features, xs):
         f1 = self.func_space_1.eval_batch(features[:, :self.n1], xs)
         f2 = self.func_space_2.eval_batch(features[:, self.n1:self.n1+self.n2], xs)
+        if self.func_space_3 is not None:
+            f3 = self.func_space_3.eval_batch(features[:, self.n1+self.n2:self.n1+self.n2+self.n3], xs)
+            return np.hstack([f1, f2, f3]).astype(np.float32)
         return np.hstack([f1, f2]).astype(np.float32)
 
 timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -48,14 +60,75 @@ k = 1.0
 training = True 
 load_from = None #os.path.join(SCRIPT_DIR, 'logs_pideeponet/20251113-123841_u0_f')  #
 
+# def compute_second_derivative_fd(func_values, x_coords):
+#     """
+#     Compute second derivative of a function via finite differences.
+    
+#     Args:
+#         func_values: Function values at x_coords (shape: batch_size x n_points)
+#         x_coords: Coordinates where function is evaluated (1D array)
+    
+#     Returns:
+#         Second derivatives at same points (same shape as func_values)
+#     """
+#     # Use PyTorch or NumPy depending on backend
+#     backend_name = dde.backend.backend_name
+    
+#     if backend_name == "pytorch":
+#         import torch
+#         # Convert to numpy for finite differences, then back to torch
+#         func_np = func_values.detach().cpu().numpy()
+        
+#         # Compute finite differences on the grid
+#         dx = x_coords[1] - x_coords[0]  # Uniform grid spacing
+#         d2f_dx2 = np.zeros_like(func_np)
+        
+#         # Central difference for interior points: f''(x) ≈ (f(x+h) - 2f(x) + f(x-h)) / h²
+#         d2f_dx2[:, 1:-1] = (func_np[:, 2:] - 2*func_np[:, 1:-1] + func_np[:, :-2]) / (dx**2)
+        
+#         # Forward/backward differences for boundaries
+#         d2f_dx2[:, 0] = (func_np[:, 2] - 2*func_np[:, 1] + func_np[:, 0]) / (dx**2)
+#         d2f_dx2[:, -1] = (func_np[:, -1] - 2*func_np[:, -2] + func_np[:, -3]) / (dx**2)
+        
+#         return torch.from_numpy(d2f_dx2).to(func_values.device).float()
+#     else:
+#         # NumPy backend
+#         dx = x_coords[1] - x_coords[0]
+#         d2f_dx2 = np.zeros_like(func_values)
+        
+#         d2f_dx2[:, 1:-1] = (func_values[:, 2:] - 2*func_values[:, 1:-1] + func_values[:, :-2]) / (dx**2)
+#         d2f_dx2[:, 0] = (func_values[:, 2] - 2*func_values[:, 1] + func_values[:, 0]) / (dx**2)
+#         d2f_dx2[:, -1] = (func_values[:, -1] - 2*func_values[:, -2] + func_values[:, -3]) / (dx**2)
+        
+#         return d2f_dx2
+
 # PDE
-def pde(x, y, v):
-    f = v[:, 0:1]
+def pde_op(x, y, v):
+    f = v[:, 0:1]       # First force value
+    u0 = v[:, 50:100]   # Initial displacement function values
+    v0 = v[:, 100:150]  # Initial velocity function values
+    
     grad_y = dde.zcs.LazyGrad(x, y)
     dy_t = grad_y.compute((0, 1))
     dy_tt = grad_y.compute((0, 2))
     dy_xx = grad_y.compute((2, 0))
-    return dy_tt - c * dy_xx + k * dy_t - 10 * f
+    
+    # Extract trunk coordinates from x
+    if isinstance(x, tuple):
+        x_trunk = x[1]
+    else:
+        x_trunk = x
+    
+    t_coords = 0.1 #x_trunk[:, 1:2]  # Time coordinate
+    
+    # Compute second derivatives of u0 and v0 via finite differences
+    grad_v = dde.zcs.LazyGrad(x, v)
+    dv_xx = grad_v.compute((2, 0))
+    du0_xx = dv_xx[:, 50:100]
+    dv0_xx = dv_xx[:, 100:150]
+
+    # PDE with IC terms as you had them
+    return dy_tt - c * dy_xx + k * dy_t - 10 * f - c*(du0_xx + t_coords*dv0_xx) + k*v0
 
 def output_transform(x, y):
     """
@@ -81,9 +154,6 @@ def output_transform(x, y):
     # Apply transform: u_transformed = u_net * x * (1-x)
     return y * bc_transform.T 
 
-def ic_u0(x, y, v):
-    u0 = torch.Tensor(v[:, 1:2])  # Extract u0 from function space
-    return u0
 
 if __name__ == "__main__":
     geom = dde.geometry.Interval(0, 1)
@@ -105,7 +175,7 @@ if __name__ == "__main__":
 
     pde = dde.data.TimePDE(
         geomtime,
-        pde,
+        pde_op,
         [ic, ic_2],
         num_domain=200,
         num_boundary=40,
@@ -116,7 +186,8 @@ if __name__ == "__main__":
     # Function space
     func_space_f = dde.data.GRF(length_scale=0.2)
     func_space_u0 = SineSeries(N=3)
-    func_space_combined = CombinedFunctionSpace(func_space_f, func_space_u0)
+    func_space_v0 = SineSeries(N=3)
+    func_space_combined = CombinedFunctionSpace(func_space_f, func_space_u0, func_space_v0)
 
     # Data
     eval_pts = np.linspace(0, 1, num=50)[:, None]
@@ -132,7 +203,7 @@ if __name__ == "__main__":
 
     # Net
     net = dde.nn.DeepONetCartesianProd(
-        [100, 64, 64, 64],
+        [150, 64, 64, 64],  # Branch: 50 (force) + 50 (u0) + 50 (v0) = 150
         [2, 64, 64, 64],
         "tanh",
         "Glorot normal",
@@ -164,8 +235,9 @@ if __name__ == "__main__":
         v_branch = v_branch.reshape(1, -1)
 
     u0_branch = np.zeros_like(v_branch)
+    v0_branch = np.zeros_like(v_branch)
     
-    combined_branch = np.hstack([v_branch, u0_branch])
+    combined_branch = np.hstack([v_branch, u0_branch, v0_branch])
 
     xv = np.loadtxt(os.path.join(SCRIPT_DIR, 'gt_wave1D.csv'), delimiter=',', usecols=0)
     tv = np.loadtxt(os.path.join(SCRIPT_DIR, 'gt_wave1D.csv'), delimiter=',', usecols=1)
@@ -264,14 +336,18 @@ if __name__ == "__main__":
         if idx % look_up_every == 0:
             print(f"Updating u0 at time step {idx}, t={t:.2f}")
             u0_t0 = rollout[rollout[:, 1]==t, 3]
-            u0_t0_interp = np.interp(x_unique, eval_pts.ravel(), u0_t0)
+            u0_t0_interp = np.interp(eval_pts.ravel(), x_unique, u0_t0)
 
             f_t0 = rollout[rollout[:, 1]==t, 2]
-            f_t0_interp = np.interp( x_unique, eval_pts.ravel(), f_t0)
+            f_t0_interp = np.interp(eval_pts.ravel(), x_unique, f_t0)
+
+            # v0 set to zero (initial velocity = 0)
+            v0_t0_interp = np.zeros_like(u0_t0_interp)
 
             branch_t0 = np.hstack([
                 f_t0_interp.reshape(-1, 1).T,
-                u0_t0_interp.reshape(-1, 1).T
+                u0_t0_interp.reshape(-1, 1).T,
+                v0_t0_interp.reshape(-1, 1).T
             ])
 
             u_pred_t = model.predict((branch_t0, x_trunk_pred))
