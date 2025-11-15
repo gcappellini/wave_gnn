@@ -3,11 +3,23 @@ close all
 clc
 
 %% Global variables
-global T mu k t_f
+global a b T mu k t_f source_amp_global source_center_global source_width_global
 T = 1;
 mu = 1;
 k = 1;
 t_f = 2;
+source_amp = 7.5;    % Gaussian source amplitude
+T_max = 2.0;         % Final time
+a = 0.5;
+b = 2.0;
+
+% Gaussian source parameters
+source_center = 0.17;
+source_width = 0.3;
+
+source_amp_global = source_amp;
+source_center_global = source_center;
+source_width_global = source_width;
 
 x = linspace(0,1,100);
 t = linspace(0,t_f,50);
@@ -18,13 +30,9 @@ t = linspace(0,t_f,50);
 cpu_time_start = cputime;
 
 function f = stringforce(x)
-% persistent v_branch_data v_branch_x
-% if isempty(v_branch_data)
-%     data = readmatrix('/Users/guglielmocappellini/Desktop/research/code/pinns-wave/wave-gnn/1_gcn_string/v_branch.csv');
-%     v_branch_x = linspace(0, 1, length(data));
-%     v_branch_data = data;
-% end
-f = 0;
+    global source_amp_global source_center_global source_width_global
+    f = source_amp_global * exp(-((x - source_center_global)/source_width_global)^2);
+% f = 0;
 end
 
 function [c,f,s] = stringpde(x, t, u, dudx)
@@ -36,8 +44,8 @@ function [c,f,s] = stringpde(x, t, u, dudx)
 end
 
 function u_0 = stringic(x)
-    a = 1.5;
-    u_0 = [a*sin(pi*x);0];
+    global a b
+    u_0 = [a*sin(pi*x);b*sin(pi*x)];
 end
 
 function [pl,ql,pr,qr] = stringbc(xl,ul,xr,ur,t)
@@ -60,7 +68,7 @@ for i = 1:length(t)
         output_data = [output_data; x(j), t(i), stringforce(x(j)), sol(i, j, 1)];
     end
 end
-writematrix(output_data, '/Users/guglielmocappellini/Desktop/research/code/pinns-wave/wave-gnn/1_gcn_string/gt_wave1D_2branch.csv');
+writematrix(output_data, '/Users/guglielmocappellini/Desktop/research/code/pinns-wave/wave-gnn/1_gcn_string/gt_wave1D_withsource.csv');
 
 %% PLOT SOLUTION
 

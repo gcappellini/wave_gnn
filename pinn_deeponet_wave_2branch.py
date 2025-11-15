@@ -43,12 +43,31 @@ class TrunkNet(nn.Module):
 
 class PINNDeepONet_Wave(nn.Module):
     """
-    Physics-Informed DeepONet for wave equation with source:
-    u_tt = c^2 * u_xx + f(x)
+    Physics-Informed DeepONet for the damped wave equation:
+        u_tt + k*u_t = c² * u_xx + f(x)
+        
+    with boundary conditions:
+        u(0, t) = u(1, t) = 0
+        
+    and initial conditions:
+        u(x, 0) = u0(x)
+        u_t(x, 0) = v0(x)
+        
+    This implementation uses:
+    - Branch_IC: encodes BOTH initial displacement u0 and initial velocity v0
+      (input: 2*n_sensors_ic, output: 2*p, split into b_u and b_v)
+    - Branch_Source: encodes the source function f(x)
+    - Trunk: encodes spatiotemporal coordinates (x, t)
+    - Hard BC enforcement via transformation: u = x*(1-x)*u_net
     
-    Two-branch architecture:
-    - Branch_IC: encodes BOTH initial conditions [u(x,0), u_t(x,0)] with 2p output
-    - Branch_Source: encodes forcing f(x)
+    Args:
+        n_sensors_ic: number of sensor points for IC sampling
+        n_sensors_src: number of sensor points for source sampling
+        branch_hidden: hidden layer size in branch networks
+        trunk_hidden: hidden layer size in trunk network
+        p: embedding dimension
+        wave_speed: wave propagation speed c
+        damping_coeff: damping coefficient k (k*u_t term)
     """
     
     def __init__(self, n_sensors_ic=20, n_sensors_src=20, 
@@ -202,13 +221,14 @@ class PINNDeepONet_Wave(nn.Module):
         """
         return b * torch.sin(np.pi * self.sensor_x_ic)
     
-    def generate_source(self, source_type='gaussian', amplitude=0.5):
+    def generate_source(self, source_type='gaussian', amplitude=0.5, center=0.5):
         """
         Generate forcing f(x)
         
         Args:
             source_type: 'gaussian', 'sine', 'constant', 'zero'
             amplitude: source strength
+            center: center location for Gaussian source (default: 0.5)
         
         Returns:
             src_sensors: source values at sensor locations
@@ -216,8 +236,7 @@ class PINNDeepONet_Wave(nn.Module):
         x = self.sensor_x_src
         
         if source_type == 'gaussian':
-            # Gaussian centered at x=0.50
-            center = 0.50
+            # Gaussian centered at specified location
             width = 0.3
             src = amplitude * torch.exp(-((x - center) / width) ** 2)
         elif source_type == 'sine':
@@ -234,7 +253,7 @@ class PINNDeepONet_Wave(nn.Module):
         
         return src
     
-    def source_function(self, x, source_type='gaussian', amplitude=0.5):
+    def source_function(self, x, source_type='gaussian', amplitude=0.5, center=0.5):
         """
         Evaluate source function at arbitrary locations
         
@@ -242,12 +261,12 @@ class PINNDeepONet_Wave(nn.Module):
             x: (n_points,) or scalar
             source_type: type of source
             amplitude: source strength
+            center: center location for Gaussian source (default: 0.5)
         
         Returns:
             f: source values at x
         """
         if source_type == 'gaussian':
-            center = 0.50
             width = 0.3
             f = amplitude * torch.exp(-((x - center) / width) ** 2)
         elif source_type == 'sine':
@@ -262,8 +281,9 @@ class PINNDeepONet_Wave(nn.Module):
         return f
     
     def train_pinn(self, n_epochs=5000, n_colloc=200, lr=1e-3, 
-                   a_range=(1.0, 2.0), b_range=(0.0, 0.0), 
-                   source_type='zero', source_amplitude=0.0, T_max=1.0):
+                   a_range=(0.0, 1.0), b_range=(0.0, 4.0), 
+                   source_type='zero', source_amplitude=7.5, source_center=0.5, 
+                   center_range=None, T_max=1.0):
         """
         Train PINN-DeepONet with physics-informed loss
         
@@ -278,6 +298,8 @@ class PINNDeepONet_Wave(nn.Module):
             b_range: range for velocity IC amplitude (0,0) = zero velocity
             source_type: type of forcing
             source_amplitude: forcing strength
+            source_center: center location for Gaussian (used if center_range is None)
+            center_range: if provided, randomly sample center from this range (e.g., (0.1, 0.9))
             T_max: maximum time for training
         """
         print("="*70)
@@ -287,7 +309,10 @@ class PINNDeepONet_Wave(nn.Module):
         print(f"Collocation points: {n_colloc}")
         print(f"Displacement IC amplitude range: {a_range}")
         print(f"Velocity IC amplitude range: {b_range}")
-        print(f"Source type: {source_type}, amplitude: {source_amplitude}")
+        if center_range is not None:
+            print(f"Source type: {source_type}, amplitude: {source_amplitude}, center range: {center_range}")
+        else:
+            print(f"Source type: {source_type}, amplitude: {source_amplitude}, center: {source_center}")
         print(f"Wave speed c: {self.c}")
         print(f"Time domain: [0, {T_max}]")
         print("Boundary conditions: HARD constraints (no soft loss)")
@@ -312,10 +337,17 @@ class PINNDeepONet_Wave(nn.Module):
             a = a_range[0] + (a_range[1] - a_range[0]) * torch.rand(1).item()
             b = b_range[0] + (b_range[1] - b_range[0]) * torch.rand(1).item()
             
+            # Sample random source center (for varying forcing location during training)
+            if center_range is not None and source_type == 'gaussian':
+                # Vary center in [center_range[0], center_range[1]] for generalization
+                center_sample = center_range[0] + (center_range[1] - center_range[0]) * torch.rand(1).item()
+            else:
+                center_sample = source_center
+            
             # Generate ICs and source sensors
             u0_sensors = self.generate_ic_displacement(a)
             v0_sensors = self.generate_ic_velocity(b)
-            src_sensors = self.generate_source(source_type, source_amplitude)
+            src_sensors = self.generate_source(source_type, source_amplitude, center_sample)
             
             # Sample collocation points (x, t)
             x_colloc = self.domain[0] + (self.domain[1] - self.domain[0]) * torch.rand(n_colloc)
@@ -323,7 +355,7 @@ class PINNDeepONet_Wave(nn.Module):
             xt_colloc = torch.stack([x_colloc, t_colloc], dim=1)
             
             # Source values at collocation points
-            src_colloc = self.source_function(x_colloc, source_type, source_amplitude)
+            src_colloc = self.source_function(x_colloc, source_type, source_amplitude, center_sample)
             
             # === PDE Loss ===
             residual = self.compute_pde_residual(u0_sensors, v0_sensors, src_sensors, 
@@ -380,13 +412,13 @@ class PINNDeepONet_Wave(nn.Module):
 
 
 def plot_solution(model, a_test=1.5, b_test=0.0, source_type='zero', 
-                  source_amplitude=0.0, T_max=1.0, gt_data=None):
+                  source_amplitude=0.0, source_center=0.5, T_max=1.0, gt_data=None):
     """Visualize the trained solution"""
     
     # Generate test case
     u0_sensors = model.generate_ic_displacement(a_test)
     v0_sensors = model.generate_ic_velocity(b_test)
-    src_sensors = model.generate_source(source_type, source_amplitude)
+    src_sensors = model.generate_source(source_type, source_amplitude, source_center)
     
     # Create spatiotemporal grid
     nx, nt = 100, 50
@@ -402,7 +434,7 @@ def plot_solution(model, a_test=1.5, b_test=0.0, source_type='zero',
         u_pred = u_pred.reshape(nx, nt).numpy()
     
     # Source and ICs for plotting
-    src_plot = model.source_function(x_plot, source_type, source_amplitude).numpy()
+    src_plot = model.source_function(x_plot, source_type, source_amplitude, source_center).numpy()
     u0_plot = (a_test * torch.sin(np.pi * x_plot)).numpy()
     v0_plot = (b_test * torch.sin(np.pi * x_plot)).numpy()
     
@@ -546,14 +578,23 @@ if __name__ == "__main__":
     torch.manual_seed(42)
     np.random.seed(42)
     
+    # ==========================================================================
+    # TRAINING CASE SELECTION
+    # ==========================================================================
+    # Choose training scenario:
+    # 'no_source': Free wave with zero forcing
+    # 'with_source': Wave with Gaussian source (varying amplitude)
+    
+    TRAINING_CASE = 'with_source'  # Change to 'no_source' or 'with_source'
+    
     print("\n" + "="*70)
-    print("PHYSICS-INFORMED DEEPONET FOR WAVE EQUATION")
+    print("PHYSICS-INFORMED DEEPONET FOR DAMPED WAVE EQUATION")
     print("="*70)
-    print("PDE: u_tt = c² * u_xx + f(x)")
+    print("PDE: u_tt + k*u_t = c² * u_xx + f(x)")
     print("IC:  u(x, 0) = a * sin(π*x)")
     print("     u_t(x, 0) = b * sin(π*x)")
-    print("BC:  u(0, t) = u(1, t) = 0")
-    print("="*70 + "\n")
+    print("BC:  u(0, t) = u(1, t) = 0 (hard constraint)")
+    print("="*70)
     
     # Create model
     model = PINNDeepONet_Wave(
@@ -562,40 +603,114 @@ if __name__ == "__main__":
         branch_hidden=50,
         trunk_hidden=50,
         p=50,
-        wave_speed=1.0
+        wave_speed=1.0,
+        damping_coeff=1.0
     )
     
-    print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
+    print(f"\nModel parameters: {sum(p.numel() for p in model.parameters()):,}")
+    print(f"Training case: {TRAINING_CASE}")
     print()
     
-    # Train (start with zero forcing and zero initial velocity)
-    history = model.train_pinn(
-        n_epochs=5000,
-        n_colloc=200,
-        lr=1e-3,
-        a_range=(1.0, 2.0),     # Displacement IC
-        b_range=(0.0, 0.0),     # Zero initial velocity
-        source_type='zero',      # No forcing
-        source_amplitude=0.0,
-        T_max=2.0               # Longer time for wave propagation
-    )
+    # ==========================================================================
+    # TRAINING
+    # ==========================================================================
     
-    # Save model
-    torch.save(model.state_dict(), 'pinn_deeponet_wave.pth')
-    print("✓ Model saved: pinn_deeponet_wave.pth\n")
+    if TRAINING_CASE == 'no_source':
+        # Case 1: Free wave (no forcing)
+        print("Training: Free damped wave (no source)")
+        history = model.train_pinn(
+            n_epochs=5000,
+            n_colloc=200,
+            lr=1e-3,
+            a_range=(0.0, 1.0),      # Displacement IC amplitude range
+            b_range=(0.0, 4.0),      # Initial velocity range
+            source_type='zero',      # No forcing
+            source_amplitude=7.5,    # Default amplitude (not used for zero source)
+            T_max=2.0                # Time domain
+        )
+        
+        # Test case
+        a_test = 0.5
+        b_test = 2.0
+        source_test_type = 'zero'
+        source_test_amp = 7.5  # Default (not used for zero source)
+        source_test_center = 0.5  # Not used for zero source
+        T_test = 2.0
+        model_filename = 'pinn_deeponet_wave_nosource.pth'
+        gt_filename = 'gt_wave1D_nosource.csv'
+        
+    elif TRAINING_CASE == 'with_source':
+        # Case 2: Wave with Gaussian source (varying center location during training)
+        print("Training: Damped wave with Gaussian source (varying center)")
+        print("  Source amplitude: 7.5 (fixed)")
+        print("  Source width: 0.3")
+        print("  Training center range: [0.1, 0.9]")
+        
+        history = model.train_pinn(
+            n_epochs=5000,
+            n_colloc=200,
+            lr=1e-3,
+            a_range=(0.0, 1.0),        # Displacement IC amplitude range
+            b_range=(0.0, 4.0),        # Initial velocity range
+            source_type='gaussian',    # Gaussian forcing
+            source_amplitude=7.5,      # Fixed amplitude
+            source_center=0.5,         # Default center (not used when center_range is provided)
+            center_range=(0.1, 0.9),   # Vary center location during training
+            T_max=2.0                  # Time domain
+        )
+        
+        # Test case: test at center x=0.5 (middle of training range)
+        a_test = 0.5
+        b_test = 2.0
+        source_test_type = 'gaussian'
+        source_test_amp = 7.5
+        source_test_center = 0.17  # Test at x=0.17
+        T_test = 2.0
+        model_filename = 'pinn_deeponet_wave_withsource.pth'
+        gt_filename = 'gt_wave1D_withsource.csv'
+        
+    else:
+        raise ValueError(f"Unknown training case: {TRAINING_CASE}")
     
-    # Plot results
+    # ==========================================================================
+    # SAVE MODEL
+    # ==========================================================================
+    torch.save(model.state_dict(), model_filename)
+    print(f"\n✓ Model saved: {model_filename}\n")
+    
+    # ==========================================================================
+    # PLOT RESULTS
+    # ==========================================================================
     print("Generating plots...")
-    gt_data = np.loadtxt('gt_wave1D_2branch.csv', delimiter=',')
     
-    fig1 = plot_solution(model, a_test=1.5, b_test=0.0, 
-                         source_type='zero', source_amplitude=0.0, T_max=2.0, gt_data=gt_data)
-    fig1.savefig('pinn_deeponet_wave_solution.png', dpi=150, bbox_inches='tight')
-    print("✓ Solution plot saved: pinn_deeponet_wave_solution.png")
+    # Try to load ground truth if available
+    try:
+        gt_data = np.loadtxt(gt_filename, delimiter=',')
+        print(f"✓ Loaded ground truth: {gt_filename}")
+    except FileNotFoundError:
+        print(f"⚠ Ground truth file not found: {gt_filename}")
+        print("  Run MATLAB script first to generate ground truth.")
+        gt_data = None
     
+    # Plot solution
+    fig1 = plot_solution(model, 
+                         a_test=a_test, 
+                         b_test=b_test, 
+                         source_type=source_test_type, 
+                         source_amplitude=source_test_amp,
+                         source_center=source_test_center,
+                         T_max=T_test, 
+                         gt_data=gt_data)
+    
+    solution_plot_filename = f'pinn_wave_solution_{TRAINING_CASE}.png'
+    fig1.savefig(solution_plot_filename, dpi=150, bbox_inches='tight')
+    print(f"✓ Solution plot saved: {solution_plot_filename}")
+    
+    # Plot training history
     fig2 = plot_training_history(history)
-    fig2.savefig('pinn_deeponet_wave_training.png', dpi=150, bbox_inches='tight')
-    print("✓ Training history saved: pinn_deeponet_wave_training.png")
+    training_plot_filename = f'pinn_wave_training_{TRAINING_CASE}.png'
+    fig2.savefig(training_plot_filename, dpi=150, bbox_inches='tight')
+    print(f"✓ Training history saved: {training_plot_filename}")
     
     plt.show()
     
