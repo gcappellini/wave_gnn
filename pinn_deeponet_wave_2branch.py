@@ -444,11 +444,12 @@ def plot_solution(model, a_test=1.5, b_test=0.0, source_type='zero',
         nrows = 2
         
         # Reshape ground truth data to match prediction grid
-        # gt_data format: [x, t, f, u] - reshape to (nt, nx) for u
+        # gt_data format: [x, t, f, u, v] - reshape to (nt, nx) for u and v
         x_gt = gt_data[:, 0]
         t_gt = gt_data[:, 1]
         f_gt = gt_data[:, 2]
         u_gt = gt_data[:, 3]
+        v_gt = gt_data[:, 4]
         
         # Determine grid size from gt_data
         nt_gt = len(np.unique(t_gt))
@@ -573,6 +574,138 @@ def plot_training_history(history):
     return fig
 
 
+def rollout_test(model, gt_data, T_total=10.0, dt_interval=1.0, 
+                 nx=100, nt_per_interval=50):
+    """
+    Rollout test with changing source center every dt_interval seconds
+    Uses ground truth data to extract sensor values at each interval
+    
+    Args:
+        model: trained PINN-DeepONet model
+        gt_data: ground truth data [x, t, f, u, v] (REQUIRED)
+        T_total: total simulation time (default: 10s)
+        dt_interval: time interval for source center change (default: 1s)
+        nx: number of spatial points
+        nt_per_interval: number of time points per interval
+    
+    Returns:
+        u_rollout: complete solution (nx, nt_total)
+        t_rollout: time vector
+        x_rollout: spatial vector
+        fig: matplotlib figure
+    """
+    
+    if gt_data is None:
+        raise ValueError("Ground truth data is required for rollout test!")
+    
+    # Extract ground truth - format: [x, t, f, u, v]
+    x_gt = gt_data[:, 0]
+    t_gt = gt_data[:, 1]
+    f_gt = gt_data[:, 2]
+    u_gt = gt_data[:, 3]
+    v_gt = gt_data[:, 4]
+    
+    # Get unique coordinates
+    x_unique = np.unique(x_gt)
+    t_unique = np.unique(t_gt)
+    nt_gt = len(t_unique)
+    nx_gt = len(x_unique)
+    
+    # Reshape to grids
+    u_gt_grid = u_gt.reshape(nt_gt, nx_gt).T  # (nx_gt, nt_gt)
+    v_gt_grid = v_gt.reshape(nt_gt, nx_gt).T
+    f_gt_grid = f_gt.reshape(nt_gt, nx_gt).T
+    
+    # Setup
+    n_intervals = int(T_total / dt_interval)
+    x_plot = torch.linspace(model.domain[0], model.domain[1], nx)
+    t_interval = torch.linspace(0, dt_interval, nt_per_interval)
+    
+    # Storage for complete rollout
+    u_rollout = []
+    
+    # Create fixed xt_grid for each interval
+    X, T = torch.meshgrid(x_plot, t_interval, indexing='ij')
+    xt_grid = torch.stack([X.flatten(), T.flatten()], dim=1)
+    
+    model.eval()
+    with torch.no_grad():
+        for interval_idx in range(n_intervals):
+            # Find the time index in ground truth for start of this interval
+            t_start = interval_idx * dt_interval
+            t_idx = np.argmin(np.abs(t_unique - t_start))
+            
+            # Extract u, v, f from ground truth at this time step
+            u_current_gt = u_gt_grid[:, t_idx]  # (nx_gt,)
+            v_current_gt = v_gt_grid[:, t_idx]
+            f_current_gt = f_gt_grid[:, t_idx]
+            
+            # Interpolate to sensor locations if needed
+            u0_sensors = torch.tensor(np.interp(model.sensor_x_ic.numpy(), 
+                                                 x_unique, u_current_gt), dtype=torch.float32)
+            v0_sensors = torch.tensor(np.interp(model.sensor_x_ic.numpy(), 
+                                                 x_unique, v_current_gt), dtype=torch.float32)
+            src_sensors = torch.tensor(np.interp(model.sensor_x_src.numpy(), 
+                                                  x_unique, f_current_gt), dtype=torch.float32)
+            
+            # Predict for this interval
+            u_pred = model.forward(u0_sensors, v0_sensors, src_sensors, xt_grid)
+            u_pred_grid = u_pred.reshape(nx, nt_per_interval)
+            
+            # Store results
+            u_rollout.append(u_pred_grid.numpy())
+    
+    # Concatenate all intervals
+    u_rollout = np.concatenate(u_rollout, axis=1)
+    
+    # Create full time and space arrays
+    t_rollout = np.linspace(0, T_total, n_intervals * nt_per_interval)
+    x_rollout = x_plot.numpy()
+    
+    # Interpolate ground truth to match rollout grid
+    from scipy.interpolate import RegularGridInterpolator
+    interp = RegularGridInterpolator((x_unique, t_unique), u_gt_grid)
+    X_new, T_new = np.meshgrid(x_rollout, t_rollout, indexing='ij')
+    points = np.column_stack([X_new.ravel(), T_new.ravel()])
+    u_gt_interp = interp(points).reshape(u_rollout.shape)
+    
+    # Plot results
+    fig = plt.figure(figsize=(18, 10))
+    
+    # 3 subplots: PINN, Ground Truth, Error
+    ax1 = plt.subplot(1, 3, 1)
+    im1 = ax1.contourf(t_rollout, x_rollout, u_rollout, levels=50, cmap='viridis')
+    ax1.set_xlabel('Time (s)')
+    ax1.set_ylabel('x')
+    ax1.set_title('PINN Rollout Prediction')
+    plt.colorbar(im1, ax=ax1)
+    
+    ax2 = plt.subplot(1, 3, 2)
+    im2 = ax2.contourf(t_rollout, x_rollout, u_gt_interp, levels=50, cmap='viridis')
+    ax2.set_xlabel('Time (s)')
+    ax2.set_ylabel('x')
+    ax2.set_title('MATLAB Ground Truth')
+    plt.colorbar(im2, ax=ax2)
+    
+    ax3 = plt.subplot(1, 3, 3)
+    error = np.abs(u_rollout - u_gt_interp)
+    rel_l2_error = np.linalg.norm(error)/np.linalg.norm(u_gt_interp)
+    im3 = ax3.contourf(t_rollout, x_rollout, error, levels=50, cmap='hot')
+    ax3.set_xlabel('Time (s)')
+    ax3.set_ylabel('x')
+    ax3.set_title(f'Absolute Error\n(Rel L2: {rel_l2_error:.2e})')
+    plt.colorbar(im3, ax=ax3)
+    
+    print(f"\n=== Rollout Error Statistics ===")
+    print(f"Max absolute error: {np.max(error):.6e}")
+    print(f"Mean absolute error: {np.mean(error):.6e}")
+    print(f"RMS error: {np.sqrt(np.mean(error**2)):.6e}")
+    print(f"Relative L2 error: {rel_l2_error:.6e}")
+    
+    plt.tight_layout()
+    return u_rollout, t_rollout, x_rollout, fig
+
+
 if __name__ == "__main__":
     # Set random seed
     torch.manual_seed(42)
@@ -603,7 +736,7 @@ if __name__ == "__main__":
         branch_hidden=50,
         trunk_hidden=50,
         p=50,
-        wave_speed=1.0,
+        wave_speed=1.0,  # c=1, so c²=1
         damping_coeff=1.0
     )
     
@@ -622,8 +755,8 @@ if __name__ == "__main__":
             n_epochs=5000,
             n_colloc=200,
             lr=1e-3,
-            a_range=(0.0, 1.0),      # Displacement IC amplitude range
-            b_range=(0.0, 4.0),      # Initial velocity range
+            a_range=(-1.0, 1.0),      # Displacement IC amplitude range
+            b_range=(-4.0, 4.0),      # Initial velocity range
             source_type='zero',      # No forcing
             source_amplitude=7.5,    # Default amplitude (not used for zero source)
             T_max=2.0                # Time domain
@@ -650,8 +783,8 @@ if __name__ == "__main__":
             n_epochs=5000,
             n_colloc=200,
             lr=1e-3,
-            a_range=(0.0, 1.0),        # Displacement IC amplitude range
-            b_range=(0.0, 4.0),        # Initial velocity range
+            a_range=(-1.0, 1.0),        # Displacement IC amplitude range
+            b_range=(-4.0, 4.0),        # Initial velocity range
             source_type='gaussian',    # Gaussian forcing
             source_amplitude=7.5,      # Fixed amplitude
             source_center=0.5,         # Default center (not used when center_range is provided)
@@ -711,6 +844,37 @@ if __name__ == "__main__":
     training_plot_filename = f'pinn_wave_training_{TRAINING_CASE}.png'
     fig2.savefig(training_plot_filename, dpi=150, bbox_inches='tight')
     print(f"✓ Training history saved: {training_plot_filename}")
+    
+    # ==========================================================================
+    # ROLLOUT TEST (only for with_source case)
+    # ==========================================================================
+    if TRAINING_CASE == 'with_source':
+        print("\n" + "="*70)
+        print("ROLLOUT TEST: 10-second simulation with changing source")
+        print("="*70)
+        
+        # Load rollout ground truth (REQUIRED)
+        try:
+            gt_rollout = np.loadtxt('gt_wave1D_withsource_rollout.csv', delimiter=',')
+            print(f"✓ Loaded rollout ground truth: gt_wave1D_withsource_rollout.csv")
+        except FileNotFoundError:
+            print(f"✗ Rollout ground truth not found: gt_wave1D_withsource_rollout.csv")
+            print("  Rollout test requires ground truth data. Skipping...")
+            gt_rollout = None
+        
+        # Run rollout test only if ground truth is available
+        if gt_rollout is not None:
+            u_roll, t_roll, x_roll, fig3 = rollout_test(
+                model, 
+                gt_data=gt_rollout,
+                T_total=10.0,
+                dt_interval=1.0
+            )
+            
+            rollout_plot_filename = 'pinn_wave_rollout_withsource.png'
+            fig3.savefig(rollout_plot_filename, dpi=150, bbox_inches='tight')
+            print(f"✓ Rollout plot saved: {rollout_plot_filename}")
+            print(f"  Rollout shape: {u_roll.shape}")
     
     plt.show()
     
