@@ -68,7 +68,7 @@ for i = 1:length(t)
         output_data = [output_data; x(j), t(i), stringforce(x(j), t(i)), sol(i, j, 1), sol(i, j, 2)];
     end
 end
-writematrix(output_data, '/Users/guglielmocappellini/Desktop/research/code/pinns-wave/wave-gnn/1_gcn_string/gt_wave1D_withsource_rollout.csv');
+writematrix(output_data, '/Users/guglielmocappellini/Desktop/research/code/pinns-wave/wave-gnn/1_gcn_string/data/gt_wave1D_withsource_rollout.csv');
 
 %% PLOT SOLUTION
 
