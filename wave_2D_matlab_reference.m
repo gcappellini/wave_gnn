@@ -103,71 +103,82 @@ u = result.NodalSolution;
 umax = max(max(u));
 umin = min(min(u));
 
-% % Compute velocity by numerical differentiation of displacement
-% dt = tlist(2) - tlist(1);  % Time step
-% v = zeros(size(u));
-% v(:, 1) = (u(:, 2) - u(:, 1)) / dt;  % Forward difference for first time step
-% for i = 2:length(tlist)-1
-%     v(:, i) = (u(:, i+1) - u(:, i-1)) / (2*dt);  % Central difference
-% end
-% v(:, end) = (u(:, end) - u(:, end-1)) / dt;  % Backward difference for last time step
+%% Extract displacement u
+u_all = result.NodalSolution;   % nNodes x nTime
+[nNodes, nTime] = size(u_all);
+dt = tlist(2) - tlist(1);
 
-%% Save solution to CSV files
-% Combine x, y, t, force, displacement, and velocity into one file
-% Format: [x, y, t, f, u, v]
-output_data = [];
+%% Compute velocity v = du/dt using 4th-order central differences for accuracy
+v_all = zeros(size(u_all));
 
-% Get mesh coordinates
-x_nodes = mesh.Nodes(1, :)';  % x-coordinates of all nodes
-y_nodes = mesh.Nodes(2, :)';  % y-coordinates of all nodes
-n_nodes = length(x_nodes);
+% Forward difference for first two points
+v_all(:,1) = (-25*u_all(:,1) + 48*u_all(:,2) - 36*u_all(:,3) + 16*u_all(:,4) - 3*u_all(:,5))/(12*dt);
+v_all(:,2) = (-3*u_all(:,1) - 10*u_all(:,2) + 18*u_all(:,3) - 6*u_all(:,4) + u_all(:,5))/(12*dt);
 
-% Loop over time steps
-for i = 1:length(tlist)
-    t_current = tlist(i);
-    
-    % Loop over spatial nodes
-    for j = 1:n_nodes
-        x_j = x_nodes(j);
-        y_j = y_nodes(j);
-        
-        % Evaluate force at this location and time
-        loc.x = x_j;
-        loc.y = y_j;
-        state.time = t_current;
-        f_val = force(loc, state);
-        
-        % Get displacement and velocity at this node and time
-        u_val = result.NodalSolution(j, i);
-        v_val = 0;
-        
-        % Append to output: [x, y, t, f, u, v]
-        output_data = [output_data; x_j, y_j, t_current, f_val, u_val, v_val];
-    end
+% Central differences for interior points (4th-order)
+for k = 3:nTime-2
+    v_all(:,k) = (u_all(:,k-2) - 8*u_all(:,k-1) + 8*u_all(:,k+1) - u_all(:,k+2))/(12*dt);
 end
 
+% Backward difference for last two points
+v_all(:,nTime-1) = (3*u_all(:,nTime) + 10*u_all(:,nTime-1) - 18*u_all(:,nTime-2) + 6*u_all(:,nTime-3) - u_all(:,nTime-4))/(12*dt);
+v_all(:,nTime) = (25*u_all(:,nTime) - 48*u_all(:,nTime-1) + 36*u_all(:,nTime-2) - 16*u_all(:,nTime-3) + 3*u_all(:,nTime-4))/(12*dt);
+
+%% Animate displacement u and velocity v side by side
+umin = min(u_all(:)); umax = max(u_all(:));
+vmin = min(v_all(:)); vmax = max(v_all(:));
+
+figure;
+for ti = 1:nTime
+    subplot(1,2,1);
+    pdeplot(model,'XYData',u_all(:,ti),'ZData',u_all(:,ti),'Mesh','off','ZStyle','continuous');
+    axis([0 1 0 1 umin umax]);
+    title(sprintf('Displacement u at t=%.3f', tlist(ti)));
+    xlabel('x'); ylabel('y'); zlabel('u');
+    
+    subplot(1,2,2);
+    pdeplot(model,'XYData',v_all(:,ti),'ZData',v_all(:,ti),'Mesh','off','ZStyle','continuous');
+    axis([0 1 0 1 vmin vmax]);
+    title(sprintf('Velocity v at t=%.3f', tlist(ti)));
+    xlabel('x'); ylabel('y'); zlabel('v');
+    
+    drawnow;
+    M(ti) = getframe(gcf);
+end
+
+% Play movie
+movie(M);
+
+
+%% Save solution to CSV files (vectorized)
+% Combine x, y, t, force, displacement u, and velocity v into one file
+
+% Mesh coordinates
+x_nodes = mesh.Nodes(1,:)';  % nNodes x 1
+y_nodes = mesh.Nodes(2,:)';  % nNodes x 1
+n_nodes = length(x_nodes);
+n_time = length(tlist);
+
+% Create grids for node indices and time indices
+[node_idx_grid, time_idx_grid] = ndgrid(1:n_nodes, 1:n_time);
+
+% Flatten grids
+x_flat = x_nodes(node_idx_grid(:));
+y_flat = y_nodes(node_idx_grid(:));
+t_flat = tlist(time_idx_grid(:))';
+
+% Flatten displacement and velocity
+u_flat = u_all(:);
+v_flat = v_all(:);
+
+% Compute force at all points
+r2 = (x_flat - source_center_x).^2 + (y_flat - source_center_y).^2;
+f_flat = source_amp * exp(-r2 / source_width^2);
+
+% Combine into single matrix
+output_data = [x_flat, y_flat, t_flat, f_flat, u_flat, v_flat];
+
+% Write to CSV
 writematrix(output_data, '/Users/guglielmocappellini/Desktop/research/code/pinns-wave/wave-gnn/1_gcn_string/data/gt_wave2D_nosource.csv');
 
-
-%% PLOT MATLAB SOLUTION
-
-u = result.NodalSolution;  % size = [1537, 100]
-
-% Compute scalar bounds
-umin = min(u(:));
-umax = max(u(:));
-
-% Animate
-figure;
-for i = 1:length(tlist)
-    pdeplot(model, "XYData", u(:, i), "ZData", u(:, i), ...
-                    "ZStyle", "continuous", "Mesh", "off");
-    axis([0 1 0 1 umin umax]);
-    xlabel("x"); ylabel("y"); zlabel("u");
-    title(sprintf("Numerical - t = %.2f", tlist(i)));
-    drawnow;
-    M(i) = getframe(gcf);
-end
-
-% To play the animation
-movie(M);
+fprintf('CSV export complete: %d rows x %d columns\n', size(output_data,1), size(output_data,2));
