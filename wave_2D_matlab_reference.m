@@ -2,11 +2,12 @@ clear all
 close all
 clc
 
-t_f = 2;
+t_f = 1;
 
 tlist = linspace(0,t_f,100);
 
 %% Simulating PINNs with numerical methods
+global source_width source_amp source_center_x source_center_y
 
 cpu_time_start = cputime;
 
@@ -14,14 +15,13 @@ wave_speed = 1;
 d = 1;
 a = 0;
 m = 1;
-k = 1;
-u0_coeff = 1.0;
+u0_coeff = 0.0;
 v0_coeff = 0.0;
 
+source_center_x = 0.35;
+source_center_y = 0.65;
 source_width=0.3;
-source_amp = 7.5;
-source_center_x = 0.17;
-source_center_y = 0.17;
+source_amp = 15.0;
 
 numberOfPDE = 1;
 model = createpde(numberOfPDE);
@@ -41,15 +41,15 @@ specifyCoefficients(model,m=m,d=0,c=wave_speed^2 ,a=a,f=@force);
 
 function fcoeff=force(location, state)
     global source_width source_amp source_center_x source_center_y
+
     % t1 = 0.3*10;
     % t2 = 0.6*10;
-    % %f1 = -3*exp(-400.*((location.x-0.7).^2).*((location.y-0.7).^2)).*exp(-(state.time - t1)^2/(2*0.5^2));
-    % %f2 = -3*exp(-400.*((location.x-0.3).^2).*((location.y-0.3).^2)).*exp(-(state.time - t2)^2/(2*0.5^2));
     % f1 = -3*exp(-400.*(((location.x-0.7).^2)+((location.y-0.7).^2))).*exp(-(state.time - t1)^2/(2*0.5^2));
     % f2 = -3*exp(-400.*(((location.x-0.2).^2)+((location.y-0.5).^2))).*exp(-(state.time - t2)^2/(2*0.5^2));
     % fcoeff = f1+f2;
-    fcoeff = zeros(1, length(location.x));  % Zero source
-    % fcoeff = source_amp * exp(-((location.x - source_center_x)/source_width).^2 - ((location.y - source_center_y)/source_width).^2);
+
+
+    fcoeff = source_amp*exp(-(((location.x-source_center_x).^2)+((location.y-source_center_y).^2))/source_width^2);
 end
 
 applyBoundaryCondition(model,"dirichlet","Edge",[1,2,3,4],"u",0);
@@ -179,6 +179,6 @@ f_flat = source_amp * exp(-r2 / source_width^2);
 output_data = [x_flat, y_flat, t_flat, f_flat, u_flat, v_flat];
 
 % Write to CSV
-writematrix(output_data, '/Users/guglielmocappellini/Desktop/research/code/pinns-wave/wave-gnn/1_gcn_string/data/gt_wave2D_nosource.csv');
+writematrix(output_data, '/Users/guglielmocappellini/Desktop/research/code/pinns-wave/wave-gnn/1_gcn_string/data/gt_wave2D_withsource.csv');
 
 fprintf('CSV export complete: %d rows x %d columns\n', size(output_data,1), size(output_data,2));

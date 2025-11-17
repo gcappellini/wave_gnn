@@ -17,7 +17,7 @@ def main():
     # ============================================================
     
     # Select test case: 'no_source' or 'with_source'
-    test_case = 'no_source'
+    test_case = 'with_source'
     
     # Load or train model
     load_model = False  # Set to True to load existing model instead of training
@@ -32,12 +32,12 @@ def main():
     n_colloc = 2000
     
     # Test parameters
-    a_test = 1.0           # IC displacement amplitude
+    a_test = 0.0           # IC displacement amplitude
     b_test = 0.0           # IC velocity amplitude
-    source_amplitude = 7.5
-    center_x_test = 0.17   # Source center x-coordinate
-    center_y_test = 0.17   # Source center y-coordinate
-    T_max = 2.0            # Training time horizon
+    source_amplitude = 15.0
+    center_x_test = 0.35   # Source center x-coordinate
+    center_y_test = 0.65   # Source center y-coordinate
+    T_max = 1.0            # Training time horizon
     
     print(f"\nTest case: {test_case}")
     print(f"Training epochs: {n_epochs}")
@@ -100,17 +100,6 @@ def main():
             checkpoint = torch.load(checkpoint_path)
             model.load_state_dict(checkpoint['model_state_dict'])
             print(f"Model loaded from {checkpoint_path}")
-            
-            # Load configuration
-            if 'config' in checkpoint:
-                config = checkpoint['config']
-                a_test = config.get('a_test', a_test)
-                b_test = config.get('b_test', b_test)
-                source_amplitude = config.get('source_amplitude', source_amplitude)
-                center_x_test = config.get('center_x_test', center_x_test)
-                center_y_test = config.get('center_y_test', center_y_test)
-                print(f"Test parameters loaded: a={a_test}, b={b_test}, amplitude={source_amplitude}")
-                print(f"Source center: ({center_x_test}, {center_y_test})")
         else:
             print(f"Error: Checkpoint file {checkpoint_path} not found!")
             print("Set load_model=False to train a new model.")
@@ -140,12 +129,7 @@ def main():
                 'branch_hidden': branch_hidden,
                 'trunk_hidden': trunk_hidden,
                 'p': p,
-                'test_case': test_case,
-                'a_test': a_test,
-                'b_test': b_test,
-                'source_amplitude': source_amplitude,
-                'center_x_test': center_x_test,
-                'center_y_test': center_y_test
+                'test_case': test_case
             }
         }, checkpoint_path)
         
@@ -156,8 +140,8 @@ def main():
         # ============================================================
         
         fig_history = plot_training_history(history)
-        fig_history.savefig(f'outputs/training_history_wave2D_{test_case}.png', dpi=150, bbox_inches='tight')
-        print(f"Training history saved to outputs/training_history_wave2D_{test_case}.png")
+        fig_history.savefig(f'logs_multibranch_wave2D/training_history_wave2D_{test_case}.png', dpi=150, bbox_inches='tight')
+        print(f"Training history saved to logs_multibranch_wave2D/training_history_wave2D_{test_case}.png")
     
     # ============================================================
     # PLOT SOLUTION SNAPSHOTS

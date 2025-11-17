@@ -185,7 +185,7 @@ class PINNDeepONet_Wave2D(nn.Module):
         """u_t(x,y,0) = b * sin(π*x) * sin(π*y)"""
         return b * torch.sin(np.pi * self.sensor_x_ic) * torch.sin(np.pi * self.sensor_y_ic)
     
-    def generate_source(self, source_type='gaussian', amplitude=7.5, center_x=0.5, center_y=0.5):
+    def generate_source(self, source_type='gaussian', amplitude=15.0, center_x=0.5, center_y=0.5):
         """Generate 2D source on sensor grid"""
         x = self.sensor_x_src
         y = self.sensor_y_src
@@ -201,7 +201,7 @@ class PINNDeepONet_Wave2D(nn.Module):
         
         return src
     
-    def source_function(self, x, y, source_type='gaussian', amplitude=7.5, center_x=0.5, center_y=0.5):
+    def source_function(self, x, y, source_type='gaussian', amplitude=15.0, center_x=0.5, center_y=0.5):
         """Evaluate source at arbitrary (x,y) locations"""
         if source_type == 'gaussian':
             width = 0.3
@@ -215,9 +215,9 @@ class PINNDeepONet_Wave2D(nn.Module):
         return f
     
     def train_pinn(self, n_epochs=5000, n_colloc=500, lr=1e-3, 
-                   a_range=(0.0, 1.5), b_range=(0.0, 0.0), 
-                   source_type='zero', source_amplitude=7.5, 
-                   center_x=0.5, center_y=0.5, center_range=None, T_max=2.0):
+                   a_range=(-1.5, 1.5), b_range=(0.0, 0.0), 
+                   source_type='zero', source_amplitude=15.0, 
+                   center_x=0.5, center_y=0.5, center_range=(0.1, 0.9), T_max=2.0):
         """
         Train PINN-DeepONet for 2D wave equation
         

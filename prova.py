@@ -3,13 +3,13 @@ from model_2d import PINNDeepONet_Wave2D
 
 
 
-gt_data = pd.read_csv('data/gt_wave2D_nosource.csv', header=None).values
-v_gt = gt_data[gt_data[:, 3] == 0, 5]
+gt_data = pd.read_csv('data/gt_wave2D_withsource.csv', header=None).values
+v_gt = gt_data[:, 5]
 print(f"Ground truth v range: [{v_gt.min():.6f}, {v_gt.max():.6f}]")
 print(f"Expected range for b=0.5: ~[-0.5, 0.5]")
 
 a_test = 2.0
-b_test = 0.0
+b_test = 2.0
 n_sensors_ic = 20      # Creates 20x20 grid (400 sensors)
 n_sensors_src = 20     # Creates 20x20 grid (400 sensors)
 branch_hidden = 200
