@@ -17,18 +17,18 @@ def main():
     # ============================================================
     
     # Select test case: 'no_source' or 'with_source'
-    test_case = 'with_source'
+    test_case = 'no_source'
     
     # Load or train model
     load_model = False  # Set to True to load existing model instead of training
     
     # Training parameters
-    n_epochs = 5000
+    n_epochs = 10000
     n_sensors_ic = 20      # Creates 20x20 grid (400 sensors)
     n_sensors_src = 20     # Creates 20x20 grid (400 sensors)
-    branch_hidden = 200
-    trunk_hidden = 200
-    p = 200 
+    branch_hidden = 1000
+    trunk_hidden = 1000
+    p = 1000 
     n_colloc = 2000
     
     # Test parameters
@@ -208,8 +208,8 @@ def main():
             gt_rollout_data,
             snapshot_indices=[0, 4, 9]
         )
-        fig_snapshots.savefig(f'outputs/rollout_snapshots_wave2D_{test_case}.png', dpi=150, bbox_inches='tight')
-        print(f"Rollout snapshots saved to outputs/rollout_snapshots_wave2D_{test_case}.png")
+        fig_snapshots.savefig(f'logs_multibranch_wave2D/rollout_snapshots_wave2D_{test_case}.png', dpi=150, bbox_inches='tight')
+        print(f"Rollout snapshots saved to logs_multibranch_wave2D/rollout_snapshots_wave2D_{test_case}.png")
     else:
         print("\nSkipping rollout test (no rollout ground truth available)")
     

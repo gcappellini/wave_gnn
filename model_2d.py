@@ -11,9 +11,11 @@ class BranchNet(nn.Module):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(n_sensors, hidden_dim),
-            nn.Tanh(),
+            nn.LeakyReLU(),
             nn.Linear(hidden_dim, hidden_dim),
-            nn.Tanh(),
+            nn.LeakyReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LeakyReLU(),
             nn.Linear(hidden_dim, output_dim)
         )
     
@@ -27,6 +29,8 @@ class TrunkNet(nn.Module):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(3, hidden_dim),  # Input: [x, y, t]
+            nn.Tanh(),
+            nn.Linear(hidden_dim, hidden_dim),
             nn.Tanh(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.Tanh(),
