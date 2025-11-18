@@ -11,9 +11,11 @@ class BranchNet(nn.Module):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(n_sensors, hidden_dim),
-            nn.Tanh(),
+            nn.LeakyReLU(),
             nn.Linear(hidden_dim, hidden_dim),
-            nn.Tanh(),
+            nn.LeakyReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LeakyReLU(),
             nn.Linear(hidden_dim, output_dim)
         )
     
@@ -27,6 +29,8 @@ class TrunkNet(nn.Module):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(2, hidden_dim),  # Input: [x, t]
+            nn.Tanh(),
+            nn.Linear(hidden_dim, hidden_dim),
             nn.Tanh(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.Tanh(),
@@ -143,7 +147,8 @@ class PINNDeepONet_Wave(nn.Module):
         
         # Hard BC enforcement: u = x * (x - 1) * u_net
         # At x=0: u=0, at x=1: u=0
-        bc_factor = x * (x - 1.0)  # (n_points,)
+        # bc_factor = x * (x - 1.0)  # (n_points,)
+        bc_factor = torch.sin(torch.pi * x) #* torch.sin(np.pi * y)
         
         # Apply BC factor (broadcast over batch dimension)
         if single_sample:
@@ -279,6 +284,29 @@ class PINNDeepONet_Wave(nn.Module):
             raise ValueError(f"Unknown source type: {source_type}")
         
         return f
+
+    def get_velocity(self, u0_sensors, v0_sensors, src_sensors, xt):
+        """
+        Compute velocity u_t at given spatiotemporal points.
+        
+        Args:
+            u0_sensors, v0_sensors, src_sensors: branch network inputs
+            xt: (n_points, 2) coordinates [x, t]
+        
+        Returns:
+            u_t: (n_points,) velocity field
+        """
+        xt_grad = xt.clone().requires_grad_(True)
+        
+        # Forward pass
+        u = self.forward(u0_sensors, v0_sensors, src_sensors, xt_grad)
+        
+        # Compute ∂u/∂t
+        u_t = torch.autograd.grad(u, xt_grad,
+                                torch.ones_like(u),
+                                create_graph=False)[0][:, 1]  # Select time derivative
+        
+        return u_t    
     
     def train_pinn(self, n_epochs=5000, n_colloc=200, lr=1e-3, 
                    a_range=(0.0, 1.0), b_range=(0.0, 4.0), 
@@ -331,6 +359,11 @@ class PINNDeepONet_Wave(nn.Module):
         history = {
             'total': [], 'pde': [], 'ic_u': [], 'ic_v': []
         }
+
+        # Track best model
+        best_loss = float('inf')
+        best_model_state = None
+        best_epoch = 0
         
         for epoch in range(n_epochs):
             # Sample random IC amplitudes
@@ -397,15 +430,29 @@ class PINNDeepONet_Wave(nn.Module):
             history['pde'].append(loss_pde.item())
             history['ic_u'].append(loss_ic_u.item())
             history['ic_v'].append(loss_ic_v.item())
+
+            # Save best model
+            if loss_total.item() < best_loss:
+                best_loss = loss_total.item()
+                best_model_state = {key: value.cpu().clone() for key, value in self.state_dict().items()}
+                best_epoch = epoch
             
             scheduler.step(loss_total)
             
             # Print progress
             if epoch % 500 == 0 or epoch == n_epochs - 1:
                 current_lr = optimizer.param_groups[0]['lr']
+                with torch.no_grad():
+                    u_sample = self.forward(u0_sensors, v0_sensors, src_sensors, xt_ic[:100])
+                    u_min, u_max = u_sample.min().item(), u_sample.max().item()
                 print(f"Epoch {epoch:5d} | Loss: {loss_total.item():.6f} | "
                       f"PDE: {loss_pde.item():.6f} | IC_u: {loss_ic_u.item():.6f} | "
-                      f"IC_v: {loss_ic_v.item():.6f} | LR: {current_lr:.2e}")
-        
+                      f"IC_v: {loss_ic_v.item():.6f} | LR: {current_lr:.2e} | "
+                      f"u_range: [{u_min:.3f}, {u_max:.3f}]")
+        # Restore best model
+        if best_model_state is not None:
+            self.load_state_dict(best_model_state)
+            print(f"\n✓ Restored best model from epoch {best_epoch} with loss {best_loss:.6f}")
+           
         print("\n✓ Training complete!\n")
         return history

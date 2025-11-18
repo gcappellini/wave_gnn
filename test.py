@@ -68,8 +68,8 @@ def rollout_test(model, gt_data, T_total=10.0, dt_interval=1.0,
             t_idx = np.argmin(np.abs(t_unique - t_start))
             
             # Extract u, v, f from ground truth at this time step
-            u_current_gt = u_gt_grid[:, t_idx]  # (nx_gt,)
-            v_current_gt = v_gt_grid[:, t_idx]
+            u_current_gt = u_gt_grid[:, t_idx] #if interval_idx == 0 else u_pred_grid[:, 0]
+            v_current_gt = v_gt_grid[:, t_idx] #if interval_idx == 0 else v_pred_grid[:, 0]
             f_current_gt = f_gt_grid[:, t_idx]
             
             # Interpolate to sensor locations if needed
@@ -82,7 +82,11 @@ def rollout_test(model, gt_data, T_total=10.0, dt_interval=1.0,
             
             # Predict for this interval
             u_pred = model.forward(u0_sensors, v0_sensors, src_sensors, xt_grid)
+            # with torch.enable_grad():
+            #     v_pred = model.get_velocity(u0_sensors, v0_sensors, src_sensors, xt_grid)
+
             u_pred_grid = u_pred.reshape(nx, nt_per_interval)
+            # v_pred_grid = v_pred.reshape(nx, nt_per_interval)
             
             # Store results
             u_rollout.append(u_pred_grid.numpy())
@@ -101,30 +105,30 @@ def rollout_test(model, gt_data, T_total=10.0, dt_interval=1.0,
     points = np.column_stack([X_new.ravel(), T_new.ravel()])
     u_gt_interp = interp(points).reshape(u_rollout.shape)
     
-    # Plot results
+    # Plot results with space on x-axis and time on y-axis
     fig = plt.figure(figsize=(18, 10))
     
     # 3 subplots: PINN, Ground Truth, Error
     ax1 = plt.subplot(1, 3, 1)
-    im1 = ax1.contourf(t_rollout, x_rollout, u_rollout, levels=50, cmap='viridis')
-    ax1.set_xlabel('Time (s)')
-    ax1.set_ylabel('x')
+    im1 = ax1.contourf(x_rollout, t_rollout, u_rollout.T, levels=50, cmap='RdBu_r')
+    ax1.set_xlabel('x')
+    ax1.set_ylabel('Time (s)')
     ax1.set_title('PINN Rollout Prediction')
     plt.colorbar(im1, ax=ax1)
     
     ax2 = plt.subplot(1, 3, 2)
-    im2 = ax2.contourf(t_rollout, x_rollout, u_gt_interp, levels=50, cmap='viridis')
-    ax2.set_xlabel('Time (s)')
-    ax2.set_ylabel('x')
+    im2 = ax2.contourf(x_rollout, t_rollout, u_gt_interp.T, levels=50, cmap='RdBu_r')
+    ax2.set_xlabel('x')
+    ax2.set_ylabel('Time (s)')
     ax2.set_title('MATLAB Ground Truth')
     plt.colorbar(im2, ax=ax2)
     
     ax3 = plt.subplot(1, 3, 3)
     error = np.abs(u_rollout - u_gt_interp)
     rel_l2_error = np.linalg.norm(error)/np.linalg.norm(u_gt_interp)
-    im3 = ax3.contourf(t_rollout, x_rollout, error, levels=50, cmap='hot')
-    ax3.set_xlabel('Time (s)')
-    ax3.set_ylabel('x')
+    im3 = ax3.contourf(x_rollout, t_rollout, error.T, levels=50, cmap='hot')
+    ax3.set_xlabel('x')
+    ax3.set_ylabel('Time (s)')
     ax3.set_title(f'Absolute Error\n(Rel L2: {rel_l2_error:.2e})')
     plt.colorbar(im3, ax=ax3)
     

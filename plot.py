@@ -28,110 +28,102 @@ def plot_solution(model, a_test=1.5, b_test=0.0, source_type='zero',
     src_plot = model.source_function(x_plot, source_type, source_amplitude, source_center).numpy()
     u0_plot = (a_test * torch.sin(np.pi * x_plot)).numpy()
     v0_plot = (b_test * torch.sin(np.pi * x_plot)).numpy()
+
+    # Reshape ground truth data to match prediction grid
+    # gt_data format: [x, t, f, u, v] - reshape to (nt, nx) for u and v
+    x_gt = gt_data[:, 0]
+    t_gt = gt_data[:, 1]
+    f_gt = gt_data[:, 2]
+    u_gt = gt_data[:, 3]
+    v_gt = gt_data[:, 4]
     
-    # Determine figure layout based on whether gt_data is provided
-    if gt_data is not None:
-        fig = plt.figure(figsize=(18, 10))
-        nrows = 2
-        
-        # Reshape ground truth data to match prediction grid
-        # gt_data format: [x, t, f, u, v] - reshape to (nt, nx) for u and v
-        x_gt = gt_data[:, 0]
-        t_gt = gt_data[:, 1]
-        f_gt = gt_data[:, 2]
-        u_gt = gt_data[:, 3]
-        v_gt = gt_data[:, 4]
-        
-        # Determine grid size from gt_data
-        nt_gt = len(np.unique(t_gt))
-        nx_gt = len(np.unique(x_gt))
-        u_gt_grid = u_gt.reshape(nt_gt, nx_gt)  # Shape: (nt, nx)
-        
-        # Interpolate gt to match prediction grid if needed
-        if (nt_gt != nt) or (nx_gt != nx):
-            from scipy.interpolate import RegularGridInterpolator
-            t_gt_unique = np.unique(t_gt)
-            x_gt_unique = np.unique(x_gt)
-            interp = RegularGridInterpolator((t_gt_unique, x_gt_unique), u_gt_grid)
-            points = np.column_stack([T.numpy().ravel(), X.numpy().ravel()])
-            u_gt_interp = interp(points).reshape(nx, nt)
-        else:
-            u_gt_interp = u_gt_grid.T  # Transpose to (nx, nt) to match u_pred
-        
-        # Compute absolute error
-        abs_error = np.abs(u_pred - u_gt_interp)
-        
+    # Determine grid size from gt_data
+    nt_gt = len(np.unique(t_gt))
+    nx_gt = len(np.unique(x_gt))
+    u_gt_grid = u_gt.reshape(nt_gt, nx_gt)  # Shape: (nt, nx)
+    
+    # Interpolate gt to match prediction grid if needed
+    if (nt_gt != nt) or (nx_gt != nx):
+        from scipy.interpolate import RegularGridInterpolator
+        t_gt_unique = np.unique(t_gt)
+        x_gt_unique = np.unique(x_gt)
+        interp = RegularGridInterpolator((t_gt_unique, x_gt_unique), u_gt_grid)
+        points = np.column_stack([T.numpy().ravel(), X.numpy().ravel()])
+        u_gt_interp = interp(points).reshape(nx, nt)
     else:
-        fig = plt.figure(figsize=(18, 5))
-        nrows = 1
+        u_gt_interp = u_gt_grid.T  # Transpose to (nx, nt) to match u_pred
     
-    # Plot 1: Solution evolution (snapshots)
-    ax1 = plt.subplot(nrows, 3, 1)
-    time_indices = [0, nt//4, nt//2, 3*nt//4, -1]
-    for idx in time_indices:
-        t_val = t_plot[idx].item()
-        ax1.plot(x_plot.numpy(), u_pred[:, idx], label=f't={t_val:.3f}')
-    ax1.set_xlabel('x', fontsize=12)
-    ax1.set_ylabel('u(x,t)', fontsize=12)
-    ax1.set_title(f'PINN Solution (a={a_test}, b={b_test})', fontsize=12)
-    ax1.legend()
-    ax1.grid(True, alpha=0.3)
+    # Compute absolute error
+    abs_error = np.abs(u_pred - u_gt_interp)
+
+    fig = plt.figure(figsize=(18, 10))
+    
+
+    # Plot 1: MATLAB Ground Truth
+    ax1 = plt.subplot(2, 3, 1)
+    im1 = ax1.contourf(T.numpy(), X.numpy(), u_gt_interp, levels=20, cmap='RdBu_r')
+    ax1.set_xlabel('t', fontsize=12)
+    ax1.set_ylabel('x', fontsize=12)
+    ax1.set_title('MATLAB: u(x,t)', fontsize=12)
+    plt.colorbar(im1, ax=ax1)
     
     # Plot 2: PINN Spatiotemporal heatmap
-    ax2 = plt.subplot(nrows, 3, 2)
+    ax2 = plt.subplot(2, 3, 2)
     im = ax2.contourf(T.numpy(), X.numpy(), u_pred, levels=20, cmap='RdBu_r')
     ax2.set_xlabel('t', fontsize=12)
     ax2.set_ylabel('x', fontsize=12)
     ax2.set_title('PINN: u(x,t)', fontsize=12)
     plt.colorbar(im, ax=ax2)
+
+    # Plot 3: Absolute Error
+    ax3 = plt.subplot(2, 3, 3)
+    im3 = ax3.contourf(T.numpy(), X.numpy(), abs_error, levels=20, cmap='hot')
+    ax3.set_xlabel('t', fontsize=12)
+    ax3.set_ylabel('x', fontsize=12)
+    max_err = np.max(abs_error)
+    mean_err = np.mean(abs_error)
+    ax3.set_title(f'Absolute Error\nmax={max_err:.2e}, mean={mean_err:.2e}', fontsize=12)
+    plt.colorbar(im3, ax=ax3)
     
-    # Plot 3: ICs and Source
-    ax3 = plt.subplot(nrows, 3, 3)
-    ax3.plot(x_plot.numpy(), u0_plot, 'b-', linewidth=2, label='IC: u(x,0)')
-    ax3.plot(x_plot.numpy(), v0_plot, 'g--', linewidth=2, label='IC: u_t(x,0)')
-    ax3.plot(x_plot.numpy(), src_plot, 'r-.', linewidth=2, label='Source f(x)')
-    ax3.set_xlabel('x', fontsize=12)
-    ax3.set_ylabel('Value', fontsize=12)
-    ax3.set_title('Initial Conditions & Forcing', fontsize=12)
-    ax3.legend()
-    ax3.grid(True, alpha=0.3)
+    # Plot 4: ICs and Source
+    ax4 = plt.subplot(2, 3, 4)
+    ax4.plot(x_plot.numpy(), u0_plot, 'b-', linewidth=2, label='IC: u(x,0)')
+    ax4.plot(x_plot.numpy(), v0_plot, 'g--', linewidth=2, label='IC: u_t(x,0)')
+    ax4.plot(x_plot.numpy(), src_plot, 'r-.', linewidth=2, label='Source f(x)')
+    ax4.set_xlabel('x', fontsize=12)
+    ax4.set_ylabel('Value', fontsize=12)
+    ax4.set_title('Initial Conditions & Forcing', fontsize=12)
+    ax4.legend()
+    ax4.grid(True, alpha=0.3)
+
+    # Plot 5: Solution evolution (snapshots)
+    ax5 = plt.subplot(2, 3, 5)
+    time_indices = [0, nt//4, nt//2, 3*nt//4, -1]
+    for idx in time_indices:
+        t_val = t_plot[idx].item()
+        ax5.plot(x_plot.numpy(), u_pred[:, idx], label=f't={t_val:.3f}')
+    ax5.set_xlabel('x', fontsize=12)
+    ax5.set_ylabel('u(x,t)', fontsize=12)
+    ax5.set_title(f'PINN Solution (a={a_test}, b={b_test})', fontsize=12)
+    ax5.legend()
+    ax5.grid(True, alpha=0.3)
     
-    # Additional plots if ground truth is provided
-    if gt_data is not None:
-        # Plot 4: MATLAB Ground Truth
-        ax4 = plt.subplot(2, 3, 4)
-        im4 = ax4.contourf(T.numpy(), X.numpy(), u_gt_interp, levels=20, cmap='RdBu_r')
-        ax4.set_xlabel('t', fontsize=12)
-        ax4.set_ylabel('x', fontsize=12)
-        ax4.set_title('MATLAB: u(x,t)', fontsize=12)
-        plt.colorbar(im4, ax=ax4)
-        
-        # Plot 5: Absolute Error
-        ax5 = plt.subplot(2, 3, 5)
-        im5 = ax5.contourf(T.numpy(), X.numpy(), abs_error, levels=20, cmap='hot')
-        ax5.set_xlabel('t', fontsize=12)
-        ax5.set_ylabel('x', fontsize=12)
-        max_err = np.max(abs_error)
-        mean_err = np.mean(abs_error)
-        ax5.set_title(f'Absolute Error\nmax={max_err:.2e}, mean={mean_err:.2e}', fontsize=12)
-        plt.colorbar(im5, ax=ax5)
-        
-        # Plot 6: Error statistics
-        ax6 = plt.subplot(2, 3, 6)
-        # Plot error over time (spatial average)
-        error_vs_time = np.mean(abs_error, axis=0)
-        ax6.plot(t_plot.numpy(), error_vs_time, 'r-', linewidth=2)
-        ax6.set_xlabel('t', fontsize=12)
-        ax6.set_ylabel('Mean Absolute Error', fontsize=12)
-        ax6.set_title('Error Evolution', fontsize=12)
-        ax6.grid(True, alpha=0.3)
-        
-        # Print error statistics
-        print(f"\n=== Error Statistics vs MATLAB ===")
-        print(f"Max absolute error: {max_err:.6e}")
-        print(f"Mean absolute error: {mean_err:.6e}")
-        print(f"RMS error: {np.sqrt(np.mean(abs_error**2)):.6e}")
-        print(f"Relative L2 error: {np.linalg.norm(abs_error)/np.linalg.norm(u_gt_interp):.6e}")
+    # Plot 6: Error statistics
+    ax6 = plt.subplot(2, 3, 6)
+    # Plot error over time (spatial average)
+    error_vs_time = np.mean(abs_error, axis=0)
+    ax6.plot(t_plot.numpy(), error_vs_time, 'r-', linewidth=2)
+    ax6.set_xlabel('t', fontsize=12)
+    ax6.set_ylabel('Mean Absolute Error', fontsize=12)
+    ax6.set_title('Error Evolution', fontsize=12)
+    ax6.grid(True, alpha=0.3)
+    
+    # Print error statistics
+    print(f"\n=== Error Statistics vs MATLAB ===")
+    print(f"Max absolute error: {max_err:.6e}")
+    print(f"Mean absolute error: {mean_err:.6e}")
+    print(f"RMS error: {np.sqrt(np.mean(abs_error**2)):.6e}")
+    print(f"Relative L2 error: {np.linalg.norm(abs_error)/np.linalg.norm(u_gt_interp):.6e}")
     
     plt.tight_layout()
     return fig

@@ -9,7 +9,6 @@ mu = 1;
 k = 1;
 t_f = 10;
 source_amp = 7.5;    % Gaussian source amplitude
-T_max = 2.0;         % Final time
 a = 0.5;
 b = 2.0;
 
@@ -29,8 +28,9 @@ function f = stringforce(x, t)
     global source_width source_amp
     % Source center changes randomly every second in range [0.1, 0.9]
     % Use floor(t) to get which second we're in, then use it as random seed
-    rng(floor(t), 'twister');  % Set random seed based on current second
-    source_center = 0.1 + 0.8 * rand();  % Random center in [0.1, 0.9]
+    % rng(floor(t), 'twister');  % Set random seed based on current second
+    % source_center = 0.1 + 0.8 * rand();  % Random center in [0.1, 0.9]
+    source_center = 0.1 + 0.8 * mod(floor(t),10)/9;  % Deterministic center changing every second
     % source_center = 0.17;
     f = source_amp * exp(-((x - source_center)/source_width)^2);
 end
