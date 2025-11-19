@@ -8,12 +8,12 @@ T = 1;
 mu = 1;
 k = 1;
 t_f = 10;
-source_amp = 7.5;    % Gaussian source amplitude
+source_amp = 15;    % Gaussian source amplitude
 a = 0.5;
 b = 2.0;
 
 % Gaussian source parameters
-source_width = 0.3;
+source_width = 0.1;
 
 
 x = linspace(0,1,100);

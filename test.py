@@ -7,7 +7,7 @@ warnings.filterwarnings('ignore')
 
 
 def rollout_test(model, gt_data, T_total=10.0, dt_interval=1.0, 
-                 nx=100, nt_per_interval=50):
+                 nx=100, nt_per_interval=50, self_feeding=False):
     """
     Rollout test with changing source center every dt_interval seconds
     Uses ground truth data to extract sensor values at each interval
@@ -68,9 +68,15 @@ def rollout_test(model, gt_data, T_total=10.0, dt_interval=1.0,
             t_idx = np.argmin(np.abs(t_unique - t_start))
             
             # Extract u, v, f from ground truth at this time step
-            u_current_gt = u_gt_grid[:, t_idx] #if interval_idx == 0 else u_pred_grid[:, 0]
-            v_current_gt = v_gt_grid[:, t_idx] #if interval_idx == 0 else v_pred_grid[:, 0]
-            f_current_gt = f_gt_grid[:, t_idx]
+            if self_feeding and interval_idx > 0:
+                # Use previous prediction as initial condition
+                u_current_gt = u_pred_grid[:, 0]  # Last time step of previous interval
+                v_current_gt = v_pred_grid[:, 0]  # Last time step of previous interval
+                f_current_gt = f_gt_grid[:, t_idx]
+            else:
+                u_current_gt = u_gt_grid[:, t_idx] #
+                v_current_gt = v_gt_grid[:, t_idx] 
+                f_current_gt = f_gt_grid[:, t_idx]
             
             # Interpolate to sensor locations if needed
             u0_sensors = torch.tensor(np.interp(model.sensor_x_ic.numpy(), 
@@ -82,11 +88,12 @@ def rollout_test(model, gt_data, T_total=10.0, dt_interval=1.0,
             
             # Predict for this interval
             u_pred = model.forward(u0_sensors, v0_sensors, src_sensors, xt_grid)
-            # with torch.enable_grad():
-            #     v_pred = model.get_velocity(u0_sensors, v0_sensors, src_sensors, xt_grid)
+            if self_feeding:
+                with torch.enable_grad():
+                    v_pred = model.get_velocity(u0_sensors, v0_sensors, src_sensors, xt_grid)
+                    v_pred_grid = v_pred.reshape(nx, nt_per_interval)
 
             u_pred_grid = u_pred.reshape(nx, nt_per_interval)
-            # v_pred_grid = v_pred.reshape(nx, nt_per_interval)
             
             # Store results
             u_rollout.append(u_pred_grid.numpy())

@@ -2,12 +2,24 @@ import numpy as np
 import torch
 import torch.nn as nn
 import warnings
+from adaptive_weights import AdaptiveLossWeights
 warnings.filterwarnings('ignore')
 
 
 class BranchNet(nn.Module):
     """Branch network: encodes function inputs from sensor measurements"""
-    def __init__(self, n_sensors, hidden_dim, output_dim):
+    def __init__(self, n_sensors, hidden_dim, output_dim, 
+                 input_min=None, input_max=None):
+        """
+        Args:
+            n_sensors: Number of sensor measurements
+            hidden_dim: Hidden layer dimension
+            output_dim: Output feature dimension
+            input_min: Minimum value for input scaling (scalar or tensor). 
+                      If None, no scaling is applied.
+            input_max: Maximum value for input scaling (scalar or tensor).
+                      If None, no scaling is applied.
+        """
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(n_sensors, hidden_dim),
@@ -18,8 +30,21 @@ class BranchNet(nn.Module):
             nn.LeakyReLU(),
             nn.Linear(hidden_dim, output_dim)
         )
+        
+        # # Register scaling parameters as buffers (not trainable)
+        # if input_min is not None and input_max is not None:
+        #     self.register_buffer('input_min', torch.tensor(input_min, dtype=torch.float32))
+        #     self.register_buffer('input_max', torch.tensor(input_max, dtype=torch.float32))
+        #     self.scale = True
+        # else:
+        #     self.scale = False
     
     def forward(self, sensors):
+        # if self.scale:
+        #     # Min-max normalization to [0, 1]
+        #     sensors_scaled = (sensors - self.input_min) / (self.input_max - self.input_min + 1e-8)
+        #     return self.net(sensors_scaled)
+        # else:
         return self.net(sensors)
 
 
@@ -75,7 +100,7 @@ class PINNDeepONet_Wave(nn.Module):
     """
     
     def __init__(self, n_sensors_ic=20, n_sensors_src=20, 
-                 branch_hidden=50, trunk_hidden=50, p=50, wave_speed=1.0, damping_coeff=1.0):
+                 branch_hidden=50, trunk_hidden=50, p=50, wave_speed=1.0, damping_coeff=1.0, source_amplitude=15.0):
         super().__init__()
         
         self.n_sensors_ic = n_sensors_ic
@@ -90,7 +115,7 @@ class PINNDeepONet_Wave(nn.Module):
         self.branch_ic = BranchNet(2 * n_sensors_ic, branch_hidden, 2 * p)
         
         # Source branch
-        self.branch_source = BranchNet(n_sensors_src, branch_hidden, p)
+        self.branch_source = BranchNet(n_sensors_src, branch_hidden, p, input_min=0, input_max=source_amplitude)
         
         # Single trunk network
         self.trunk = TrunkNet(trunk_hidden, p)
@@ -202,7 +227,7 @@ class PINNDeepONet_Wave(nn.Module):
         
         return residual
     
-    def generate_ic_displacement(self, a):
+    def generate_ic_displacement(self, a, x=None):
         """
         Generate displacement IC: u(x, 0) = a * sin(pi * x)
         
@@ -212,9 +237,11 @@ class PINNDeepONet_Wave(nn.Module):
         Returns:
             u0_sensors: displacement IC values at sensor locations
         """
-        return a * torch.sin(np.pi * self.sensor_x_ic)
+        if x is None:
+            x = self.sensor_x_ic
+        return a * torch.sin(np.pi * x)
     
-    def generate_ic_velocity(self, b):
+    def generate_ic_velocity(self, b, x=None):
         """
         Generate velocity IC: u_t(x, 0) = b * sin(pi * x)
         
@@ -224,9 +251,11 @@ class PINNDeepONet_Wave(nn.Module):
         Returns:
             v0_sensors: velocity IC values at sensor locations
         """
-        return b * torch.sin(np.pi * self.sensor_x_ic)
+        if x is None:
+            x = self.sensor_x_ic
+        return b * torch.sin(np.pi * x)
     
-    def generate_source(self, source_type='gaussian', amplitude=0.5, center=0.5):
+    def generate_source(self, source_type='gaussian', amplitude=0.5, center=0.5, width=0.1):
         """
         Generate forcing f(x)
         
@@ -242,7 +271,6 @@ class PINNDeepONet_Wave(nn.Module):
         
         if source_type == 'gaussian':
             # Gaussian centered at specified location
-            width = 0.3
             src = amplitude * torch.exp(-((x - center) / width) ** 2)
         elif source_type == 'sine':
             # Sine wave
@@ -258,7 +286,7 @@ class PINNDeepONet_Wave(nn.Module):
         
         return src
     
-    def source_function(self, x, source_type='gaussian', amplitude=0.5, center=0.5):
+    def source_function(self, x, source_type='gaussian', amplitude=15.0, center=0.5, width=0.1):
         """
         Evaluate source function at arbitrary locations
         
@@ -272,7 +300,6 @@ class PINNDeepONet_Wave(nn.Module):
             f: source values at x
         """
         if source_type == 'gaussian':
-            width = 0.3
             f = amplitude * torch.exp(-((x - center) / width) ** 2)
         elif source_type == 'sine':
             f = amplitude * torch.sin(2 * np.pi * x)
@@ -309,9 +336,9 @@ class PINNDeepONet_Wave(nn.Module):
         return u_t    
     
     def train_pinn(self, n_epochs=5000, n_colloc=200, lr=1e-3, 
-                   a_range=(0.0, 1.0), b_range=(0.0, 4.0), 
-                   source_type='zero', source_amplitude=7.5, source_center=0.5, 
-                   center_range=None, T_max=1.0):
+                   a_range=(-1.0, 1.0), b_range=(-4.0, 4.0), 
+                   source_type='zero', source_amplitude=15.0,
+                   center_range=None, T_max=1.0, w_pde=1.0, w_ic_u=10.0, w_ic_v=10.0, strategy='fixed'):
         """
         Train PINN-DeepONet with physics-informed loss
         
@@ -340,21 +367,22 @@ class PINNDeepONet_Wave(nn.Module):
         if center_range is not None:
             print(f"Source type: {source_type}, amplitude: {source_amplitude}, center range: {center_range}")
         else:
-            print(f"Source type: {source_type}, amplitude: {source_amplitude}, center: {source_center}")
+            print(f"Source type: {source_type}, amplitude: {source_amplitude}")
         print(f"Wave speed c: {self.c}")
         print(f"Time domain: [0, {T_max}]")
         print("Boundary conditions: HARD constraints (no soft loss)")
         print("="*70)
+
+        initial_weights = {'PDE': w_pde, 'IC_u': w_ic_u, 'IC_v': w_ic_v}
+        adaptive_weights = AdaptiveLossWeights(
+            initial_weights=initial_weights,
+            strategy=strategy,  # or 'equal_init', 'ema', 'fixed'
+        )
         
         optimizer = torch.optim.Adam(self.parameters(), lr=lr)
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer, mode='min', factor=0.5, patience=500, verbose=True
         )
-        
-        # Loss weights
-        w_pde = 1.0
-        w_ic_u = 10.0   # Displacement IC
-        w_ic_v = 10.0   # Velocity IC
         
         history = {
             'total': [], 'pde': [], 'ic_u': [], 'ic_v': []
@@ -371,11 +399,11 @@ class PINNDeepONet_Wave(nn.Module):
             b = b_range[0] + (b_range[1] - b_range[0]) * torch.rand(1).item()
             
             # Sample random source center (for varying forcing location during training)
-            if center_range is not None and source_type == 'gaussian':
+            if source_type == 'gaussian':
                 # Vary center in [center_range[0], center_range[1]] for generalization
                 center_sample = center_range[0] + (center_range[1] - center_range[0]) * torch.rand(1).item()
             else:
-                center_sample = source_center
+                center_sample = 0.5
             
             # Generate ICs and source sensors
             u0_sensors = self.generate_ic_displacement(a)
@@ -402,7 +430,7 @@ class PINNDeepONet_Wave(nn.Module):
             xt_ic = torch.stack([x_ic, t_ic], dim=1)
             
             u_ic_pred = self.forward(u0_sensors, v0_sensors, src_sensors, xt_ic)
-            u_ic_true = a * torch.sin(np.pi * x_ic)
+            u_ic_true = self.generate_ic_displacement(a, x_ic)
             loss_ic_u = torch.mean((u_ic_pred - u_ic_true) ** 2)
             
             # === Velocity IC Loss: u_t(x, 0) = b * sin(pi * x) ===
@@ -413,11 +441,30 @@ class PINNDeepONet_Wave(nn.Module):
                                               torch.ones_like(u_ic_grad),
                                               create_graph=True)[0][:, 1]  # ∂u/∂t at t=0
             
-            v_ic_true = b * torch.sin(np.pi * x_ic)
+            v_ic_true = self.generate_ic_velocity(b, x_ic)
             loss_ic_v = torch.mean((u_t_ic_pred - v_ic_true) ** 2)
             
             # === Total Loss ===
-            loss_total = w_pde * loss_pde + w_ic_u * loss_ic_u + w_ic_v * loss_ic_v
+            context = {
+                'loss_values': {
+                    'PDE': loss_pde.item(),
+                    'IC_u': loss_ic_u.item(),
+                    'IC_v': loss_ic_v.item(),
+                },
+                'model': self,
+                'xt_colloc': xt_colloc,
+                'xt_ic': xt_ic,
+                'u0_sensors': u0_sensors,
+                'v0_sensors': v0_sensors,
+                'src_sensors': src_sensors,
+                'src_colloc': src_colloc,
+                'a': a,
+                'b': b,
+                # ...other fields as needed...
+            }
+
+            weights = adaptive_weights.update(epoch, context) if strategy != 'fixed' else initial_weights
+            loss_total = weights['PDE'] * loss_pde + weights['IC_u'] * loss_ic_u + weights['IC_v'] * loss_ic_v
             
             # Optimization step
             optimizer.zero_grad()
@@ -449,6 +496,8 @@ class PINNDeepONet_Wave(nn.Module):
                       f"PDE: {loss_pde.item():.6f} | IC_u: {loss_ic_u.item():.6f} | "
                       f"IC_v: {loss_ic_v.item():.6f} | LR: {current_lr:.2e} | "
                       f"u_range: [{u_min:.3f}, {u_max:.3f}]")
+                if strategy != 'fixed':
+                    print(f"          Weights -> PDE: {weights['PDE']:.3f}, IC_u: {weights['IC_u']:.3f}, IC_v: {weights['IC_v']:.3f}")
         # Restore best model
         if best_model_state is not None:
             self.load_state_dict(best_model_state)
@@ -456,3 +505,11 @@ class PINNDeepONet_Wave(nn.Module):
            
         print("\n✓ Training complete!\n")
         return history
+    
+
+
+
+
+
+
+
