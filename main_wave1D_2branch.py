@@ -22,7 +22,7 @@ if __name__ == "__main__":
     # Load or train model
     load_model = False  # Set to True to load existing model instead of training
 
-    n_sensors_ic = 20
+    n_sensors_ic = 40
     n_sensors_src = 20
     branch_hidden = 500
     trunk_hidden = 500
@@ -34,10 +34,11 @@ if __name__ == "__main__":
     strategy = 'ntk'  # or 'equal_init', 'ema', 'fixed', 'ntk'
 
     n_epochs = 10000
-    n_colloc = 500
+    n_colloc = 800
+    n_ic = 60
     lr = 1e-3
-    a_range = (-0.5, 0.5)
-    b_range = (-2.0, 2.0)
+    a_range = (-0.1, 0.6)
+    b_range = (-1.2, 2.0)
     n_ic_u, n_ic_v = 2, 2 #3, 5
     center_range = None if TRAINING_CASE == 'no_source' else (0.1, 0.9)
     T_max = 1.0
@@ -83,6 +84,7 @@ if __name__ == "__main__":
         history = model.train_pinn(
             n_epochs=n_epochs,
             n_colloc=n_colloc,
+            n_ic=n_ic,
             lr=lr,
             a_range=a_range,      # Displacement IC amplitude range
             b_range=b_range,      # Initial velocity range

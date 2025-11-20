@@ -26,17 +26,17 @@ for i in range(u0_sensors.shape[0]):
 u0_coeffs = np.array(u0_coeffs)  # shape: (n_intervals, n_terms)
 v0_coeffs = np.array(v0_coeffs)
 
-# # Compute min/max for each coefficient
-# print('u0_sensors coefficients range:')
-# for k in range(n_terms):
-#     print(f'  a{k+1}: min={u0_coeffs[:,k].min():.3f}, max={u0_coeffs[:,k].max():.3f}')
+# Compute min/max for each coefficient
+print('u0_sensors coefficients range:')
+for k in range(n_terms):
+    print(f'  a{k+1}: min={u0_coeffs[:,k].min():.3f}, max={u0_coeffs[:,k].max():.3f}')
 
-# print('v0_sensors coefficients range:')
-# for k in range(n_terms):
-#     print(f'  b{k+1}: min={v0_coeffs[:,k].min():.3f}, max={v0_coeffs[:,k].max():.3f}')
+print('v0_sensors coefficients range:')
+for k in range(n_terms):
+    print(f'  b{k+1}: min={v0_coeffs[:,k].min():.3f}, max={v0_coeffs[:,k].max():.3f}')
 
-# Fit target with 1-term sine series
-target = 0.5 * np.sin(np.pi * np.linspace(0, 1, u0_sensors.shape[1]))
-n_terms_target = 1
-coeff_target = fit_sine_series(target, n_terms_target)
-print(f'Fitted coefficient for target (a1): {coeff_target[0]:.3f}')
+# # Fit target with 1-term sine series
+# target = 0.5 * np.sin(np.pi * np.linspace(0, 1, u0_sensors.shape[1]))
+# n_terms_target = 1
+# coeff_target = fit_sine_series(target, n_terms_target)
+# print(f'Fitted coefficient for target (a1): {coeff_target[0]:.3f}')

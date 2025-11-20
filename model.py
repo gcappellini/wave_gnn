@@ -5,6 +5,15 @@ import warnings
 from adaptive_weights import AdaptiveLossWeights
 warnings.filterwarnings('ignore')
 
+def sample_coeffs(n, base_range, p=1.5):
+    coeffs = []
+    for k in range(n):
+        # Range decreases with k (first coeff full range, then shrinks)
+        scale = 1.0 / (k + 1) ** p
+        r0, r1 = base_range
+        coeff_range = (r0 * scale, r1 * scale) if k > 0 else (r0, r1)
+        coeffs.append(torch.FloatTensor(1).uniform_(*coeff_range).item())
+    return torch.tensor(coeffs) 
 
 class BranchNet(nn.Module):
     """Branch network: encodes function inputs from sensor measurements"""
@@ -326,7 +335,7 @@ class PINNDeepONet_Wave(nn.Module):
         
         return u_t    
     
-    def train_pinn(self, n_epochs=5000, n_colloc=200, lr=1e-3, 
+    def train_pinn(self, n_epochs=5000, n_colloc=200, n_ic=50, lr=1e-3, 
                    a_range=(-0.5, 0.5), b_range=(-2.0, 2.0), 
                    source_type='zero', source_amplitude=1.0,
                    center_range=None, T_max=1.0, w_pde=1.0, w_ic_u=10.0, w_ic_v=10.0, n_ic_u=3, n_ic_v=5, strategy='fixed'):
@@ -386,10 +395,10 @@ class PINNDeepONet_Wave(nn.Module):
         
         for epoch in range(n_epochs):
             # Sample random IC amplitudes
-            # a = a_range[0] + (a_range[1] - a_range[0]) * torch.rand(1).item()
-            # b = b_range[0] + (b_range[1] - b_range[0]) * torch.rand(1).item()
-            a_coeffs = torch.FloatTensor(n_ic_u).uniform_(*a_range)
-            b_coeffs = torch.FloatTensor(n_ic_v).uniform_(*b_range)
+            # Sample coefficients with decreasing range for higher orders
+
+            a_coeffs = sample_coeffs(n_ic_u, a_range, p=3.0)
+            b_coeffs = sample_coeffs(n_ic_v, b_range)
             
             # Sample random source center (for varying forcing location during training)
             if source_type == 'gaussian':
@@ -417,7 +426,6 @@ class PINNDeepONet_Wave(nn.Module):
             loss_pde = torch.mean(residual ** 2)
             
             # === Displacement IC Loss: u(x, 0) = a * sin(pi * x) ===
-            n_ic = 50
             x_ic = torch.linspace(self.domain[0], self.domain[1], n_ic)
             t_ic = torch.zeros(n_ic)
             xt_ic = torch.stack([x_ic, t_ic], dim=1)
