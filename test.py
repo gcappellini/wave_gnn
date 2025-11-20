@@ -55,6 +55,8 @@ def rollout_test(model, gt_data, T_total=10.0, dt_interval=1.0,
     
     # Storage for complete rollout
     u_rollout = []
+    u0_list = []
+    v0_list = []
     
     # Create fixed xt_grid for each interval
     X, T = torch.meshgrid(x_plot, t_interval, indexing='ij')
@@ -77,6 +79,9 @@ def rollout_test(model, gt_data, T_total=10.0, dt_interval=1.0,
                 u_current_gt = u_gt_grid[:, t_idx] #
                 v_current_gt = v_gt_grid[:, t_idx] 
                 f_current_gt = f_gt_grid[:, t_idx]
+
+                u0_list.append(u_current_gt)
+                v0_list.append(v_current_gt)
             
             # Interpolate to sensor locations if needed
             u0_sensors = torch.tensor(np.interp(model.sensor_x_ic.numpy(), 
@@ -100,6 +105,11 @@ def rollout_test(model, gt_data, T_total=10.0, dt_interval=1.0,
     
     # Concatenate all intervals
     u_rollout = np.concatenate(u_rollout, axis=1)
+
+    # Save u0_sensors and v0_sensors for each interval to npz file
+    np.savez('./data/rollout_sensors.npz',
+             u0_sensors=np.stack(u0_list),
+             v0_sensors=np.stack(v0_list))
     
     # Create full time and space arrays
     t_rollout = np.linspace(0, T_total, n_intervals * nt_per_interval)

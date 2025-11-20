@@ -8,7 +8,7 @@ T = 1;
 mu = 1;
 k = 1;
 t_f = 10;
-source_amp = 15;    % Gaussian source amplitude
+source_amp = 1;    % Gaussian source amplitude
 a = 0.5;
 b = 2.0;
 
@@ -38,7 +38,7 @@ end
 function [c,f,s] = stringpde(x, t, u, dudx)
     global k T mu
     c = [1; 1];
-    F = stringforce(x, t);
+    F = 15*stringforce(x, t);
     s = [u(2); F - k*u(2)];
     f = [0; (T/mu)*dudx(1)];
 end
@@ -68,7 +68,7 @@ for i = 1:length(t)
         output_data = [output_data; x(j), t(i), stringforce(x(j), t(i)), sol(i, j, 1), sol(i, j, 2)];
     end
 end
-writematrix(output_data, '/Users/guglielmocappellini/Desktop/research/code/pinns-wave/wave-gnn/1_gcn_string/data/gt_wave1D_withsource_rollout.csv');
+writematrix(output_data, '/Users/guglielmocappellini/Desktop/research/code/pinns-wave/wave-gnn/1_gcn_string/data/gt_wave1D_with_source_rollout.csv');
 
 %% PLOT SOLUTION
 

@@ -11,6 +11,7 @@ Strategies:
 4. Softmax adaptation: Adjust weights based on relative loss values
 """
 
+from paddle import grad
 import torch
 import logging
 from typing import Dict, List, Optional, Tuple
@@ -254,7 +255,7 @@ class AdaptiveLossWeights:
         log.info(f"Loaded adaptive weights state from epoch {self.epoch}")
 
 
-    def _compute_ntk_weights_from_matrices(K_pde, K_ic_u, K_ic_v):
+    def _compute_ntk_weights_from_matrices(self, K_pde, K_ic_u, K_ic_v):
         """
         Compute adaptive weights from full NTK matrices.
         Uses the trace of each matrix for weight computation.
@@ -287,7 +288,7 @@ class AdaptiveLossWeights:
         return weights, traces
 
 
-    def _compute_ntk_matrices(context: dict) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def _compute_ntk_matrices(self, context: dict) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Compute full NTK Gram matrices for the current batch.
         Args:
@@ -307,8 +308,8 @@ class AdaptiveLossWeights:
         v0_sensors = context['v0_sensors']
         src_sensors = context['src_sensors']
         src_colloc = context['src_colloc']
-        a = context['a']
-        b = context['b']
+        a_coeffs = context['a_coeffs']
+        b_coeffs = context['b_coeffs']
 
         # Get trainable parameters
         params = [p for p in model.parameters() if p.requires_grad]
@@ -341,7 +342,8 @@ class AdaptiveLossWeights:
 
         # --- IC_u Jacobian ---
         J_ic_u = np.zeros((n_ic, num_params))
-        u_ic_true = a * torch.sin(np.pi * xt_ic[:, 0])
+        # u_ic_true = model.generate_ic_displacement(a, xt_ic[:, 0])
+        u_ic_true = model.generate_ic_sine_series(a_coeffs, xt_ic[:, 0])
         for i in range(n_ic):
             xt = xt_ic[i:i+1].clone().detach().requires_grad_(True)
             u_pred = model.forward(u0_sensors, v0_sensors, src_sensors, xt)
@@ -363,12 +365,18 @@ class AdaptiveLossWeights:
 
         # --- IC_v Jacobian ---
         J_ic_v = np.zeros((n_ic, num_params))
-        v_ic_true = b * torch.sin(np.pi * xt_ic[:, 0])
+        # v_ic_true = model.generate_ic_displacement(b, xt_ic[:, 0])
+        v_ic_true = model.generate_ic_sine_series(b_coeffs, xt_ic[:, 0])
         for i in range(n_ic):
             xt = xt_ic[i:i+1].clone().detach().requires_grad_(True)
             u_pred = model.forward(u0_sensors, v0_sensors, src_sensors, xt)
-            u_t_pred = torch.autograd.grad(u_pred, xt, torch.ones_like(u_pred), create_graph=False)[0][:, 1]
+            # Compute gradient of u_pred w.r.t. xt (shape [1, 2])
+            grad_xt = torch.autograd.grad(u_pred, xt, torch.ones_like(u_pred), create_graph=True, retain_graph=True)[0]
+            # Extract time derivative (d/ dt), which is the second column
+            u_t_pred = grad_xt[:, 1]  # shape [1]
+            # Compute loss as difference from true value
             loss = (u_t_pred - v_ic_true[i]).sum()
+            # Now compute gradient of loss w.r.t. parameters
             grads = torch.autograd.grad(
                 outputs=loss,
                 inputs=params,

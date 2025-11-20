@@ -2,13 +2,13 @@ import matplotlib.pyplot as plt
 import torch
 import numpy as np
 
-def plot_solution(model, a_test=1.5, b_test=0.0, source_type='zero', 
+def plot_solution(model, a_test=0.5, b_test=2.0, source_type='zero', 
                   source_amplitude=0.0, source_center=0.5, T_max=1.0, gt_data=None):
     """Visualize the trained solution"""
     
     # Generate test case
-    u0_sensors = model.generate_ic_displacement(a_test)
-    v0_sensors = model.generate_ic_velocity(b_test)
+    u0_sensors = model.generate_ic_sine_series(a_test)
+    v0_sensors = model.generate_ic_sine_series(b_test)
     src_sensors = model.generate_source(source_type, source_amplitude, source_center)
     
     # Create spatiotemporal grid
@@ -26,8 +26,8 @@ def plot_solution(model, a_test=1.5, b_test=0.0, source_type='zero',
     
     # Source and ICs for plotting
     src_plot = model.source_function(x_plot, source_type, source_amplitude, source_center).numpy()
-    u0_plot = (a_test * torch.sin(np.pi * x_plot)).numpy()
-    v0_plot = (b_test * torch.sin(np.pi * x_plot)).numpy()
+    u0_plot = (model.generate_ic_sine_series(a_test, x_plot)).numpy()
+    v0_plot = (model.generate_ic_sine_series(b_test, x_plot)).numpy()
 
     # Reshape ground truth data to match prediction grid
     # gt_data format: [x, t, f, u, v] - reshape to (nt, nx) for u and v

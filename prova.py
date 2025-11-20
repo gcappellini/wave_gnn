@@ -1,31 +1,43 @@
-import pandas as pd
-from model_2d import PINNDeepONet_Wave2D
 
+import numpy as np
+import matplotlib.pyplot as plt
 
+# Load the saved sensors data
+sensors = np.load('./data/rollout_sensors.npz')
+u0_sensors = sensors['u0_sensors']  # shape: (n_intervals, n_sensors)
+v0_sensors = sensors['v0_sensors']  # shape: (n_intervals, n_sensors)
 
-gt_data = pd.read_csv('data/gt_wave2D_withsource.csv', header=None).values
-v_gt = gt_data[:, 5]
-print(f"Ground truth v range: [{v_gt.min():.6f}, {v_gt.max():.6f}]")
-print(f"Expected range for b=0.5: ~[-0.5, 0.5]")
+def fit_sine_series(y, n_terms):
+    x = np.linspace(0, 1, len(y))
+    A = [np.sin(np.pi * n * x) for n in range(1, n_terms + 1)]
+    A = np.vstack(A).T
+    coeffs, _, _, _ = np.linalg.lstsq(A, y, rcond=None)
+    y_fit = A @ coeffs
+    return y_fit, coeffs
 
-a_test = 2.0
-b_test = 2.0
-n_sensors_ic = 20      # Creates 20x20 grid (400 sensors)
-n_sensors_src = 20     # Creates 20x20 grid (400 sensors)
-branch_hidden = 200
-trunk_hidden = 200
-p = 200
+def plot_sine_fits(sensor_data, title, n_terms_list=[1, 2, 3, 5, 10]):
+    n_intervals, n_sensors = sensor_data.shape
+    x = np.linspace(0, 1, n_sensors)
+    fig, axes = plt.subplots(len(n_terms_list), 1, figsize=(12, 2*len(n_terms_list)), sharex=True)
+    for idx, n_terms in enumerate(n_terms_list):
+        ax = axes[idx]
+        ax.set_title(f'{title} - Sine fit with {n_terms} terms')
+        for i in range(n_intervals):
+            y = sensor_data[i]
+            y_fit, _ = fit_sine_series(y, n_terms)
+            ax.plot(x, y, color='gray', alpha=0.2)
+            ax.plot(x, y_fit, color='C1', alpha=0.5)
+        ax.set_ylabel('Sensor value')
+    axes[-1].set_xlabel('Normalized sensor position')
+    plt.tight_layout()
+    plt.show()
 
+# Plot and fit u0_sensors
+# plot_sine_fits(u0_sensors, 'u0_sensors', n_terms_list=[1, 2, 3, 5, 10])
+# # Plot and fit v0_sensors
+# plot_sine_fits(v0_sensors, 'v0_sensors', n_terms_list=[1, 2, 3, 5, 10])
 
-model = PINNDeepONet_Wave2D(
-    n_sensors_ic=n_sensors_ic,
-    n_sensors_src=n_sensors_src,
-    branch_hidden=branch_hidden,
-    trunk_hidden=trunk_hidden,
-    p=p
-)
+target = 0.5*np.sin(np.pi * np.linspace(0, 1, u0_sensors.shape[1]))
+print(target)
 
-u0_test = model.generate_ic_displacement(a_test)
-v0_test = model.generate_ic_velocity(b_test)
-print(f"IC velocity range: [{v0_test.min():.6f}, {v0_test.max():.6f}]")
-print(f"Expected: b*sin(π*x)*sin(π*y) with b={b_test} → range ~[-{b_test}, {b_test}]")
+# plot_sine_fits(0.5*np.sin(np.pi * np.linspace(0, 1, u0_sensors.shape[1])), 'u0_sensors', n_terms_list=[1])

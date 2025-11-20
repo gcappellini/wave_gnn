@@ -24,20 +24,21 @@ if __name__ == "__main__":
 
     n_sensors_ic = 20
     n_sensors_src = 20
-    branch_hidden = 200
-    trunk_hidden = 200
-    p = 200
+    branch_hidden = 500
+    trunk_hidden = 500
+    p = 500
     wave_speed = 1.0
     damping_coeff = 1.0
-    source_amplitude = 15.0
+    source_amplitude = 1.0
     w_pde, w_ic_u, w_ic_v = 1.0, 10.0, 10.0
-    strategy = 'fixed'  # or 'equal_init', 'ema', 'fixed'
+    strategy = 'ntk'  # or 'equal_init', 'ema', 'fixed', 'ntk'
 
-    n_epochs = 5000
-    n_colloc = 200
+    n_epochs = 10000
+    n_colloc = 500
     lr = 1e-3
-    a_range = (-1.0, 1.0)
-    b_range = (-4.0, 4.0)
+    a_range = (-0.5, 0.5)
+    b_range = (-2.0, 2.0)
+    n_ic_u, n_ic_v = 2, 2 #3, 5
     center_range = None if TRAINING_CASE == 'no_source' else (0.1, 0.9)
     T_max = 1.0
     source_type = 'gaussian' if TRAINING_CASE == 'with_source' else 'zero'
@@ -92,7 +93,9 @@ if __name__ == "__main__":
             w_ic_u=w_ic_u,
             w_ic_v=w_ic_v,
             strategy=strategy,
-            center_range=center_range  # Source center range
+            center_range=center_range,  # Source center range
+            n_ic_u=n_ic_u,
+            n_ic_v=n_ic_v
         )
         
         model_filename = os.path.join(SCRIPT_DIR, f'checkpoints/pinn_deeponet_wave_{TRAINING_CASE}.pth')
