@@ -1,9 +1,12 @@
 import matplotlib.pyplot as plt
 import torch
 import numpy as np
+import os
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 def plot_solution(model, a_test=0.5, b_test=2.0, source_type='zero', 
-                  source_amplitude=0.0, source_center=0.5, T_max=1.0, gt_data=None):
+                  source_amplitude=1.0, source_center=0.5, T_max=1.0, gt_data=None):
     """Visualize the trained solution"""
     
     # Generate test case

@@ -16,6 +16,8 @@ import torch
 import logging
 from typing import Dict, List, Optional, Tuple
 import numpy as np
+import matplotlib.pyplot as plt
+import os
 
 log = logging.getLogger(__name__)
 
@@ -74,6 +76,9 @@ class AdaptiveLossWeights:
         self.epoch = 0
         self.initialized = False
 
+        self.ntk_traces_log = []  # List of (trace_pde, trace_ic_u, trace_ic_v)
+        self.weights_log = [] 
+
         log.info(f"Adaptive loss weights initialized with strategy: {strategy}")
         log.info(f"Initial weights: {self.weights}")
     
@@ -97,16 +102,19 @@ class AdaptiveLossWeights:
         
         if not valid_losses:
             log.warning(f"No valid loss values at epoch {epoch}, keeping current weights")
+            self.weights_log.append(self.weights.copy())
             return self.weights
         
         # Strategy: fixed weights (no adaptation)
         if self.strategy == 'fixed':
+            self.weights_log.append(self.weights.copy())
             return self.weights
         
         # Strategy: equal initialization at epoch 1
         if self.strategy == 'equal_init' and epoch == 1:
             self._equalize_losses(valid_losses)
             self.initialized = True
+            self.weights_log.append(self.weights.copy())
             return self.weights
         
         # Strategy: equal init + EMA
@@ -116,12 +124,14 @@ class AdaptiveLossWeights:
                 self.initialized = True
             elif epoch > 1 and epoch % self.update_frequency == 0:
                 self._update_ema_weights(valid_losses)
+            self.weights_log.append(self.weights.copy())
             return self.weights
         
         # Strategy: pure EMA (no equal init)
         if self.strategy == 'ema':
             if epoch % self.update_frequency == 0:
                 self._update_ema_weights(valid_losses)
+            self.weights_log.append(self.weights.copy())
             return self.weights
 
         # Strategy: NTK-based weights
@@ -131,6 +141,7 @@ class AdaptiveLossWeights:
                 weights_arr, _ = self._compute_ntk_weights_from_matrices(K_pde, K_ic_u, K_ic_v)
                 for i, name in enumerate(self.loss_names):
                     self.weights[name] = float(weights_arr[i])
+            self.weights_log.append(self.weights.copy())
             return self.weights
         
         return self.weights
@@ -284,13 +295,15 @@ class AdaptiveLossWeights:
         
         weights = np.array([lambda_pde, lambda_ic_u, lambda_ic_v])
         traces = np.array([trace_pde, trace_ic_u, trace_ic_v])
+
+        self.ntk_traces_log.append((trace_pde, trace_ic_u, trace_ic_v))
         
         return weights, traces
 
 
     def _compute_ntk_matrices(self, context: dict) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
-        Compute full NTK Gram matrices for the current batch.
+        Compute full NTK Gram matrices for the current batch and log their eigenvalues for advanced analysis.
         Args:
             model: the PINN model (self)
             xt_colloc: torch.Tensor, (n_colloc, 2) collocation points
@@ -342,7 +355,6 @@ class AdaptiveLossWeights:
 
         # --- IC_u Jacobian ---
         J_ic_u = np.zeros((n_ic, num_params))
-        # u_ic_true = model.generate_ic_displacement(a, xt_ic[:, 0])
         u_ic_true = model.generate_ic_sine_series(a_coeffs, xt_ic[:, 0])
         for i in range(n_ic):
             xt = xt_ic[i:i+1].clone().detach().requires_grad_(True)
@@ -365,18 +377,13 @@ class AdaptiveLossWeights:
 
         # --- IC_v Jacobian ---
         J_ic_v = np.zeros((n_ic, num_params))
-        # v_ic_true = model.generate_ic_displacement(b, xt_ic[:, 0])
         v_ic_true = model.generate_ic_sine_series(b_coeffs, xt_ic[:, 0])
         for i in range(n_ic):
             xt = xt_ic[i:i+1].clone().detach().requires_grad_(True)
             u_pred = model.forward(u0_sensors, v0_sensors, src_sensors, xt)
-            # Compute gradient of u_pred w.r.t. xt (shape [1, 2])
             grad_xt = torch.autograd.grad(u_pred, xt, torch.ones_like(u_pred), create_graph=True, retain_graph=True)[0]
-            # Extract time derivative (d/ dt), which is the second column
             u_t_pred = grad_xt[:, 1]  # shape [1]
-            # Compute loss as difference from true value
             loss = (u_t_pred - v_ic_true[i]).sum()
-            # Now compute gradient of loss w.r.t. parameters
             grads = torch.autograd.grad(
                 outputs=loss,
                 inputs=params,
@@ -396,95 +403,66 @@ class AdaptiveLossWeights:
         K_pde = J_pde @ J_pde.T
         K_ic_u = J_ic_u @ J_ic_u.T
         K_ic_v = J_ic_v @ J_ic_v.T
+
+        # --- Eigenvalue logging for advanced NTK analysis ---
+        # Compute and store eigenvalues (sorted descending) for each matrix
+        eigvals_pde = np.sort(np.linalg.eigvalsh(K_pde))[::-1]
+        eigvals_ic_u = np.sort(np.linalg.eigvalsh(K_ic_u))[::-1]
+        eigvals_ic_v = np.sort(np.linalg.eigvalsh(K_ic_v))[::-1]
+
+        # Initialize log if not present
+        if not hasattr(self, 'ntk_eigvals_log') or self.ntk_eigvals_log is None:
+            self.ntk_eigvals_log = []
+        self.ntk_eigvals_log.append({
+            "K_pde": eigvals_pde,
+            "K_ic_u": eigvals_ic_u,
+            "K_ic_v": eigvals_ic_v
+        })
+
         return K_pde, K_ic_u, K_ic_v
     
+    def plot_ntk_traces(self, output_dir):
+        # Only plot eigenvalue spectra; require eigenvalue log to be present
+        if not hasattr(self, 'ntk_eigvals_log') or not self.ntk_eigvals_log:
+            raise RuntimeError("No NTK eigenvalue log found. Please ensure eigenvalues are logged during training.")
+        n_steps = len(self.ntk_eigvals_log)
+        idxs = [0]
+        if n_steps > 1:
+            idxs.append(n_steps // 2)
+        if n_steps > 2:
+            idxs.append(n_steps - 1)
+        labels = [f'step={i}' for i in idxs]
+        plt.figure(figsize=(18, 5))
+        for j, key in enumerate(["K_pde", "K_ic_u", "K_ic_v"]):
+            plt.subplot(1, 3, j+1)
+            for idx, label in zip(idxs, labels):
+                eigvals = self.ntk_eigvals_log[idx][key]
+                plt.plot(range(1, len(eigvals)+1), eigvals, label=label)
+            plt.xlabel('Eigenvalue index')
+            plt.ylabel('Eigenvalue')
+            plt.xscale('log')
+            plt.yscale('log')
+            plt.title(key)
+            plt.legend()
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, 'NTK_eigenvalues.png'))
+        plt.close()
 
-
-
-
-    # # NTK
-    # # Create loggers for eigenvalues of NTK
-    # lambda_K_u_log = []
-    # lambda_K_ut_log = []
-    # lambda_K_r_log = []
+    def plot_weights_evolution(self, output_dir):
+        weights_arr = {name: [] for name in self.loss_names}
+        for wdict in self.weights_log:
+            for name in self.loss_names:
+                weights_arr[name].append(wdict[name])
+        plt.figure(figsize=(8, 5))
+        for name in self.loss_names:
+            plt.plot(weights_arr[name], label=name)
+        plt.xlabel('Update step')
+        plt.ylabel('Weight')
+        plt.yscale('log')
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, 'Weights_evolution.png'))
+        plt.close()
     
-    # # Restore the NTK
-    # K_u_list = model.K_u_log
-    # K_ut_list = model.K_ut_log
-    # K_r_list = model.K_r_log
-        
-    # for k in range(len(K_u_list)):
-    #     K_u = K_u_list[k]
-    #     K_ut = K_ut_list[k]
-    #     K_r = K_r_list[k]
-            
-    #     # Compute eigenvalues
-    #     lambda_K_u, _ = np.linalg.eig(K_u)
-    #     lambda_K_ut, _ = np.linalg.eig(K_ut)
-    #     lambda_K_r, _ = np.linalg.eig(K_r)
-    #     # Sort in descresing order
-    #     lambda_K_u = np.sort(np.real(lambda_K_u))[::-1]
-    #     lambda_K_ut = np.sort(np.real(lambda_K_ut))[::-1]
-    #     lambda_K_r = np.sort(np.real(lambda_K_r))[::-1]
-        
-    #     # Store eigenvalues
-    #     lambda_K_u_log.append(lambda_K_u)
-    #     lambda_K_ut_log.append(lambda_K_ut)
-    #     lambda_K_r_log.append(lambda_K_r)
-    
-    # #     Eigenvalues of NTK
-    # fig = plt.figure(figsize=(18, 5))
-    # plt.subplot(1,3,1)
-    # plt.plot(lambda_K_u_log[0], label = '$n=0$')
-    # plt.plot(lambda_K_u_log[1], '--', label = '$n=10,000$')
-    # plt.plot(lambda_K_u_log[4], '--', label = '$n=40,000$')
-    # plt.plot(lambda_K_u_log[-1], '--', label = '$n=80,000$')
-    # plt.xlabel('index')
-    # plt.xscale('log')
-    # plt.yscale('log')
-    # plt.legend()
-    # plt.title(r'Eigenvalues of ${K}_u$')
 
-    # plt.subplot(1,3,2)
-    # plt.plot(lambda_K_ut_log[0], label = '$n=0$')
-    # plt.plot(lambda_K_ut_log[1], '--',label = '$n=10,000$')
-    # plt.plot(lambda_K_ut_log[4], '--', label = '$n=40,000$')
-    # plt.plot(lambda_K_ut_log[-1], '--', label = '$n=80,000$')
-    # plt.xlabel('index')
-    # plt.xscale('log')
-    # plt.yscale('log')
-    # plt.legend()
-    # plt.title(r'Eigenvalues of ${K}_{u_t}$')
-    
-    # ax =plt.subplot(1,3,3)
-    # plt.plot(lambda_K_r_log[0], label = '$n=0$')
-    # plt.plot(lambda_K_r_log[1], '--', label = '$n=10,000$')
-    # plt.plot(lambda_K_r_log[4], '--', label = '$n=40,000$')
-    # plt.plot(lambda_K_r_log[-1], '--', label = '$n=80,000$')
-    # plt.xscale('log')
-    # plt.yscale('log')
-    # plt.xlabel('index')
-    # plt.title(r'Eigenvalues of ${K}_{r}$')
-    # plt.legend()
-    # plt.tight_layout()
-    # plt.savefig(os.path.join(log_dir, 'Eigenvalues.png'))
-    # plt.close()
-     
-    # # Evolution of weights during training
-    # lambda_u_log = model.lambda_u_log
-    # lambda_ut_log = model.lambda_ut_log
-    # lambda_r_log = model.lambda_r_log   
 
-    # fig = plt.figure(figsize=(6, 5))
-    # plt.plot(lambda_u_log, label='$\lambda_u$')
-    # plt.plot(lambda_ut_log, label='$\lambda_{u_t}$')
-    # plt.plot(lambda_r_log, label='$\lambda_{r}$')
-    # plt.xlabel('iterations')
-    # plt.ylabel('$\lambda$')
-    # plt.yscale('log')
-    # plt.legend( )
-    # plt.locator_params(axis='x',nbins=5)
-    # plt.tight_layout()
-    # plt.savefig(os.path.join(log_dir, 'Weights.png'))
-    # plt.close() 
-    
