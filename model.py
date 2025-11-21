@@ -338,7 +338,8 @@ class PINNDeepONet_Wave(nn.Module):
     def train_pinn(self, n_epochs=5000, n_colloc=200, n_ic=50, lr=1e-3, 
                    a_range=(-0.5, 0.5), b_range=(-2.0, 2.0), 
                    source_type='zero', source_amplitude=1.0,
-                   center_range=None, T_max=1.0, w_pde=1.0, w_ic_u=10.0, w_ic_v=10.0, n_ic_u=3, n_ic_v=5, strategy='fixed'):
+                   center_range=None, T_max=1.0, w_pde=1.0, w_ic_u=10.0, w_ic_v=10.0, n_ic_u=3, n_ic_v=5, strategy='fixed',
+                   early_stopping=True, patience=2000):
         """
         Train PINN-DeepONet with physics-informed loss
         
@@ -381,7 +382,7 @@ class PINNDeepONet_Wave(nn.Module):
         
         optimizer = torch.optim.Adam(self.parameters(), lr=lr)
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer, mode='min', factor=0.5, patience=500, verbose=True
+            optimizer, mode='min', factor=0.5, patience=1000, verbose=True
         )
         
         history = {
@@ -392,6 +393,7 @@ class PINNDeepONet_Wave(nn.Module):
         best_loss = float('inf')
         best_model_state = None
         best_epoch = 0
+        epochs_since_improvement = 0
         
         for epoch in range(n_epochs):
             # Sample random IC amplitudes
@@ -484,6 +486,14 @@ class PINNDeepONet_Wave(nn.Module):
                 best_loss = loss_total.item()
                 best_model_state = {key: value.cpu().clone() for key, value in self.state_dict().items()}
                 best_epoch = epoch
+                epochs_since_improvement = 0
+            else:
+                epochs_since_improvement += 1
+
+            # Early stopping
+            if early_stopping and epochs_since_improvement >= patience:
+                print(f"\nEarly stopping triggered after {epoch+1} epochs. No improvement for {patience} epochs.")
+                break
             
             scheduler.step(loss_total)
             

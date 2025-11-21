@@ -23,7 +23,7 @@ if __name__ == "__main__":
     load_model = False  # Set to True to load existing model instead of training
 
     n_sensors_ic = 40
-    n_sensors_src = 20
+    n_sensors_src = 40  # was 20
     branch_hidden = 500
     trunk_hidden = 500
     p = 500
@@ -33,13 +33,13 @@ if __name__ == "__main__":
     w_pde, w_ic_u, w_ic_v = 1.0, 10.0, 10.0
     strategy = 'ntk'  # or 'equal_init', 'ema', 'fixed', 'ntk'
 
-    n_epochs = 10000
+    n_epochs = 40000
     n_colloc = 800
     n_ic = 60
     lr = 1e-3
     a_range = (-0.1, 0.6)
     b_range = (-1.2, 2.0)
-    n_ic_u, n_ic_v = 2, 2 #3, 5
+    n_ic_u, n_ic_v = 3, 5 # was 2, 2
     center_range = None if TRAINING_CASE == 'no_source' else (0.1, 0.9)
     T_max = 1.0
     source_type = 'gaussian' if TRAINING_CASE == 'with_source' else 'zero'
