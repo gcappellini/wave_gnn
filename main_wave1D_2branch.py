@@ -19,7 +19,7 @@ if __name__ == "__main__":
     torch.manual_seed(52)
     np.random.seed(52)
     
-    TRAINING_CASE = 'with_source'  # Change to 'no_source' or 'with_source'
+    TRAINING_CASE = 'no_source'  # Change to 'no_source' or 'with_source'
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_fold = os.path.join(SCRIPT_DIR, f'logs_multibranch_wave/{TRAINING_CASE}_{timestamp}')
     os.makedirs(output_fold, exist_ok=True)
@@ -27,7 +27,7 @@ if __name__ == "__main__":
     # Load or train model
     load_model = False  
 
-    n_sensors_ic = 20
+    n_sensors_ic = 4
     n_sensors_src = 20  # was 20
     branch_hidden = 300
     trunk_hidden = 300

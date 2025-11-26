@@ -390,7 +390,7 @@ class PINNDeepONet_Wave(nn.Module):
                    a_range=(-0.5, 0.5), b_range=(-2.0, 2.0), 
                    source_type='zero', source_amplitude=1.0,
                    center_range=None, T_max=1.0, w_pde=1.0, w_ic_u=10.0, w_ic_v=10.0, n_ic_u=3, n_ic_v=5, strategy='fixed',
-                   early_stopping=True, patience=1000, output_fold=os.path.join(SCRIPT_DIR, 'logs_multibranch_wave')):
+                   early_stopping=False, patience=1000, output_fold=os.path.join(SCRIPT_DIR, 'logs_multibranch_wave')):
         """
         Train PINN-DeepONet with physics-informed loss
         
