@@ -27,7 +27,7 @@ if __name__ == "__main__":
     # Load or train model
     load_model = False  
 
-    n_sensors_ic = 4
+    n_sensors_ic = 20
     n_sensors_src = 20  # was 20
     branch_hidden = 300
     trunk_hidden = 300
@@ -36,21 +36,21 @@ if __name__ == "__main__":
     damping_coeff = 1.0
 
     w_pde, w_ic_u, w_ic_v = 1.0, 10.0, 10.0
-    strategy = 'ntk'  # or 'equal_init', 'ema', 'fixed', 'ntk'
+    strategy = 'fixed'  # or 'equal_init', 'ema', 'fixed', 'ntk'
 
     branch_n_hidden=2
     trunk_n_hidden=2
     branch_activation=nn.LeakyReLU()
     trunk_activation=nn.Tanh()
     use_fft_branch=False
-    use_fft_trunk=False
+    use_fft_trunk=True
     fft_branch_params={}
     fft_trunk_params={
         "input_dim": 2,          # for (x, t)
         "m_spatial": 64,
         "m_temporal": 64,
-        "sigma_spatial": 1.0,
-        "sigma_temporal_list": [1.0],
+        "sigma_spatial": 0.10,
+        "sigma_temporal_list": [0.1],
         "seed": 52}
 
     n_epochs = 10000

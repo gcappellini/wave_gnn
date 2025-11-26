@@ -104,7 +104,11 @@ def plot_solution(model, a_test=0.5, b_test=2.0, source_type='zero',
     time_indices = [0, nt//4, nt//2, 3*nt//4, -1]
     for idx in time_indices:
         t_val = t_plot[idx].item()
-        ax5.plot(x_plot.numpy(), u_pred[:, idx], label=f't={t_val:.3f}')
+        # PINN prediction
+        line_pred, = ax5.plot(x_plot.numpy(), u_pred[:, idx], label=f'PINN t={t_val:.3f}')
+        # MATLAB ground truth (dotted, same color as PINN)
+        if u_gt_interp is not None:
+            ax5.plot(x_plot.numpy(), u_gt_interp[:, idx], linestyle=':', color=line_pred.get_color(), label=f'MATLAB t={t_val:.3f}')
     ax5.set_xlabel('x', fontsize=12)
     ax5.set_ylabel('u(x,t)', fontsize=12)
     ax5.set_title(f'PINN Solution (a={a_test}, b={b_test})', fontsize=12)
