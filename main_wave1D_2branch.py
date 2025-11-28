@@ -19,13 +19,15 @@ if __name__ == "__main__":
     torch.manual_seed(52)
     np.random.seed(52)
     
-    TRAINING_CASE = 'no_source'  # Change to 'no_source' or 'with_source'
+    TRAINING_CASE = 'with_source'  # Change to 'no_source' or 'with_source'
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_fold = os.path.join(SCRIPT_DIR, f'logs_multibranch_wave/{TRAINING_CASE}_{timestamp}')
     os.makedirs(output_fold, exist_ok=True)
 
     # Load or train model
-    load_model = False  
+    load_from = None # '20251126_161802'
+    load_model = False  # If True, only test a pretrained model (no training)
+    resume_training = True  # If True, load a pretrained model and continue training (curriculum learning)
 
     n_sensors_ic = 20
     n_sensors_src = 20  # was 20
@@ -36,7 +38,7 @@ if __name__ == "__main__":
     damping_coeff = 1.0
 
     w_pde, w_ic_u, w_ic_v = 1.0, 10.0, 10.0
-    strategy = 'fixed'  # or 'equal_init', 'ema', 'fixed', 'ntk'
+    strategy = 'ntk'  # or 'equal_init', 'ema', 'fixed', 'ntk'
 
     branch_n_hidden=2
     trunk_n_hidden=2
@@ -53,7 +55,7 @@ if __name__ == "__main__":
         "sigma_temporal_list": [0.1],
         "seed": 52}
 
-    n_epochs = 10000
+    n_epochs = 20000
     n_colloc = 800
     n_ic = 60
     lr = 1e-3
@@ -139,22 +141,35 @@ if __name__ == "__main__":
         fft_branch_args=fft_branch_params,
         fft_trunk_args=fft_trunk_params
     )
-    
+
     print(f"\nModel parameters: {sum(p.numel() for p in model.parameters()):,}")
     print(f"Training case: {TRAINING_CASE}")
     print()
+
+    # Path to pretrained model (for curriculum learning or testing)
+    pretrained_model_path = os.path.join(SCRIPT_DIR, f'checkpoints/pinn_deeponet_wave_{load_from}.pth')
     
     # ==========================================================================
     # TRAINING
     # ==========================================================================
-    
+
     if load_model:
-        # Load existing model
-        model_filename = os.path.join(SCRIPT_DIR, f'checkpoints/pinn_deeponet_wave_{TRAINING_CASE}_{timestamp}.pth')
-        model.load_state_dict(torch.load(model_filename))
-        print(f"✓ Model loaded: {model_filename}\n")
+        # Load existing model for inference/testing only
+        if not os.path.exists(pretrained_model_path):
+            print(f"✗ Model file not found: {pretrained_model_path}")
+            exit(1)
+        model.load_state_dict(torch.load(pretrained_model_path))
+        print(f"✓ Model loaded: {pretrained_model_path}\n")
         history = None  # No training history when loading model
     else:
+        # Curriculum learning: resume training from a pretrained model if requested
+        if resume_training:
+            if not os.path.exists(pretrained_model_path):
+                print(f"✗ Pretrained model not found: {pretrained_model_path}")
+                exit(1)
+            model.load_state_dict(torch.load(pretrained_model_path))
+            print(f"✓ Pretrained model loaded for curriculum learning: {pretrained_model_path}\n")
+        # Train (from scratch or from pretrained)
         history = model.train_pinn(
             n_epochs=n_epochs,
             n_colloc=n_colloc,
@@ -173,17 +188,19 @@ if __name__ == "__main__":
             n_ic_v=n_ic_v,
             output_fold=output_fold
         )
-        
-        model_filename = os.path.join(SCRIPT_DIR, f'checkpoints/pinn_deeponet_wave_{TRAINING_CASE}_{timestamp}.pth')
+
+        model_filename = os.path.join(SCRIPT_DIR, f'checkpoints/pinn_deeponet_wave_{timestamp}.pth')
         torch.save(model.state_dict(), model_filename)
         print(f"\n✓ Model saved: {model_filename}\n")
+
+        # Optionally, save the model as a new pretrained checkpoint for future curriculum learning
+        # torch.save(model.state_dict(), pretrained_model_path)
 
         # Plot training history
         fig1 = plot_training_history(history)
         training_plot_filename = os.path.join(SCRIPT_DIR, f'{output_fold}/pinn_wave_training_{TRAINING_CASE}.png')
         fig1.savefig(training_plot_filename, dpi=150, bbox_inches='tight')
         print(f"✓ Training history saved: {training_plot_filename}")
-        
     # ==========================================================================
     # PLOT RESULTS
     # ==========================================================================
