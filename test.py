@@ -88,8 +88,24 @@ def rollout_test(model, gt_data, T_total=10.0, dt_interval=1.0,
                                                  x_unique, u_current_gt), dtype=torch.float32)
             v0_sensors = torch.tensor(np.interp(model.sensor_x_ic.numpy(), 
                                                  x_unique, v_current_gt), dtype=torch.float32)
-            src_sensors = torch.tensor(np.interp(model.sensor_x_src.numpy(), 
-                                                  x_unique, f_current_gt), dtype=torch.float32)
+            
+            # Extract spatiotemporal source for current interval
+            t_start_idx = t_idx
+            t_end_idx = min(t_idx + nt_per_interval, nt_gt)
+            t_indices = np.arange(t_start_idx, t_end_idx)
+            
+            # Sample uniformly to match n_sensors_src_t
+            if len(t_indices) != model.n_sensors_src_t:
+                t_sample_indices = np.linspace(0, len(t_indices)-1, model.n_sensors_src_t, dtype=int)
+                t_indices = t_indices[t_sample_indices]
+            
+            # Extract f_gt at sampled times and interpolate spatially
+            src_grid = np.zeros((model.n_sensors_src_t, model.n_sensors_src))
+            for t_idx_local, t_idx_global in enumerate(t_indices):
+                f_at_t = f_gt_grid[:, t_idx_global]
+                src_grid[t_idx_local, :] = np.interp(model.sensor_x_src.numpy(), x_unique, f_at_t)
+            
+            src_sensors = torch.tensor(src_grid.flatten(), dtype=torch.float32)
             
             # Predict for this interval
             u_pred = model.forward(u0_sensors, v0_sensors, src_sensors, xt_grid)

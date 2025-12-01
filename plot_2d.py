@@ -2,13 +2,13 @@ import matplotlib.pyplot as plt
 import torch
 import numpy as np
 
-def plot_solution_2d(model, a_test=1.0, b_test=0.0, source_type='zero', 
+def plot_solution_2d(model, a_test=0.5, b_test=0.0, source_type='zero', 
                      source_amplitude=7.5, center_x=0.5, center_y=0.5, T_max=2.0, gt_data=None):
     """Visualize 2D wave solution at different time snapshots"""
     
     # Generate test case
-    u0_sensors = model.generate_ic_displacement(a_test)
-    v0_sensors = model.generate_ic_velocity(b_test)
+    u0_sensors = model.generate_ic_sine_series(a_test)
+    v0_sensors = model.generate_ic_sine_series(b_test)
     src_sensors = model.generate_source(source_type, source_amplitude, center_x, center_y)
     
     # Create spatiotemporal grid
@@ -45,7 +45,7 @@ def plot_solution_2d(model, a_test=1.0, b_test=0.0, source_type='zero',
     return fig
 
 
-def plot_solution_2d_comparison(model, a_test=2.0, b_test=0.0, source_type='zero',
+def plot_solution_2d_comparison(model, a_test=0.5, b_test=0.0, source_type='zero',
                                  source_amplitude=7.5, center_x=0.5, center_y=0.5, 
                                  T_max=2.0, gt_data=None):
     """Compare PINN vs ground truth at multiple time snapshots"""
@@ -55,8 +55,8 @@ def plot_solution_2d_comparison(model, a_test=2.0, b_test=0.0, source_type='zero
                                source_amplitude, center_x, center_y, T_max)
     
     # Generate test case
-    u0_sensors = model.generate_ic_displacement(a_test)
-    v0_sensors = model.generate_ic_velocity(b_test)
+    u0_sensors = model.generate_ic_sine_series(a_test)
+    v0_sensors = model.generate_ic_sine_series(b_test)
     src_sensors = model.generate_source(source_type, source_amplitude, center_x, center_y)
     
     # Extract ground truth data
@@ -184,28 +184,18 @@ def plot_solution_2d_comparison(model, a_test=2.0, b_test=0.0, source_type='zero
 
 
 def plot_training_history(history):
-    """Plot training loss history"""
-    fig, axes = plt.subplots(2, 2, figsize=(12, 8))
+    """Plot all training loss histories on a single figure with pastel colors"""
+    fig, ax = plt.subplots(figsize=(10, 6))
     
-    axes[0, 0].semilogy(history['total'], 'k-', linewidth=1.5)
-    axes[0, 0].set_title('Total Loss')
-    axes[0, 0].set_xlabel('Epoch')
-    axes[0, 0].grid(True, alpha=0.3)
+    ax.semilogy(history['total'], color='#A3C1DA', label='Total Loss', linewidth=2)
+    ax.semilogy(history['pde'], color='#B5EAD7', label='PDE Residual Loss', linewidth=2)
+    ax.semilogy(history['ic_u'], color='#FFDAC1', label='Displacement IC Loss', linewidth=2)
+    ax.semilogy(history['ic_v'], color='#FFB7B2', label='Velocity IC Loss', linewidth=2)
     
-    axes[0, 1].semilogy(history['pde'], 'b-', linewidth=1.5)
-    axes[0, 1].set_title('PDE Residual Loss')
-    axes[0, 1].set_xlabel('Epoch')
-    axes[0, 1].grid(True, alpha=0.3)
-    
-    axes[1, 0].semilogy(history['ic_u'], 'r-', linewidth=1.5)
-    axes[1, 0].set_title('Displacement IC Loss')
-    axes[1, 0].set_xlabel('Epoch')
-    axes[1, 0].grid(True, alpha=0.3)
-    
-    axes[1, 1].semilogy(history['ic_v'], 'g-', linewidth=1.5)
-    axes[1, 1].set_title('Velocity IC Loss')
-    axes[1, 1].set_xlabel('Epoch')
-    axes[1, 1].grid(True, alpha=0.3)
-    
+    ax.set_title('Training Loss History')
+    ax.set_xlabel('Epoch')
+    ax.set_ylabel('Loss (log scale)')
+    ax.grid(True, alpha=0.3)
+    ax.legend()
     plt.tight_layout()
     return fig

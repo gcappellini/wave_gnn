@@ -106,7 +106,7 @@ class PINNDeepONet_Wave(nn.Module):
         damping_coeff: damping coefficient k (k*u_t term)
     """
     
-    def __init__(self, n_sensors_ic=20, n_sensors_src=20, n_sensors_src_t=None,
+    def __init__(self, n_sensors_ic=20, n_sensors_src=20, n_sensors_src_t=10,
                  branch_hidden=50, trunk_hidden=50, p=50, wave_speed=1.0, damping_coeff=1.0,
                  branch_n_hidden=2, trunk_n_hidden=4, branch_residual=False, trunk_residual=False,
                  branch_activation=None, trunk_activation=None,
@@ -121,7 +121,6 @@ class PINNDeepONet_Wave(nn.Module):
         self.c = wave_speed  # Wave speed
         self.k = damping_coeff  # Damping coefficient
         self.domain = [0.0, 1.0]  # Spatial domain
-        self.time_varying_source = n_sensors_src_t is not None
         
         # FFT transforms if enabled
         fft_branch = FourierFeatureTransform(**(fft_branch_args or {})) if use_fft_branch else None
@@ -137,8 +136,8 @@ class PINNDeepONet_Wave(nn.Module):
             fft_transform=fft_branch
         )
         
-        # Source branch - handles spatiotemporal if n_sensors_src_t is provided
-        source_input_dim = n_sensors_src * (n_sensors_src_t if self.time_varying_source else 1)
+        # Source branch - always spatiotemporal for curriculum learning
+        source_input_dim = n_sensors_src * n_sensors_src_t
         self.branch_source = BranchNet(
             source_input_dim, branch_hidden, p,
             n_hidden_layers=branch_n_hidden,
@@ -164,9 +163,8 @@ class PINNDeepONet_Wave(nn.Module):
                             torch.linspace(self.domain[0], self.domain[1], n_sensors_ic))
         self.register_buffer('sensor_x_src', 
                             torch.linspace(self.domain[0], self.domain[1], n_sensors_src))
-        if self.time_varying_source:
-            self.register_buffer('sensor_t_src',
-                                torch.linspace(0.0, T_max_src, n_sensors_src_t))
+        self.register_buffer('sensor_t_src',
+                            torch.linspace(0.0, T_max_src, n_sensors_src_t))
     
     def forward(self, u0_sensors, v0_sensors, src_sensors, xt):
         """
@@ -328,7 +326,7 @@ class PINNDeepONet_Wave(nn.Module):
                 # Time-varying amplitude: A(t) = amplitude * sin(2π * freq * t)
                 
                 # Compute spatiotemporal Gaussian
-                src = amplitude * torch.exp(-((x_grid - center) / width) ** 2)* torch.exp(-((t_grid - center_t) / width) ** 2)
+                src = amplitude * torch.exp(-((x_grid - center) / width) ** 2)* torch.exp(-((t_grid - center_t)) ** 2)
                 # Shape: (n_t, n_x)
                 
         elif source_type == 'zero':
@@ -397,12 +395,11 @@ class PINNDeepONet_Wave(nn.Module):
         print(f"Collocation points: {n_colloc}")
         print(f"Displacement IC amplitude range: {a_range}")
         print(f"Velocity IC amplitude range: {b_range}")
-        if self.time_varying_source:
-            print(f"Source: time-varying {source_type}, amplitude: {source_amplitude}")
-        elif center_range is not None:
-            print(f"Source type: {source_type}, amplitude: {source_amplitude}, center range: {center_range}")
-        else:
-            print(f"Source type: {source_type}, amplitude: {source_amplitude}")
+        print(f"Source type: {source_type}, amplitude: {source_amplitude}")
+        if center_range:
+            print(f"Source center range: {center_range}")
+        if center_t_range:
+            print(f"Source time range: {center_t_range}")
         print(f"Wave speed c: {self.c}")
         print(f"Time domain: [0, {T_max}]")
         print("Boundary conditions: HARD constraints (no soft loss)")
@@ -446,30 +443,21 @@ class PINNDeepONet_Wave(nn.Module):
             u0_sensors = self.generate_ic_sine_series(a_coeffs)
             v0_sensors = self.generate_ic_sine_series(b_coeffs)
             
-            # Generate source sensors
-            if self.time_varying_source:
-                center_t_sample = center_t_range[0] + (center_t_range[1] - center_t_range[0]) * torch.rand(1).item() if center_t_range else 0.5
-                src_grid = self.generate_source(source_type, source_amplitude, center_sample, x=self.sensor_x_src, 
-                                               time_varying=True, t=self.sensor_t_src, 
-                                               center_t =center_t_sample)
-                src_sensors = src_grid.flatten()
-            else:
-                src_sensors = self.generate_source(source_type, source_amplitude, center_sample)
-                center_t_sample = None
+            # Generate spatiotemporal source sensors (always 2D)
+            center_t = center_t_range[0] + (center_t_range[1] - center_t_range[0]) * torch.rand(1).item() if center_t_range else 0.5
+            src_grid = self.generate_source(source_type, source_amplitude, center_sample, x=self.sensor_x_src, 
+                                           time_varying=True, t=self.sensor_t_src, center_t=center_t)
+            src_sensors = src_grid.flatten()
             
             # Sample collocation points (x, t)
             x_colloc = self.domain[0] + (self.domain[1] - self.domain[0]) * torch.rand(n_colloc)
             t_colloc = T_max * torch.rand(n_colloc)
             xt_colloc = torch.stack([x_colloc, t_colloc], dim=1)
             
-            # Source values at collocation points
-            if self.time_varying_source:
-                src_colloc_grid = self.generate_source(source_type, source_amplitude, center_sample, x=x_colloc, 
-                                                       time_varying=True, t=t_colloc,
-                                                       center_t =center_t_sample)
-                src_colloc = torch.diagonal(src_colloc_grid)
-            else:
-                src_colloc = self.generate_source(source_type, source_amplitude, center_sample, x=x_colloc)
+            # Source values at collocation points (always spatiotemporal)
+            src_colloc_grid = self.generate_source(source_type, source_amplitude, center_sample, x=x_colloc, 
+                                                   time_varying=True, t=t_colloc, center_t=center_t)
+            src_colloc = torch.diagonal(src_colloc_grid)
             
             # === PDE Loss ===
             residual = self.compute_pde_residual(u0_sensors, v0_sensors, src_sensors, 

@@ -2,47 +2,83 @@ import numpy as np
 import torch
 import torch.nn as nn
 import warnings
+from adaptive_weights import AdaptiveLossWeights
+import os
 warnings.filterwarnings('ignore')
 
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+def sample_coeffs(n, base_range, p=1.5):
+    coeffs = []
+    for k in range(n):
+        # Range decreases with k (first coeff full range, then shrinks)
+        scale = 1.0 / (k + 1) ** p
+        r0, r1 = base_range
+        coeff_range = (r0 * scale, r1 * scale) if k > 0 else (r0, r1)
+        coeffs.append(torch.FloatTensor(1).uniform_(*coeff_range).item())
+    return torch.tensor(coeffs) 
 
 class BranchNet(nn.Module):
     """Branch network: encodes function inputs from sensor measurements"""
-    def __init__(self, n_sensors, hidden_dim, output_dim):
+    def __init__(self, n_sensors, hidden_dim, output_dim, n_hidden_layers=2, residual=False, activation=None, fft_transform=None):
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(n_sensors, hidden_dim),
-            nn.LeakyReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.LeakyReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.LeakyReLU(),
-            nn.Linear(hidden_dim, output_dim)
+        self.fft_transform = fft_transform
+        self.input_layer = nn.Linear(
+            fft_transform.get_output_dim() if fft_transform is not None else n_sensors,
+            hidden_dim
         )
+        self.n_hidden_layers = n_hidden_layers
+        self.residual = residual
+        self.activation = activation if activation is not None else nn.LeakyReLU()
+        self.hidden_layers = nn.ModuleList([
+            nn.Linear(hidden_dim, hidden_dim) for _ in range(n_hidden_layers)
+        ])
+        self.output_layer = nn.Linear(hidden_dim, output_dim)
+
     
     def forward(self, sensors):
-        return self.net(sensors)
-
+        x = sensors
+        if self.fft_transform is not None:
+            x = self.fft_transform(x)
+        x = self.input_layer(x)
+        x = self.activation(x)
+        for layer in self.hidden_layers:
+            x = layer(x)
+            x = self.activation(x)
+        x = self.output_layer(x)
+        return x
 
 class TrunkNet(nn.Module):
-    """Trunk network: encodes spatiotemporal locations (x, y, t)"""
-    def __init__(self, hidden_dim, output_dim):
+    def __init__(self, hidden_dim, output_dim, n_hidden_layers=4, residual=False, activation=None, fft_transform=None):
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(3, hidden_dim),  # Input: [x, y, t]
-            nn.Tanh(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.Tanh(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.Tanh(),
-            nn.Linear(hidden_dim, output_dim)
+        self.fft_transform = fft_transform
+        self.input_layer = nn.Linear(
+            fft_transform.get_output_dim() if fft_transform is not None else 3,
+            hidden_dim
         )
+        self.n_hidden_layers = n_hidden_layers
+        self.residual = residual
+        self.activation = activation if activation is not None else nn.Tanh()
+        self.hidden_layers = nn.ModuleList([
+            nn.Linear(hidden_dim, hidden_dim) for _ in range(n_hidden_layers)
+        ])
+        self.output_layer = nn.Linear(hidden_dim, output_dim)
     
     def forward(self, xyt):
         """
         Args:
             xyt: (n_points, 3) with columns [x, y, t]
         """
-        return self.net(xyt)
+        x = xyt
+        if self.fft_transform is not None:
+            x = self.fft_transform(x)
+        x = self.input_layer(x)
+        x = self.activation(x)
+        for layer in self.hidden_layers:
+            x = layer(x)
+            x = self.activation(x)
+        x = self.output_layer(x)
+        return x
 
 
 class PINNDeepONet_Wave2D(nn.Module):
@@ -68,7 +104,7 @@ class PINNDeepONet_Wave2D(nn.Module):
     """
     
     def __init__(self, n_sensors_ic=20, n_sensors_src=20, 
-                 branch_hidden=100, trunk_hidden=100, p=100, wave_speed=1.0, damping_coeff=1.0):
+                 branch_hidden=100, trunk_hidden=100, p=100, wave_speed=1.0, damping_coeff=1.0, use_fft_trunk=False, fft_trunk_args=None):
         super().__init__()
         
         self.n_sensors_ic = n_sensors_ic
@@ -77,6 +113,8 @@ class PINNDeepONet_Wave2D(nn.Module):
         self.c = wave_speed
         self.k = damping_coeff
         self.domain = [0.0, 1.0]  # Square domain [0,1] × [0,1]
+
+        fft_trunk = FourierFeatureTransform(**(fft_trunk_args or {})) if use_fft_trunk else None
         
         # IC branch: takes BOTH u0 and v0 sensors (2D grids flattened)
         self.branch_ic = BranchNet(2 * n_sensors_ic * n_sensors_ic, branch_hidden, 2 * p)
@@ -85,7 +123,7 @@ class PINNDeepONet_Wave2D(nn.Module):
         self.branch_source = BranchNet(n_sensors_src * n_sensors_src, branch_hidden, p)
         
         # Trunk network for (x, y, t)
-        self.trunk = TrunkNet(trunk_hidden, p)
+        self.trunk = TrunkNet(trunk_hidden, p, fft_transform=fft_trunk)
         
         # Bias term
         self.bias = nn.Parameter(torch.zeros(1))
@@ -181,13 +219,46 @@ class PINNDeepONet_Wave2D(nn.Module):
         
         return residual
     
-    def generate_ic_displacement(self, a):
-        """u(x,y,0) = a * sin(π*x) * sin(π*y)"""
-        return a * torch.sin(np.pi * self.sensor_x_ic) * torch.sin(np.pi * self.sensor_y_ic)
+    # def _generate_ic_displacement(self, a):
+    #     """u(x,y,0) = a * sin(π*x) * sin(π*y)"""
+    #     return a * torch.sin(np.pi * self.sensor_x_ic) * torch.sin(np.pi * self.sensor_y_ic)
     
-    def generate_ic_velocity(self, b):
-        """u_t(x,y,0) = b * sin(π*x) * sin(π*y)"""
-        return b * torch.sin(np.pi * self.sensor_x_ic) * torch.sin(np.pi * self.sensor_y_ic)
+    # def _generate_ic_velocity(self, b):
+    #     """u_t(x,y,0) = b * sin(π*x) * sin(π*y)"""
+    #     return b * torch.sin(np.pi * self.sensor_x_ic) * torch.sin(np.pi * self.sensor_y_ic)
+    
+    def generate_ic_sine_series(self, coeffs, x=None, y=None):
+        """
+        Generate initial condition as a 2D sine series:
+            - Single scalar: u(x, y) = coeff * sin(π*x) * sin(π*y)
+            - Array (1D): u(x, y) = sum_k coeffs[k] * sin((k+1)*π*x) * sin((k+1)*π*y)
+        
+        Args:
+            coeffs: scalar or 1D tensor of coefficients
+            x: tensor of x sensor locations (default: self.sensor_x_ic)
+            y: tensor of y sensor locations (default: self.sensor_y_ic)
+        
+        Returns:
+            u0_sensors: tensor of shape (len(x),)
+        """
+        if x is None:
+            x = self.sensor_x_ic
+        if y is None:
+            y = self.sensor_y_ic
+        
+        # Ensure coeffs is a tensor
+        coeffs = torch.as_tensor(coeffs, dtype=x.dtype, device=x.device)
+        
+        # Handle scalar coefficient
+        if coeffs.dim() == 0:
+            u = coeffs * torch.sin(np.pi * x) * torch.sin(np.pi * y)
+        else:
+            # Handle 1D array of coefficients (multi-mode)
+            u = torch.zeros_like(x)
+            for k in range(coeffs.shape[0]):
+                u = u + coeffs[k] * torch.sin((k + 1) * np.pi * x) * torch.sin((k + 1) * np.pi * y)
+        
+        return u
     
     def generate_source(self, source_type='gaussian', amplitude=15.0, center_x=0.5, center_y=0.5):
         """Generate 2D source on sensor grid"""
@@ -220,8 +291,8 @@ class PINNDeepONet_Wave2D(nn.Module):
     
     def train_pinn(self, n_epochs=5000, n_colloc=500, lr=1e-3, 
                    a_range=(-1.5, 1.5), b_range=(0.0, 0.0), 
-                   source_type='zero', source_amplitude=15.0, 
-                   center_x=0.5, center_y=0.5, center_range=(0.1, 0.9), T_max=2.0):
+                   source_type='zero', source_amplitude=15.0, w_pde=1.0, w_ic_u=10.0, w_ic_v=10.0, strategy='fixed',
+                   center_x=0.5, center_y=0.5, center_range=(0.1, 0.9), n_ic_u=2, n_ic_v=2, T_max=1.0, output_fold=os.path.join(SCRIPT_DIR, 'logs_multibranch_wave')):
         """
         Train PINN-DeepONet for 2D wave equation
         
@@ -237,14 +308,16 @@ class PINNDeepONet_Wave2D(nn.Module):
             print(f"Source: {source_type}, amplitude: {source_amplitude}, center: ({center_x}, {center_y})")
         print(f"Wave speed: {self.c}, Damping: {self.k}")
         
+        initial_weights = {'PDE': w_pde, 'IC_u': w_ic_u, 'IC_v': w_ic_v}
+        adaptive_weights = AdaptiveLossWeights(
+            initial_weights=initial_weights,
+            strategy=strategy,  
+        )
+
         optimizer = torch.optim.Adam(self.parameters(), lr=lr)
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer, mode='min', factor=0.5, patience=500, verbose=True
         )
-        
-        w_pde = 1.0
-        w_ic_u = 200.0
-        w_ic_v = 200.0
         
         history = {'total': [], 'pde': [], 'ic_u': [], 'ic_v': []}
         
@@ -255,8 +328,10 @@ class PINNDeepONet_Wave2D(nn.Module):
         
         for epoch in range(n_epochs):
             # Sample random IC amplitudes
-            a = a_range[0] + (a_range[1] - a_range[0]) * torch.rand(1).item()
-            b = b_range[0] + (b_range[1] - b_range[0]) * torch.rand(1).item()
+            # a = a_range[0] + (a_range[1] - a_range[0]) * torch.rand(1).item()
+            # b = b_range[0] + (b_range[1] - b_range[0]) * torch.rand(1).item()
+            a_coeffs = sample_coeffs(n_ic_u, a_range, p=3.0)
+            b_coeffs = sample_coeffs(n_ic_v, b_range)
             
             # Sample random source center
             if center_range is not None and source_type == 'gaussian':
@@ -266,8 +341,8 @@ class PINNDeepONet_Wave2D(nn.Module):
                 cx, cy = center_x, center_y
             
             # Generate sensors
-            u0_sensors = self.generate_ic_displacement(a)
-            v0_sensors = self.generate_ic_velocity(b)
+            u0_sensors = self.generate_ic_sine_series(a_coeffs)
+            v0_sensors = self.generate_ic_sine_series(b_coeffs)
             src_sensors = self.generate_source(source_type, source_amplitude, cx, cy)
             
             # Sample 3D collocation points
@@ -295,7 +370,7 @@ class PINNDeepONet_Wave2D(nn.Module):
             xyt_ic = torch.stack([x_ic, y_ic, t_ic], dim=1)
             
             u_ic_pred = self.forward(u0_sensors, v0_sensors, src_sensors, xyt_ic)
-            u_ic_true = a * torch.sin(np.pi * x_ic) * torch.sin(np.pi * y_ic)
+            u_ic_true = self.generate_ic_sine_series(a_coeffs, x_ic, y_ic)
             loss_ic_u = torch.mean((u_ic_pred - u_ic_true) ** 2)
             
             # Velocity IC Loss
@@ -304,11 +379,31 @@ class PINNDeepONet_Wave2D(nn.Module):
             u_t_ic_pred = torch.autograd.grad(u_ic_grad, xyt_ic_grad,
                                               torch.ones_like(u_ic_grad),
                                               create_graph=True)[0][:, 2]
-            v_ic_true = b * torch.sin(np.pi * x_ic) * torch.sin(np.pi * y_ic)
+            v_ic_true = self.generate_ic_sine_series(b_coeffs, x_ic, y_ic)
             loss_ic_v = torch.mean((u_t_ic_pred - v_ic_true) ** 2)
-            
-            # Total Loss
-            loss_total = w_pde * loss_pde + w_ic_u * loss_ic_u + w_ic_v * loss_ic_v
+
+            # === Total Loss ===
+            context = {
+                'loss_values': {
+                    'PDE': loss_pde.item(),
+                    'IC_u': loss_ic_u.item(),
+                    'IC_v': loss_ic_v.item(),
+                },
+                'model': self,
+                'xyt_colloc': xyt_colloc,
+                'xyt_ic': xyt_ic,
+                'u0_sensors': u0_sensors,
+                'v0_sensors': v0_sensors,
+                'src_sensors': src_sensors,
+                'src_colloc': src_colloc,
+                'a_coeffs': a_coeffs,
+                'b_coeffs': b_coeffs,
+                'output_fold': output_fold
+            }
+
+            weights = adaptive_weights.update(epoch, context) if strategy != 'fixed' else initial_weights
+            loss_total = weights['PDE'] * loss_pde + weights['IC_u'] * loss_ic_u + weights['IC_v'] * loss_ic_v
+
             
             optimizer.zero_grad()
             loss_total.backward()
@@ -338,6 +433,13 @@ class PINNDeepONet_Wave2D(nn.Module):
                       f"PDE: {loss_pde.item():.6f} | IC_u: {loss_ic_u.item():.6f} | "
                       f"IC_v: {loss_ic_v.item():.6f} | LR: {current_lr:.2e} | "
                       f"u_range: [{u_min:.3f}, {u_max:.3f}]")
+                if strategy != 'fixed':
+                    print(f"          Weights -> PDE: {weights['PDE']:.2e}, IC_u: {weights['IC_u']:.2e}, IC_v: {weights['IC_v']:.2e}")
+        
+        if strategy != 'fixed':
+            adaptive_weights.plot_weights_evolution(output_fold)
+            if strategy == 'ntk':
+                adaptive_weights.plot_ntk_traces(output_fold)
         
         # Restore best model
         if best_model_state is not None:
@@ -346,3 +448,116 @@ class PINNDeepONet_Wave2D(nn.Module):
         
         print("\n✓ Training complete!\n")
         return history
+
+
+class FourierFeatureTransform(nn.Module):
+    """
+    Fourier Feature Mapping for PINNs to overcome spectral bias.
+    
+    Transforms input [x, y, t] using:
+    \lambda(X) = [cos(B_x*x), sin(B_x*x), cos(B_y*y), sin(B_y*y), cos(B_t*t), sin(B_t*t), ...]
+    
+    where B matrices are sampled from N(0, σ²)
+    
+    Args:
+        input_dim: Dimension of input (3 for [x, y, t] in 2D)
+        m_spatial_x: Number of Fourier features for x dimension
+        m_spatial_y: Number of Fourier features for y dimension
+        m_temporal: Number of Fourier features for temporal dimension
+        sigma_spatial_x: Standard deviation for x spatial features
+        sigma_spatial_y: Standard deviation for y spatial features
+        sigma_temporal_list: List of standard deviations for temporal features
+        seed: Random seed for reproducibility (optional)
+    """
+    
+    def __init__(self, 
+                 input_dim=3,
+                 m_spatial_x=64,
+                 m_spatial_y=64,
+                 m_temporal=64,
+                 sigma_spatial_x=1.0,
+                 sigma_spatial_y=1.0,
+                 sigma_temporal_list=[1.0, 10.0],
+                 seed=None):
+        super().__init__()
+        
+        self.input_dim = input_dim
+        self.m_spatial_x = m_spatial_x
+        self.m_spatial_y = m_spatial_y
+        self.m_temporal = m_temporal
+        self.sigma_spatial_x = sigma_spatial_x
+        self.sigma_spatial_y = sigma_spatial_y
+        self.sigma_temporal_list = sigma_temporal_list
+        
+        # Set seed for reproducibility if provided
+        if seed is not None:
+            torch.manual_seed(seed)
+            np.random.seed(seed)
+        
+        # Create B matrices for x and y dimensions
+        self.register_buffer(
+            'B_spatial_x',
+            torch.randn(m_spatial_x, 1) * sigma_spatial_x
+        )
+        self.register_buffer(
+            'B_spatial_y',
+            torch.randn(m_spatial_y, 1) * sigma_spatial_y
+        )
+        
+        # Temporal features: list of B matrices with different sigmas
+        self.B_temporal_list = []
+        for idx, sigma_t in enumerate(sigma_temporal_list):
+            B_t = torch.randn(m_temporal, 1) * sigma_t
+            buffer_name = f'B_temporal_sigma_{idx}'
+            self.register_buffer(buffer_name, B_t)
+            self.B_temporal_list.append(B_t)
+        
+        # Calculate output dimension
+        # For x: 2*m_spatial_x (cos + sin)
+        # For y: 2*m_spatial_y (cos + sin)
+        # For t: 2*m_temporal (cos + sin) per sigma
+        self.output_dim = 2 * m_spatial_x + 2 * m_spatial_y + len(sigma_temporal_list) * 2 * m_temporal
+    
+    def forward(self, X):
+        """
+        Apply Fourier feature mapping to input.
+        
+        Args:
+            X: Input tensor of shape (batch_size, 3) where X[:, 0] is x, X[:, 1] is y, X[:, 2] is t
+            
+        Returns:
+            Transformed features of shape (batch_size, output_dim)
+        """
+        # Split into spatial (x, y) and temporal (t) components
+        x = X[:, 0:1]  # Shape: (batch_size, 1)
+        y = X[:, 1:2]  # Shape: (batch_size, 1)
+        t = X[:, 2:3]  # Shape: (batch_size, 1)
+        
+        features = []
+        
+        # Apply x spatial Fourier features
+        x_proj = torch.matmul(x, self.B_spatial_x.T)  # (batch_size, m_spatial_x)
+        x_features = torch.cat([torch.cos(2 * np.pi * x_proj), 
+                                torch.sin(2 * np.pi * x_proj)], dim=1)
+        features.append(x_features)
+        
+        # Apply y spatial Fourier features
+        y_proj = torch.matmul(y, self.B_spatial_y.T)  # (batch_size, m_spatial_y)
+        y_features = torch.cat([torch.cos(2 * np.pi * y_proj), 
+                                torch.sin(2 * np.pi * y_proj)], dim=1)
+        features.append(y_features)
+        
+        # Apply temporal Fourier features for each sigma
+        for i, sigma_t in enumerate(self.sigma_temporal_list):
+            B_t = getattr(self, f'B_temporal_sigma_{i}')
+            t_proj = torch.matmul(t, B_t.T)  # (batch_size, m_temporal)
+            t_features = torch.cat([torch.cos(2 * np.pi * t_proj),
+                                    torch.sin(2 * np.pi * t_proj)], dim=1)
+            features.append(t_features)
+        
+        # Concatenate all features
+        return torch.cat(features, dim=1)
+    
+    def get_output_dim(self):
+        """Returns the output dimension after transformation."""
+        return self.output_dim

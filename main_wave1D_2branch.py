@@ -19,19 +19,19 @@ if __name__ == "__main__":
     torch.manual_seed(52)
     np.random.seed(52)
     
-    TRAINING_CASE = 'time_source'  # Options: 'no_source', 'with_source', 'time_source'
+    TRAINING_CASE = 'with_source'  # Options: 'no_source', 'with_source', 'time_source'
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_fold = os.path.join(SCRIPT_DIR, f'logs_multibranch_wave/{TRAINING_CASE}_{timestamp}')
     os.makedirs(output_fold, exist_ok=True)
 
     # Load or train model
-    load_from = None # '20251126_161802'
+    load_from = '20251201_125517'
     load_model = False  # If True, only test a pretrained model (no training)
-    resume_training = False  # If True, load a pretrained model and continue training (curriculum learning)
+    resume_training = True  # If True, load a pretrained model and continue training (curriculum learning)
 
     n_sensors_ic = 20
     n_sensors_src = 20
-    n_sensors_src_t = 10 if TRAINING_CASE == 'time_source' else None
+    n_sensors_src_t = 10  # Always spatiotemporal for curriculum learning
     branch_hidden = 300
     trunk_hidden = 300
     p = 300
@@ -39,7 +39,7 @@ if __name__ == "__main__":
     damping_coeff = 1.0
 
     w_pde, w_ic_u, w_ic_v = 1.0, 10.0, 10.0
-    strategy = 'fixed'  # or 'equal_init', 'ema', 'fixed', 'ntk'
+    strategy = 'ntk'  # or 'equal_init', 'ema', 'fixed', 'ntk'
 
     branch_n_hidden=2
     trunk_n_hidden=2
@@ -63,24 +63,24 @@ if __name__ == "__main__":
     a_range = (-0.1, 0.6)
     b_range = (-1.2, 2.0)
     n_ic_u, n_ic_v = 3, 5
-    center_range = (0.1, 0.9) if TRAINING_CASE in ['with_source', 'time_source'] else None
-    center_t_range = (0.1, 0.9) if TRAINING_CASE in ['with_source', 'time_source'] else None
+    # Curriculum learning: control complexity via amplitude and range parameters
+    center_range = (0.1, 0.9) if TRAINING_CASE in ['with_source', 'time_source'] else (0.5, 0.5)
+    center_t_range = (0.1, 0.9) if TRAINING_CASE == 'time_source' else (0.5, 0.5)
     T_max = 1.0
     source_type = 'gaussian' if TRAINING_CASE in ['with_source', 'time_source'] else 'zero'
-    # temporal_freq_range = (0.5, 1.5) if TRAINING_CASE == 'time_source' else None
     # center_velocity_range = (-0.3, 0.3) if TRAINING_CASE == 'time_source' else None
 
     a_test = 0.5
     b_test = 2.0
 
-    source_test_center = 0.17  
-    source_test_t = 0.3 if TRAINING_CASE == 'time_source' else None
+    source_test_center = 0.2  
+    source_test_t = 0.5  # Always set for consistent architecture
     # temporal_freq_test = 1.0
     # center_velocity_test = 0.0
 
     gt_filename = os.path.join(SCRIPT_DIR, f'data/gt_wave1D_{TRAINING_CASE}.csv')
     T_rollout = 10.0 
-    dt_rollout = 0.5  
+    dt_rollout = 1.0 
     self_feeding = False
 
     # Save all parameters to JSON for reproducibility
@@ -118,8 +118,6 @@ if __name__ == "__main__":
         "center_range": center_range,
         "T_max": T_max,
         "source_type": source_type,
-        # "temporal_freq_range": temporal_freq_range,
-        # "center_velocity_range": center_velocity_range,
         "center_t_range": center_t_range,
         "a_test": a_test,
         "b_test": b_test,
@@ -174,6 +172,7 @@ if __name__ == "__main__":
         model.load_state_dict(torch.load(pretrained_model_path))
         print(f"✓ Model loaded: {pretrained_model_path}\n")
         history = None  # No training history when loading model
+        training_time=0
     else:
         # Curriculum learning: resume training from a pretrained model if requested
         if resume_training:
@@ -183,6 +182,7 @@ if __name__ == "__main__":
             model.load_state_dict(torch.load(pretrained_model_path))
             print(f"✓ Pretrained model loaded for curriculum learning: {pretrained_model_path}\n")
         # Train (from scratch or from pretrained)
+        start_time = datetime.now()
         history = model.train_pinn(
             n_epochs=n_epochs,
             n_colloc=n_colloc,
@@ -197,13 +197,13 @@ if __name__ == "__main__":
             w_ic_v=w_ic_v,
             strategy=strategy,
             center_range=center_range,
+            center_t_range=center_t_range,
             n_ic_u=n_ic_u,
             n_ic_v=n_ic_v,
-            output_fold=output_fold,
-            center_t_range=center_t_range,
-            # temporal_freq_range=temporal_freq_range,
-            # center_velocity_range=center_velocity_range
+            output_fold=output_fold
         )
+        end_time = datetime.now()
+        training_time = (end_time - start_time).total_seconds() / 60  # in minutes
 
         model_filename = os.path.join(SCRIPT_DIR, f'checkpoints/pinn_deeponet_wave_{timestamp}.pth')
         torch.save(model.state_dict(), model_filename)
@@ -230,7 +230,7 @@ if __name__ == "__main__":
         gt_data = None
     
     # Plot solution
-    fig2 = plot_solution(model, 
+    fig2, metrics = plot_solution(model, 
                          a_test=a_test, 
                          b_test=b_test, 
                          source_type=source_type, 
@@ -241,11 +241,19 @@ if __name__ == "__main__":
     
     solution_plot_filename = os.path.join(output_fold, f'pinn_wave_solution_{TRAINING_CASE}.png')
     fig2.savefig(solution_plot_filename, dpi=150, bbox_inches='tight')
+    # Save metrics and training time to a text file
+    metrics_path = os.path.join(output_fold, "metrics.txt")
+    with open(metrics_path, "w") as f:
+        f.write("Metrics:\n")
+        for k, v in metrics.items():
+            f.write(f"{k}: {v}\n")
+        f.write(f"\nTraining time (minutes): {training_time}\n")
+    print(f"✓ Metrics and training time saved: {metrics_path}")
     print(f"✓ Solution plot saved: {solution_plot_filename}")
     # ==========================================================================
     # ROLLOUT TEST (only for with_source case)
     # ==========================================================================
-    # if TRAINING_CASE == 'with_source':
+    # if TRAINING_CASE in ['with_source', 'time_source']:
         
     #     # Load rollout ground truth (REQUIRED)
     #     try:
@@ -271,5 +279,5 @@ if __name__ == "__main__":
     #         print(f"✓ Rollout plot saved: {rollout_plot_filename}")
     #         print(f"  Rollout shape: {u_roll.shape}")
     
-    plt.show()
+    # plt.show()
 

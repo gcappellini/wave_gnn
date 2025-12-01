@@ -31,13 +31,18 @@ function f = stringforce(x, t)
     % rng(floor(t), 'twister');  % Set random seed based on current second
     % source_center = 0.1 + 0.8 * rand();  % Random center in [0.1, 0.9]
     % source_center = 0.1 + 0.8 * mod(floor(t),10)/9;  % Deterministic center changing every second
-    source_center = 0.17;
-    source_t = 0.3;  % Center time of the source pulse
+    source_center1 = 0.2;
+    source_t1 = 0.5;  % Center time of the source pulse
+    source_center2 = 0.8;
+    source_t2 = 8;  % Center time of the source pulse
+
     % temporal_freq_test = 1.50;
     % center_velocity_test = 0.2; 
     % source_center = source_center + center_velocity_test * t;
     % A_t = source_amp * sin(2 * pi * temporal_freq_test * t);
-    f = source_amp * exp(-((x - source_center)/source_width)^2)*exp(-((t - source_t)/source_width)^2);
+    f = source_amp * exp(-((x - source_center1)/source_width).^2).*exp(-((t - source_t1)).^2);
+    % f2 = source_amp * exp(-((x - source_center2)/source_width).^2).*exp(-((t - source_t2)).^2);
+    % f = f1+f2;
 end
 
 function [c,f,s] = stringpde(x, t, u, dudx)

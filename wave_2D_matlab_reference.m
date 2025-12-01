@@ -15,13 +15,13 @@ wave_speed = 1;
 d = 1;
 a = 0;
 m = 1;
-u0_coeff = 0.0;
+u0_coeff = 0.5;
 v0_coeff = 0.0;
 
 source_center_x = 0.35;
 source_center_y = 0.65;
 source_width=0.3;
-source_amp = 15.0;
+source_amp = 0; %15.0;
 
 numberOfPDE = 1;
 model = createpde(numberOfPDE);
@@ -35,9 +35,7 @@ title("Geometry With Edge Labels Displayed")
 xlabel("x")
 ylabel("y")
 
-
 specifyCoefficients(model,m=m,d=0,c=wave_speed^2 ,a=a,f=@force);
-
 
 function fcoeff=force(location, state)
     global source_width source_amp source_center_x source_center_y
@@ -179,6 +177,6 @@ f_flat = source_amp * exp(-r2 / source_width^2);
 output_data = [x_flat, y_flat, t_flat, f_flat, u_flat, v_flat];
 
 % Write to CSV
-writematrix(output_data, '/Users/guglielmocappellini/Desktop/research/code/pinns-wave/wave-gnn/1_gcn_string/data/gt_wave2D_withsource.csv');
+writematrix(output_data, '/Users/guglielmocappellini/Desktop/research/code/pinns-wave/wave-gnn/1_gcn_string/data/gt_wave2D_no_source.csv');
 
 fprintf('CSV export complete: %d rows x %d columns\n', size(output_data,1), size(output_data,2));
