@@ -19,7 +19,7 @@ if __name__ == "__main__":
     torch.manual_seed(52)
     np.random.seed(52)
     
-    TRAINING_CASE = 'with_source'  # Change to 'no_source' or 'with_source'
+    TRAINING_CASE = 'time_source'  # Options: 'no_source', 'with_source', 'time_source'
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_fold = os.path.join(SCRIPT_DIR, f'logs_multibranch_wave/{TRAINING_CASE}_{timestamp}')
     os.makedirs(output_fold, exist_ok=True)
@@ -27,10 +27,11 @@ if __name__ == "__main__":
     # Load or train model
     load_from = None # '20251126_161802'
     load_model = False  # If True, only test a pretrained model (no training)
-    resume_training = True  # If True, load a pretrained model and continue training (curriculum learning)
+    resume_training = False  # If True, load a pretrained model and continue training (curriculum learning)
 
     n_sensors_ic = 20
-    n_sensors_src = 20  # was 20
+    n_sensors_src = 20
+    n_sensors_src_t = 10 if TRAINING_CASE == 'time_source' else None
     branch_hidden = 300
     trunk_hidden = 300
     p = 300
@@ -38,7 +39,7 @@ if __name__ == "__main__":
     damping_coeff = 1.0
 
     w_pde, w_ic_u, w_ic_v = 1.0, 10.0, 10.0
-    strategy = 'ntk'  # or 'equal_init', 'ema', 'fixed', 'ntk'
+    strategy = 'fixed'  # or 'equal_init', 'ema', 'fixed', 'ntk'
 
     branch_n_hidden=2
     trunk_n_hidden=2
@@ -61,15 +62,21 @@ if __name__ == "__main__":
     lr = 1e-3
     a_range = (-0.1, 0.6)
     b_range = (-1.2, 2.0)
-    n_ic_u, n_ic_v = 3, 5 # was 2, 2
-    center_range = None if TRAINING_CASE == 'no_source' else (0.1, 0.9)
+    n_ic_u, n_ic_v = 3, 5
+    center_range = (0.1, 0.9) if TRAINING_CASE in ['with_source', 'time_source'] else None
+    center_t_range = (0.1, 0.9) if TRAINING_CASE in ['with_source', 'time_source'] else None
     T_max = 1.0
-    source_type = 'gaussian' if TRAINING_CASE == 'with_source' else 'zero'
+    source_type = 'gaussian' if TRAINING_CASE in ['with_source', 'time_source'] else 'zero'
+    # temporal_freq_range = (0.5, 1.5) if TRAINING_CASE == 'time_source' else None
+    # center_velocity_range = (-0.3, 0.3) if TRAINING_CASE == 'time_source' else None
 
     a_test = 0.5
     b_test = 2.0
 
     source_test_center = 0.17  
+    source_test_t = 0.3 if TRAINING_CASE == 'time_source' else None
+    # temporal_freq_test = 1.0
+    # center_velocity_test = 0.0
 
     gt_filename = os.path.join(SCRIPT_DIR, f'data/gt_wave1D_{TRAINING_CASE}.csv')
     T_rollout = 10.0 
@@ -82,6 +89,7 @@ if __name__ == "__main__":
         "TRAINING_CASE": TRAINING_CASE,
         "n_sensors_ic": n_sensors_ic,
         "n_sensors_src": n_sensors_src,
+        "n_sensors_src_t": n_sensors_src_t,
         "branch_hidden": branch_hidden,
         "trunk_hidden": trunk_hidden,
         "p": p,
@@ -110,9 +118,13 @@ if __name__ == "__main__":
         "center_range": center_range,
         "T_max": T_max,
         "source_type": source_type,
+        # "temporal_freq_range": temporal_freq_range,
+        # "center_velocity_range": center_velocity_range,
+        "center_t_range": center_t_range,
         "a_test": a_test,
         "b_test": b_test,
         "source_test_center": source_test_center,
+        "source_test_t": source_test_t,
         "gt_filename": gt_filename,
         "T_rollout": T_rollout,
         "dt_rollout": dt_rollout,
@@ -127,6 +139,7 @@ if __name__ == "__main__":
     model = PINNDeepONet_Wave(
         n_sensors_ic=n_sensors_ic,
         n_sensors_src=n_sensors_src,
+        n_sensors_src_t=n_sensors_src_t,
         branch_hidden=branch_hidden,
         trunk_hidden=trunk_hidden,
         p=p,
@@ -175,18 +188,21 @@ if __name__ == "__main__":
             n_colloc=n_colloc,
             n_ic=n_ic,
             lr=lr,
-            a_range=a_range,      # Displacement IC amplitude range
-            b_range=b_range,      # Initial velocity range
-            source_type=source_type,      # No forcing  
-            T_max=T_max,                # Time domain
+            a_range=a_range,
+            b_range=b_range,
+            source_type=source_type,
+            T_max=T_max,
             w_pde=w_pde,
             w_ic_u=w_ic_u,
             w_ic_v=w_ic_v,
             strategy=strategy,
-            center_range=center_range,  # Source center range
+            center_range=center_range,
             n_ic_u=n_ic_u,
             n_ic_v=n_ic_v,
-            output_fold=output_fold
+            output_fold=output_fold,
+            center_t_range=center_t_range,
+            # temporal_freq_range=temporal_freq_range,
+            # center_velocity_range=center_velocity_range
         )
 
         model_filename = os.path.join(SCRIPT_DIR, f'checkpoints/pinn_deeponet_wave_{timestamp}.pth')
@@ -219,6 +235,7 @@ if __name__ == "__main__":
                          b_test=b_test, 
                          source_type=source_type, 
                          source_center=source_test_center,
+                         source_t=source_test_t,
                          T_max=T_max, 
                          gt_data=gt_data)
     
@@ -228,31 +245,31 @@ if __name__ == "__main__":
     # ==========================================================================
     # ROLLOUT TEST (only for with_source case)
     # ==========================================================================
-    if TRAINING_CASE == 'with_source':
+    # if TRAINING_CASE == 'with_source':
         
-        # Load rollout ground truth (REQUIRED)
-        try:
-            gt_rollout = np.loadtxt(os.path.join(SCRIPT_DIR, f'data/gt_wave1D_{TRAINING_CASE}_rollout.csv'), delimiter=',')
-            print(f"✓ Loaded rollout ground truth: data/gt_wave1D_{TRAINING_CASE}_rollout.csv")
-        except FileNotFoundError:
-            print(f"✗ Rollout ground truth not found: data/gt_wave1D_{TRAINING_CASE}_rollout.csv")
-            print("  Rollout test requires ground truth data. Skipping...")
-            gt_rollout = None
+    #     # Load rollout ground truth (REQUIRED)
+    #     try:
+    #         gt_rollout = np.loadtxt(os.path.join(SCRIPT_DIR, f'data/gt_wave1D_{TRAINING_CASE}_rollout.csv'), delimiter=',')
+    #         print(f"✓ Loaded rollout ground truth: data/gt_wave1D_{TRAINING_CASE}_rollout.csv")
+    #     except FileNotFoundError:
+    #         print(f"✗ Rollout ground truth not found: data/gt_wave1D_{TRAINING_CASE}_rollout.csv")
+    #         print("  Rollout test requires ground truth data. Skipping...")
+    #         gt_rollout = None
         
-        # Run rollout test only if ground truth is available
-        if gt_rollout is not None:
-            u_roll, t_roll, x_roll, fig3 = rollout_test(
-                model, 
-                gt_data=gt_rollout,
-                T_total=T_rollout,
-                dt_interval=dt_rollout,
-                self_feeding=self_feeding,
-            )
+    #     # Run rollout test only if ground truth is available
+    #     if gt_rollout is not None:
+    #         u_roll, t_roll, x_roll, fig3 = rollout_test(
+    #             model, 
+    #             gt_data=gt_rollout,
+    #             T_total=T_rollout,
+    #             dt_interval=dt_rollout,
+    #             self_feeding=self_feeding,
+    #         )
             
-            rollout_plot_filename = os.path.join(output_fold, f'pinn_wave_rollout_{TRAINING_CASE}.png')
-            fig3.savefig(rollout_plot_filename, dpi=150, bbox_inches='tight')
-            print(f"✓ Rollout plot saved: {rollout_plot_filename}")
-            print(f"  Rollout shape: {u_roll.shape}")
+    #         rollout_plot_filename = os.path.join(output_fold, f'pinn_wave_rollout_{TRAINING_CASE}.png')
+    #         fig3.savefig(rollout_plot_filename, dpi=150, bbox_inches='tight')
+    #         print(f"✓ Rollout plot saved: {rollout_plot_filename}")
+    #         print(f"  Rollout shape: {u_roll.shape}")
     
     plt.show()
 

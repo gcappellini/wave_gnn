@@ -6,13 +6,21 @@ import os
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 def plot_solution(model, a_test=0.5, b_test=2.0, source_type='zero', 
-                  source_amplitude=1.0, source_center=0.5, T_max=1.0, gt_data=None):
+                  source_amplitude=1.0, source_center=0.5, source_t=None, T_max=1.0, gt_data=None):
     """Visualize the trained solution"""
     
     # Generate test case
     u0_sensors = model.generate_ic_sine_series(a_test)
     v0_sensors = model.generate_ic_sine_series(b_test)
-    src_sensors = model.generate_source(source_type, source_amplitude, source_center)
+    
+    if model.time_varying_source:
+        # Generate spatiotemporal source on sensor grid
+        src_grid = model.generate_source(source_type, source_amplitude, source_center, 
+                                         x=model.sensor_x_src, time_varying=True, 
+                                         t=model.sensor_t_src, center_t=source_t)
+        src_sensors = src_grid.flatten()
+    else:
+        src_sensors = model.generate_source(source_type, source_amplitude, source_center)
     
     # Create spatiotemporal grid
     nx, nt = 100, 50
@@ -28,7 +36,14 @@ def plot_solution(model, a_test=0.5, b_test=2.0, source_type='zero',
         u_pred = u_pred.reshape(nx, nt).numpy()
     
     # Source and ICs for plotting
-    src_plot = model.source_function(x_plot, source_type, source_amplitude, source_center).numpy()
+    if model.time_varying_source:
+        # For time-varying, plot at specific time source_t
+        src_plot = model.generate_source(source_type, source_amplitude, source_center, 
+                                        x=x_plot, time_varying=True, 
+                                        t=torch.tensor([source_t]), center_t=source_t).squeeze().numpy()
+    else:
+        src_plot = model.generate_source(source_type, source_amplitude, source_center, x=x_plot).numpy()
+    
     u0_plot = (model.generate_ic_sine_series(a_test, x_plot)).numpy()
     v0_plot = (model.generate_ic_sine_series(b_test, x_plot)).numpy()
 
@@ -92,7 +107,8 @@ def plot_solution(model, a_test=0.5, b_test=2.0, source_type='zero',
     ax4 = plt.subplot(2, 3, 4)
     ax4.plot(x_plot.numpy(), u0_plot, 'b-', linewidth=2, label='IC: u(x,0)')
     ax4.plot(x_plot.numpy(), v0_plot, 'g--', linewidth=2, label='IC: u_t(x,0)')
-    ax4.plot(x_plot.numpy(), src_plot, 'r-.', linewidth=2, label='Source f(x)')
+    source_label = f'Source f(x,t={source_t:.2f})' if model.time_varying_source else 'Source f(x)'
+    ax4.plot(x_plot.numpy(), src_plot, 'r-.', linewidth=2, label=source_label)
     ax4.set_xlabel('x', fontsize=12)
     ax4.set_ylabel('Value', fontsize=12)
     ax4.set_title('Initial Conditions & Forcing', fontsize=12)

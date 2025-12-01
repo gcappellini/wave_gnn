@@ -7,7 +7,7 @@ global a b T mu k t_f source_amp source_width
 T = 1;
 mu = 1;
 k = 1;
-t_f = 10;
+t_f = 1;
 source_amp = 1;    % Gaussian source amplitude
 a = 0.5;
 b = 2.0;
@@ -30,9 +30,14 @@ function f = stringforce(x, t)
     % Use floor(t) to get which second we're in, then use it as random seed
     % rng(floor(t), 'twister');  % Set random seed based on current second
     % source_center = 0.1 + 0.8 * rand();  % Random center in [0.1, 0.9]
-    source_center = 0.1 + 0.8 * mod(floor(t),10)/9;  % Deterministic center changing every second
-    % source_center = 0.17;
-    f = source_amp * exp(-((x - source_center)/source_width)^2);
+    % source_center = 0.1 + 0.8 * mod(floor(t),10)/9;  % Deterministic center changing every second
+    source_center = 0.17;
+    source_t = 0.3;  % Center time of the source pulse
+    % temporal_freq_test = 1.50;
+    % center_velocity_test = 0.2; 
+    % source_center = source_center + center_velocity_test * t;
+    % A_t = source_amp * sin(2 * pi * temporal_freq_test * t);
+    f = source_amp * exp(-((x - source_center)/source_width)^2)*exp(-((t - source_t)/source_width)^2);
 end
 
 function [c,f,s] = stringpde(x, t, u, dudx)
@@ -68,7 +73,7 @@ for i = 1:length(t)
         output_data = [output_data; x(j), t(i), stringforce(x(j), t(i)), sol(i, j, 1), sol(i, j, 2)];
     end
 end
-writematrix(output_data, '/Users/guglielmocappellini/Desktop/research/code/pinns-wave/wave-gnn/1_gcn_string/data/gt_wave1D_with_source_rollout.csv');
+writematrix(output_data, '/Users/guglielmocappellini/Desktop/research/code/pinns-wave/wave-gnn/1_gcn_string/data/gt_wave1D_time_source.csv');
 
 %% PLOT SOLUTION
 

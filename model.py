@@ -106,20 +106,22 @@ class PINNDeepONet_Wave(nn.Module):
         damping_coeff: damping coefficient k (k*u_t term)
     """
     
-    def __init__(self, n_sensors_ic=20, n_sensors_src=20, 
+    def __init__(self, n_sensors_ic=20, n_sensors_src=20, n_sensors_src_t=None,
                  branch_hidden=50, trunk_hidden=50, p=50, wave_speed=1.0, damping_coeff=1.0,
                  branch_n_hidden=2, trunk_n_hidden=4, branch_residual=False, trunk_residual=False,
                  branch_activation=None, trunk_activation=None,
                  use_fft_branch=False, fft_branch_args=None,
-                 use_fft_trunk=False, fft_trunk_args=None):
+                 use_fft_trunk=False, fft_trunk_args=None, T_max_src=1.0):
         super().__init__()
         
         self.n_sensors_ic = n_sensors_ic
         self.n_sensors_src = n_sensors_src
+        self.n_sensors_src_t = n_sensors_src_t
         self.p = p
         self.c = wave_speed  # Wave speed
         self.k = damping_coeff  # Damping coefficient
         self.domain = [0.0, 1.0]  # Spatial domain
+        self.time_varying_source = n_sensors_src_t is not None
         
         # FFT transforms if enabled
         fft_branch = FourierFeatureTransform(**(fft_branch_args or {})) if use_fft_branch else None
@@ -135,9 +137,10 @@ class PINNDeepONet_Wave(nn.Module):
             fft_transform=fft_branch
         )
         
-        # Source branch
+        # Source branch - handles spatiotemporal if n_sensors_src_t is provided
+        source_input_dim = n_sensors_src * (n_sensors_src_t if self.time_varying_source else 1)
         self.branch_source = BranchNet(
-            n_sensors_src, branch_hidden, p,
+            source_input_dim, branch_hidden, p,
             n_hidden_layers=branch_n_hidden,
             residual=branch_residual,
             activation=branch_activation,
@@ -161,6 +164,9 @@ class PINNDeepONet_Wave(nn.Module):
                             torch.linspace(self.domain[0], self.domain[1], n_sensors_ic))
         self.register_buffer('sensor_x_src', 
                             torch.linspace(self.domain[0], self.domain[1], n_sensors_src))
+        if self.time_varying_source:
+            self.register_buffer('sensor_t_src',
+                                torch.linspace(0.0, T_max_src, n_sensors_src_t))
     
     def forward(self, u0_sensors, v0_sensors, src_sensors, xt):
         """
@@ -258,34 +264,6 @@ class PINNDeepONet_Wave(nn.Module):
         
         return residual
     
-    def _generate_ic_displacement(self, a, x=None):
-        """
-        Generate displacement IC: u(x, 0) = a * sin(pi * x)
-        
-        Args:
-            a: amplitude parameter
-        
-        Returns:
-            u0_sensors: displacement IC values at sensor locations
-        """
-        if x is None:
-            x = self.sensor_x_ic
-        return a * torch.sin(np.pi * x)
-    
-    def _generate_ic_velocity(self, b, x=None):
-        """
-        Generate velocity IC: u_t(x, 0) = b * sin(pi * x)
-        
-        Args:
-            b: amplitude parameter (can be 0 for zero initial velocity)
-        
-        Returns:
-            v0_sensors: velocity IC values at sensor locations
-        """
-        if x is None:
-            x = self.sensor_x_ic
-        return b * torch.sin(np.pi * x)
-    
     def generate_ic_sine_series(self, coeffs, x=None):
         """
         Generate initial condition as a sine series:
@@ -306,62 +284,63 @@ class PINNDeepONet_Wave(nn.Module):
             u = u + a_k * torch.sin((k+1) * np.pi * x)
         return u
 
-    def generate_source(self, source_type='gaussian', amplitude=1.0, center=0.5, width=0.1):
+    def generate_source(self, source_type='gaussian', amplitude=1.0, center=0.5, width=0.1, x=None, 
+                       time_varying=False, t=None, center_t=None):
         """
-        Generate forcing f(x)
+        Generate forcing f(x) or f(x,t)
         
         Args:
             source_type: 'gaussian', 'sine', 'constant', 'zero'
-            amplitude: source strength
+            amplitude: source strength (can be callable for time-varying)
             center: center location for Gaussian source (default: 0.5)
+            width: width of Gaussian
+            x: spatial coordinates (if None, uses self.sensor_x_src)
+            time_varying: if True, source varies in time
+            t: temporal coordinates (required if time_varying=True)
+            center_t: temporal center location for moving Gaussian
         
         Returns:
-            src_sensors: source values at sensor locations
+            src: source values at spatial locations (and time if time_varying)
+                 Shape: same as x (if not time_varying) or (len(t), len(x)) if time_varying
         """
-        x = self.sensor_x_src
+        if x is None:
+            x = self.sensor_x_src
         
         if source_type == 'gaussian':
-            # Gaussian centered at specified location
-            src = amplitude * torch.exp(-((x - center) / width) ** 2)
-        elif source_type == 'sine':
-            # Sine wave
-            src = amplitude * torch.sin(2 * np.pi * x)
-        elif source_type == 'constant':
-            # Constant source
-            src = amplitude * torch.ones_like(x)
+            if not time_varying:
+                # Static Gaussian: f(x)
+                src = amplitude * torch.exp(-((x - center) / width) ** 2)
+            else:
+                # Time-varying Gaussian: f(x,t)
+                if t is None:
+                    raise ValueError("time_varying=True requires t to be provided")
+                
+                # Handle different input shapes
+                if t.dim() == 0:  # scalar time
+                    t = t.unsqueeze(0)
+                if x.dim() == 0:  # scalar space
+                    x = x.unsqueeze(0)
+                
+                # Create spatiotemporal grid: (n_t, n_x)
+                t_grid = t.view(-1, 1)  # (n_t, 1)
+                x_grid = x.view(1, -1)  # (1, n_x)
+                
+                # Time-varying amplitude: A(t) = amplitude * sin(2π * freq * t)
+                
+                # Compute spatiotemporal Gaussian
+                src = amplitude * torch.exp(-((x_grid - center) / width) ** 2)* torch.exp(-((t_grid - center_t) / width) ** 2)
+                # Shape: (n_t, n_x)
+                
         elif source_type == 'zero':
             # No forcing
-            src = torch.zeros_like(x)
+            if not time_varying or t is None:
+                src = torch.zeros_like(x)
+            else:
+                src = torch.zeros(len(t), len(x))
         else:
             raise ValueError(f"Unknown source type: {source_type}")
         
         return src
-    
-    def source_function(self, x, source_type='gaussian', amplitude=1.0, center=0.5, width=0.1):
-        """
-        Evaluate source function at arbitrary locations
-        
-        Args:
-            x: (n_points,) or scalar
-            source_type: type of source
-            amplitude: source strength
-            center: center location for Gaussian source (default: 0.5)
-        
-        Returns:
-            f: source values at x
-        """
-        if source_type == 'gaussian':
-            f = amplitude * torch.exp(-((x - center) / width) ** 2)
-        elif source_type == 'sine':
-            f = amplitude * torch.sin(2 * np.pi * x)
-        elif source_type == 'constant':
-            f = amplitude * torch.ones_like(x)
-        elif source_type == 'zero':
-            f = torch.zeros_like(x)
-        else:
-            raise ValueError(f"Unknown source type: {source_type}")
-        
-        return f
 
     def get_velocity(self, u0_sensors, v0_sensors, src_sensors, xt):
         """
@@ -390,7 +369,9 @@ class PINNDeepONet_Wave(nn.Module):
                    a_range=(-0.5, 0.5), b_range=(-2.0, 2.0), 
                    source_type='zero', source_amplitude=1.0,
                    center_range=None, T_max=1.0, w_pde=1.0, w_ic_u=10.0, w_ic_v=10.0, n_ic_u=3, n_ic_v=5, strategy='fixed',
-                   early_stopping=False, patience=1000, output_fold=os.path.join(SCRIPT_DIR, 'logs_multibranch_wave')):
+                   early_stopping=False, patience=1000, output_fold=os.path.join(SCRIPT_DIR, 'logs_multibranch_wave'),
+                   center_t_range=None,):
+                #    temporal_freq_range=None, center_velocity_range=None):
         """
         Train PINN-DeepONet with physics-informed loss
         
@@ -416,7 +397,9 @@ class PINNDeepONet_Wave(nn.Module):
         print(f"Collocation points: {n_colloc}")
         print(f"Displacement IC amplitude range: {a_range}")
         print(f"Velocity IC amplitude range: {b_range}")
-        if center_range is not None:
+        if self.time_varying_source:
+            print(f"Source: time-varying {source_type}, amplitude: {source_amplitude}")
+        elif center_range is not None:
             print(f"Source type: {source_type}, amplitude: {source_amplitude}, center range: {center_range}")
         else:
             print(f"Source type: {source_type}, amplitude: {source_amplitude}")
@@ -453,25 +436,40 @@ class PINNDeepONet_Wave(nn.Module):
             a_coeffs = sample_coeffs(n_ic_u, a_range, p=3.0)
             b_coeffs = sample_coeffs(n_ic_v, b_range)
             
-            # Sample random source center (for varying forcing location during training)
+            # Sample source parameters
             if source_type == 'gaussian':
-                # Vary center in [center_range[0], center_range[1]] for generalization
-                center_sample = center_range[0] + (center_range[1] - center_range[0]) * torch.rand(1).item()
+                center_sample = center_range[0] + (center_range[1] - center_range[0]) * torch.rand(1).item() if center_range else 0.5
             else:
                 center_sample = 0.5
             
-            # Generate ICs and source sensors
+            # Generate ICs
             u0_sensors = self.generate_ic_sine_series(a_coeffs)
             v0_sensors = self.generate_ic_sine_series(b_coeffs)
-            src_sensors = self.generate_source(source_type, source_amplitude, center_sample)
+            
+            # Generate source sensors
+            if self.time_varying_source:
+                center_t_sample = center_t_range[0] + (center_t_range[1] - center_t_range[0]) * torch.rand(1).item() if center_t_range else 0.5
+                src_grid = self.generate_source(source_type, source_amplitude, center_sample, x=self.sensor_x_src, 
+                                               time_varying=True, t=self.sensor_t_src, 
+                                               center_t =center_t_sample)
+                src_sensors = src_grid.flatten()
+            else:
+                src_sensors = self.generate_source(source_type, source_amplitude, center_sample)
+                center_t_sample = None
             
             # Sample collocation points (x, t)
             x_colloc = self.domain[0] + (self.domain[1] - self.domain[0]) * torch.rand(n_colloc)
-            t_colloc = T_max * torch.rand(n_colloc)  # t ∈ [0, T_max]
+            t_colloc = T_max * torch.rand(n_colloc)
             xt_colloc = torch.stack([x_colloc, t_colloc], dim=1)
             
             # Source values at collocation points
-            src_colloc = self.source_function(x_colloc, source_type, source_amplitude, center_sample)
+            if self.time_varying_source:
+                src_colloc_grid = self.generate_source(source_type, source_amplitude, center_sample, x=x_colloc, 
+                                                       time_varying=True, t=t_colloc,
+                                                       center_t =center_t_sample)
+                src_colloc = torch.diagonal(src_colloc_grid)
+            else:
+                src_colloc = self.generate_source(source_type, source_amplitude, center_sample, x=x_colloc)
             
             # === PDE Loss ===
             residual = self.compute_pde_residual(u0_sensors, v0_sensors, src_sensors, 
