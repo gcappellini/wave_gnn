@@ -304,19 +304,22 @@ class AdaptiveLossWeights:
     def _compute_ntk_matrices(self, context: dict) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Compute full NTK Gram matrices for the current batch and log their eigenvalues for advanced analysis.
+        Supports both 1D (xt_colloc, xt_ic) and 2D (xyt_colloc, xyt_ic) naming conventions.
+        
         Args:
             model: the PINN model (self)
-            xt_colloc: torch.Tensor, (n_colloc, 2) collocation points
-            xt_ic: torch.Tensor, (n_ic, 2) initial condition points
+            xt_colloc/xyt_colloc: torch.Tensor, (n_colloc, 2) or (n_colloc, 3) collocation points
+            xt_ic/xyt_ic: torch.Tensor, (n_ic, 2) or (n_ic, 3) initial condition points
             u0_sensors, v0_sensors, src_sensors: torch.Tensor, sensors for IC and source
             src_colloc: torch.Tensor, source values at collocation points
-            a, b: float, IC amplitudes
+            a_coeffs, b_coeffs: Tensor, IC coefficient arrays
         Returns:
             K_pde, K_ic_u, K_ic_v: NTK Gram matrices
         """
         model = context['model']
-        xt_colloc = context['xt_colloc']
-        xt_ic = context['xt_ic']
+        # Handle both 1D (xt_*) and 2D (xyt_*) naming conventions
+        xt_colloc = context['xyt_colloc'] if 'xyt_colloc' in context else context['xt_colloc']
+        xt_ic = context['xyt_ic'] if 'xyt_ic' in context else context['xt_ic']
         u0_sensors = context['u0_sensors']
         v0_sensors = context['v0_sensors']
         src_sensors = context['src_sensors']
@@ -355,7 +358,8 @@ class AdaptiveLossWeights:
 
         # --- IC_u Jacobian ---
         J_ic_u = np.zeros((n_ic, num_params))
-        u_ic_true = model.generate_ic_sine_series(a_coeffs, xt_ic[:, 0])
+        # For 2D models, pass both x and y coordinates
+        u_ic_true = model.generate_ic_sine_series(a_coeffs, xt_ic[:, 0], xt_ic[:, 1]) if xt_ic.shape[1] >= 2 else model.generate_ic_sine_series(a_coeffs, xt_ic[:, 0])
         for i in range(n_ic):
             xt = xt_ic[i:i+1].clone().detach().requires_grad_(True)
             u_pred = model.forward(u0_sensors, v0_sensors, src_sensors, xt)
@@ -377,7 +381,8 @@ class AdaptiveLossWeights:
 
         # --- IC_v Jacobian ---
         J_ic_v = np.zeros((n_ic, num_params))
-        v_ic_true = model.generate_ic_sine_series(b_coeffs, xt_ic[:, 0])
+        # For 2D models, pass both x and y coordinates
+        v_ic_true = model.generate_ic_sine_series(b_coeffs, xt_ic[:, 0], xt_ic[:, 1]) if xt_ic.shape[1] >= 2 else model.generate_ic_sine_series(b_coeffs, xt_ic[:, 0])
         for i in range(n_ic):
             xt = xt_ic[i:i+1].clone().detach().requires_grad_(True)
             u_pred = model.forward(u0_sensors, v0_sensors, src_sensors, xt)

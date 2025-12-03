@@ -5,7 +5,6 @@ import os
 from datetime import datetime
 from model_2d import PINNDeepONet_Wave2D
 from plot_2d import plot_solution_2d, plot_solution_2d_comparison, plot_training_history
-from test_2d import rollout_test_2d, plot_rollout_errors_2d, plot_rollout_snapshots_2d
 
 # Create output directories
 os.makedirs('data', exist_ok=True)
@@ -20,28 +19,39 @@ def main():
     # USER CONFIGURATION
     # ============================================================
     
-    TRAINING_CASE = 'no_source'  # Options: 'no_source', 'with_source', 'time_source'
-
+    TRAINING_CASE = 'no_source'  # Options: 'no_source', 'with_source'
+    
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_fold = os.path.join(SCRIPT_DIR, f'logs_multibranch_wave2D/{TRAINING_CASE}_{timestamp}')
     os.makedirs(output_fold, exist_ok=True)
     
     # Load or train model
-    load_from = '20251201_162128'
-    load_model = True  # If True, only test a pretrained model (no training)
+    load_from = None #'20251202_113255' 
+    load_model = False  # If True, only test a pretrained model (no training)
     resume_training = False  # If True, load a pretrained model and continue training (curriculum learning)
+                             # NOTE: If you change fft_trunk_args, set resume_training=False to use new FFT parameters!
+                             # The pretrained model's FFT weights are fixed and won't change.
     
     # Training parameters
-    n_epochs = 1000
+    n_epochs = 4000
     n_sensors_ic = 20      # Creates 20x20 grid (400 sensors)
     n_sensors_src = 20     # Creates 20x20 grid (400 sensors)
-    branch_hidden = 300
-    trunk_hidden = 300
+    branch_width = 300
+    trunk_width = 300
+    branch_depth = 4
+    trunk_depth = 4
     p = 300 
     n_colloc = 800
+    n_ic = 50
+
+    lr = 1e-3
+
+    self_feeding = False    # If True, use self-feeding during rollout test
 
     a_range = (-0.1, 0.6)   # IC displacement amplitude range
-    b_range = (0, 0)    # IC velocity amplitude
+    b_range = (-0.1, 0.1)    # IC velocity amplitude
+    center_x_range = (0.3, 0.7)  # Source center x-coordinate range
+    center_y_range = (0.3, 0.7)  # Source center y-coordinate range
     n_ic_u, n_ic_v = 2, 2
 
     use_fft_trunk=True
@@ -55,13 +65,16 @@ def main():
         "sigma_temporal_list": [1.0],
         "seed": 52
     }   
-    w_pde, w_ic_u, w_ic_v = 1.0, 10.0, 10.0
-    strategy = 'equal_init'
+    w_pde, w_ic_u, w_ic_v = 1.0, 50.0, 50.0
+    strategy = 'fixed'
     
-    # Test parameters
-    a_test = 0.5            # IC displacement amplitude
-    b_test = 0.0           # IC velocity amplitude
-    source_amplitude = 0.0
+    # Test parameters - 2D coefficient arrays (matching MATLAB)
+    # u(x,y) = 0.5*sin(π*x)*sin(π*y) + 0.3*sin(π*x)*sin(2π*y) + 0.2*sin(2π*x)*sin(π*y) + 0.1*sin(2π*x)*sin(2π*y)
+    a_test = torch.tensor([[0.5, 0.3], [0.2, 0.1]]) if TRAINING_CASE == 'no_source' else torch.tensor([[0.0, 0.0], [0.0, 0.0]])
+    
+    # v(x,y) similar structure with smaller coefficients
+    b_test = torch.tensor([[0.2, 0.1], [0.05, 0.025]]) if TRAINING_CASE == 'no_source' else torch.tensor([[0.0, 0.0], [0.0, 0.0]])
+    source_amplitude = 0.0 if TRAINING_CASE == 'no_source' else 15.0
     center_x_test = 0.35   # Source center x-coordinate
     center_y_test = 0.65   # Source center y-coordinate
     T_max = 1.0            # Training time horizon
@@ -70,11 +83,13 @@ def main():
     import json
     params = {
         "TRAINING_CASE": TRAINING_CASE,
+        "load_from": load_from,
+        "resume_training": resume_training,
         "n_sensors_ic": n_sensors_ic,
         "n_sensors_src": n_sensors_src,
         # "n_sensors_src_t": n_sensors_src_t,
-        "branch_hidden": branch_hidden,
-        "trunk_hidden": trunk_hidden,
+        "branch_width": branch_width,
+        "trunk_width": trunk_width,
         "p": p,
         # "wave_speed": wave_speed,
         # "damping_coeff": damping_coeff,
@@ -82,8 +97,8 @@ def main():
         "w_ic_u": w_ic_u,
         "w_ic_v": w_ic_v,
         "strategy": strategy,
-        # "branch_n_hidden": branch_n_hidden,
-        # "trunk_n_hidden": trunk_n_hidden,
+        "branch_depth": branch_depth,
+        "trunk_depth": trunk_depth,
         # "branch_activation": str(branch_activation),
         # "trunk_activation": str(trunk_activation),
         # "use_fft_branch": use_fft_branch,
@@ -92,24 +107,26 @@ def main():
         "fft_trunk_params": fft_trunk_args,
         "n_epochs": n_epochs,
         "n_colloc": n_colloc,
-        # "n_ic": n_ic,
-        # "lr": lr,
+        "n_ic": n_ic,
+        "lr": lr,
         "a_range": a_range,
         "b_range": b_range,
         "n_ic_u": n_ic_u,
         "n_ic_v": n_ic_v,
-        # "center_range": center_range,
+        "center_range_x": center_x_range,
+        "center_range_y": center_y_range,
         "T_max": T_max,
         # "source_type": source_type,
         # "center_t_range": center_t_range,
         "a_test": a_test,
         "b_test": b_test,
-        # "source_test_center": source_test_center,
+        "source_test_center_x": center_x_test,
+        "source_test_center_y": center_y_test,
         # "source_test_t": source_test_t,
         # "gt_filename": gt_filename,
         # "T_rollout": T_rollout,
         # "dt_rollout": dt_rollout,
-        # "self_feeding": self_feeding
+        "self_feeding": self_feeding
     }
     params_path = os.path.join(output_fold, "params.json")
     with open(params_path, "w") as f:
@@ -123,8 +140,10 @@ def main():
     model = PINNDeepONet_Wave2D(
         n_sensors_ic=n_sensors_ic,
         n_sensors_src=n_sensors_src,
-        branch_hidden=branch_hidden,
-        trunk_hidden=trunk_hidden,
+        branch_depth=branch_depth,
+        trunk_depth=trunk_depth,
+        branch_width=branch_width,
+        trunk_width=trunk_width,
         p=p,
         use_fft_trunk=use_fft_trunk,
         fft_trunk_args=fft_trunk_args
@@ -178,7 +197,8 @@ def main():
             if not os.path.exists(checkpoint_path):
                 print(f"✗ Pretrained model not found: {checkpoint_path}")
                 exit(1)
-            model.load_state_dict(torch.load(checkpoint_path))
+            checkpoint = torch.load(checkpoint_path)
+            model.load_state_dict(checkpoint['model_state_dict'])
             print(f"✓ Pretrained model loaded for curriculum learning: {checkpoint_path}\n")
         
         if TRAINING_CASE == 'with_source':
@@ -187,14 +207,17 @@ def main():
             source_type = 'zero'
         
         start_time = datetime.now()
-        history = model.train_pinn(
+        history, best_model_info = model.train_pinn(
             n_epochs=n_epochs,
             n_colloc=n_colloc,
+            n_ic=n_ic,
             a_range = a_range,
             b_range=b_range,
+            center_x_range=center_x_range,
+            center_y_range=center_y_range,
             T_max=T_max,
             source_type=source_type,
-            lr=1e-3,
+            lr=lr,
             strategy=strategy,
             output_fold=output_fold,
             n_ic_u=n_ic_u,
@@ -212,17 +235,27 @@ def main():
         torch.save({
             'model_state_dict': model.state_dict(),
             'history': history,
+            'best_model_info': best_model_info,
             'config': {
                 'n_sensors_ic': n_sensors_ic,
                 'n_sensors_src': n_sensors_src,
-                'branch_hidden': branch_hidden,
-                'trunk_hidden': trunk_hidden,
+                'branch_width': branch_width,
+                'trunk_width': trunk_width,
+                'branch_depth': branch_depth,
+                'trunk_depth': trunk_depth,
                 'p': p,
                 'TRAINING_CASE': TRAINING_CASE
             }
         }, model_filename)
         
         print(f"\nModel saved to {model_filename}")
+        print(f"\nBest Model Info:")
+        print(f"  Epoch: {best_model_info['best_epoch']}")
+        print(f"  L2 Metric: {best_model_info['best_metric']:.6e}")
+        print(f"  Loss Components:")
+        print(f"    - PDE: {best_model_info['best_losses']['pde']:.6e}")
+        print(f"    - IC_u: {best_model_info['best_losses']['ic_u']:.6e}")
+        print(f"    - IC_v: {best_model_info['best_losses']['ic_v']:.6e}")
         
         # ============================================================
         # PLOT TRAINING HISTORY
@@ -242,35 +275,27 @@ def main():
     else:
         source_type = 'zero'
         
-    if gt_data is not None:
-        fig_solution = plot_solution_2d_comparison(
-            model, 
-            a_test=a_test, 
-            b_test=b_test, 
-            source_type=source_type,
-            source_amplitude=source_amplitude,
-            center_x=center_x_test,
-            center_y=center_y_test,
-            T_max=T_max,
-            gt_data=gt_data
-        )
-        solution_plot_filename = os.path.join(output_fold, f'pinn_wave_solution_{TRAINING_CASE}.png')
-        fig_solution.savefig(solution_plot_filename, dpi=150, bbox_inches='tight')
-        print(f"Solution comparison saved to {solution_plot_filename}")
-    else:
-        fig_solution = plot_solution_2d(
-            model,
-            a_test=a_test,
-            b_test=b_test,
-            source_type=source_type,
-            source_amplitude=source_amplitude,
-            center_x=center_x_test,
-            center_y=center_y_test,
-            T_max=T_max
-        )
-        solution_plot_filename = os.path.join(output_fold, f'pinn_wave_solution_{TRAINING_CASE}.png')
-        fig_solution.savefig(solution_plot_filename, dpi=150, bbox_inches='tight')
-        print(f"Solution snapshots saved to {solution_plot_filename}")
+    fig_solution, metrics = plot_solution_2d_comparison(
+        model, 
+        a_test=a_test, 
+        b_test=b_test, 
+        source_type=source_type,
+        source_amplitude=source_amplitude,
+        center_x=center_x_test,
+        center_y=center_y_test,
+        T_max=T_max,
+        gt_data=gt_data
+    )
+    metrics["training_time"] = str(training_time) if 'training_time' in locals() else None
+    # Save metrics to txt file in output folder
+    metrics_txt_path = os.path.join(output_fold, "metrics.txt")
+    with open(metrics_txt_path, "w") as f:
+        for k, v in metrics.items():
+            f.write(f"{k}: {v}\n")
+    print(f"Metrics saved to {metrics_txt_path}")
+    solution_plot_filename = os.path.join(output_fold, f'pinn_wave_solution_{TRAINING_CASE}.png')
+    fig_solution.savefig(solution_plot_filename, dpi=150, bbox_inches='tight')
+    print(f"Solution comparison saved to {solution_plot_filename}")
     
     # ===========================================================
     # ROLLOUT TEST
@@ -285,7 +310,8 @@ def main():
     #         model,
     #         gt_rollout_data,
     #         n_intervals=10,
-    #         dt_interval=1.0
+    #         dt_interval=1.0,
+    #         self_feeding=self_feeding
     #     )
         
     #     # Plot rollout errors

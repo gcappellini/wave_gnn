@@ -131,6 +131,8 @@ def plot_solution_2d_comparison(model, a_test=0.5, b_test=0.0, source_type='zero
             'Y_pred': Y_pred,
             'u_pred_grid': u_pred_grid
         })
+
+    metrics = {}
     
     # Second pass: plot with global color limits
     for row_idx, grid_data in enumerate(all_grids):
@@ -178,9 +180,40 @@ def plot_solution_2d_comparison(model, a_test=0.5, b_test=0.0, source_type='zero
         print(f"Max error: {np.nanmax(error):.6e}")
         print(f"Mean error: {np.nanmean(error):.6e}")
         print(f"Relative L2: {rel_l2:.6e}")
+        
+        metrics[t_selected] = {
+            'max_error': np.nanmax(error),
+            'mean_error': np.nanmean(error),
+            'rel_l2': rel_l2,
+            'error_grid': error.flatten()  # Store flattened error for global L2 calculation
+        }
+
     
     plt.tight_layout()
-    return fig
+    
+    # Transform metrics dictionary
+    time_errors = {t: m for t, m in metrics.items() if isinstance(m, dict)}
+    
+    metrics['global_mean_error'] = np.nanmean([m['mean_error'] for m in time_errors.values()])
+    metrics['global_max_error'] = np.nanmax([m['max_error'] for m in time_errors.values()])
+    
+    # Compute global L2 error across all time snapshots
+    all_errors = np.concatenate([m['error_grid'] for m in time_errors.values() if 'error_grid' in m])
+    metrics['global_l2_error'] = np.linalg.norm(all_errors)
+    
+    # Find errors at t=0 and t=1
+    t_values_list = sorted(time_errors.keys())
+    if len(t_values_list) > 0:
+        t_0_error = time_errors[t_values_list[0]]
+        metrics['t0_mean_error'] = t_0_error['mean_error']
+        metrics['t0_max_error'] = t_0_error['max_error']
+    
+    if len(t_values_list) > 0:
+        t_1_error = time_errors[t_values_list[-1]]
+        metrics['t1_mean_error'] = t_1_error['mean_error']
+        metrics['t1_max_error'] = t_1_error['max_error']
+    
+    return fig, metrics
 
 
 def plot_training_history(history):

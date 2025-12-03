@@ -8,7 +8,19 @@ warnings.filterwarnings('ignore')
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
-def sample_coeffs(n, base_range, p=1.5):
+def sample_coeffs(n, base_range, p=1.5, as_2d=False):
+    """
+    Sample coefficients with decreasing range per mode.
+    
+    Args:
+        n: Number of modes (for 1D) or modes per dimension (for 2D)
+        base_range: (min, max) range for first mode
+        p: Power law decay exponent
+        as_2d: If True, returns (n, n) 2D tensor with different x,y modes
+    
+    Returns:
+        1D tensor of shape (n,) or 2D tensor of shape (n, n)
+    """
     coeffs = []
     for k in range(n):
         # Range decreases with k (first coeff full range, then shrinks)
@@ -16,7 +28,24 @@ def sample_coeffs(n, base_range, p=1.5):
         r0, r1 = base_range
         coeff_range = (r0 * scale, r1 * scale) if k > 0 else (r0, r1)
         coeffs.append(torch.FloatTensor(1).uniform_(*coeff_range).item())
-    return torch.tensor(coeffs) 
+    
+    coeffs_1d = torch.tensor(coeffs)
+    
+    if as_2d:
+        # Create 2D coefficient matrix: different values for each (k, l) mode
+        coeffs_2d = torch.zeros(n, n)
+        for k in range(n):
+            for l in range(n):
+                # Use product of 1D scales for each dimension
+                scale_k = 1.0 / (k + 1) ** p
+                scale_l = 1.0 / (l + 1) ** p
+                scale_combined = scale_k * scale_l
+                r0, r1 = base_range
+                coeff_range = (r0 * scale_combined, r1 * scale_combined) if k > 0 and l > 0 else (r0, r1)
+                coeffs_2d[k, l] = torch.FloatTensor(1).uniform_(*coeff_range).item()
+        return coeffs_2d
+    else:
+        return coeffs_1d 
 
 class BranchNet(nn.Module):
     """Branch network: encodes function inputs from sensor measurements"""
@@ -104,7 +133,7 @@ class PINNDeepONet_Wave2D(nn.Module):
     """
     
     def __init__(self, n_sensors_ic=20, n_sensors_src=20, 
-                 branch_hidden=100, trunk_hidden=100, p=100, wave_speed=1.0, damping_coeff=1.0, use_fft_trunk=False, fft_trunk_args=None):
+                 branch_width=100, trunk_width=100, branch_depth=4, trunk_depth=4, p=100, wave_speed=1.0, damping_coeff=1.0, use_fft_trunk=False, fft_trunk_args=None):
         super().__init__()
         
         self.n_sensors_ic = n_sensors_ic
@@ -117,13 +146,13 @@ class PINNDeepONet_Wave2D(nn.Module):
         fft_trunk = FourierFeatureTransform(**(fft_trunk_args or {})) if use_fft_trunk else None
         
         # IC branch: takes BOTH u0 and v0 sensors (2D grids flattened)
-        self.branch_ic = BranchNet(2 * n_sensors_ic * n_sensors_ic, branch_hidden, 2 * p)
+        self.branch_ic = BranchNet(2 * n_sensors_ic * n_sensors_ic, branch_width, 2 * p, n_hidden_layers=branch_depth)
         
         # Source branch: 2D grid flattened
-        self.branch_source = BranchNet(n_sensors_src * n_sensors_src, branch_hidden, p)
+        self.branch_source = BranchNet(n_sensors_src * n_sensors_src, branch_width, p, n_hidden_layers=branch_depth)
         
         # Trunk network for (x, y, t)
-        self.trunk = TrunkNet(trunk_hidden, p, fft_transform=fft_trunk)
+        self.trunk = TrunkNet(trunk_width, p, n_hidden_layers=trunk_depth, fft_transform=fft_trunk)
         
         # Bias term
         self.bias = nn.Parameter(torch.zeros(1))
@@ -219,22 +248,15 @@ class PINNDeepONet_Wave2D(nn.Module):
         
         return residual
     
-    # def _generate_ic_displacement(self, a):
-    #     """u(x,y,0) = a * sin(π*x) * sin(π*y)"""
-    #     return a * torch.sin(np.pi * self.sensor_x_ic) * torch.sin(np.pi * self.sensor_y_ic)
-    
-    # def _generate_ic_velocity(self, b):
-    #     """u_t(x,y,0) = b * sin(π*x) * sin(π*y)"""
-    #     return b * torch.sin(np.pi * self.sensor_x_ic) * torch.sin(np.pi * self.sensor_y_ic)
-    
     def generate_ic_sine_series(self, coeffs, x=None, y=None):
         """
         Generate initial condition as a 2D sine series:
-            - Single scalar: u(x, y) = coeff * sin(π*x) * sin(π*y)
-            - Array (1D): u(x, y) = sum_k coeffs[k] * sin((k+1)*π*x) * sin((k+1)*π*y)
+            - Scalar: u(x, y) = coeff * sin(π*x) * sin(π*y)
+            - 1D array: u(x, y) = sum_k coeffs[k] * sin((k+1)*π*x) * sin((k+1)*π*y)
+            - 2D array: u(x, y) = sum_k,l coeffs[k,l] * sin((k+1)*π*x) * sin((l+1)*π*y)
         
         Args:
-            coeffs: scalar or 1D tensor of coefficients
+            coeffs: scalar, 1D tensor (shape: n,) or 2D tensor (shape: n, n)
             x: tensor of x sensor locations (default: self.sensor_x_ic)
             y: tensor of y sensor locations (default: self.sensor_y_ic)
         
@@ -252,11 +274,22 @@ class PINNDeepONet_Wave2D(nn.Module):
         # Handle scalar coefficient
         if coeffs.dim() == 0:
             u = coeffs * torch.sin(np.pi * x) * torch.sin(np.pi * y)
-        else:
-            # Handle 1D array of coefficients (multi-mode)
+        
+        # Handle 1D array of coefficients (symmetric x-y modes)
+        elif coeffs.dim() == 1:
             u = torch.zeros_like(x)
             for k in range(coeffs.shape[0]):
                 u = u + coeffs[k] * torch.sin((k + 1) * np.pi * x) * torch.sin((k + 1) * np.pi * y)
+        
+        # Handle 2D array of coefficients (independent x-y modes)
+        elif coeffs.dim() == 2:
+            u = torch.zeros_like(x)
+            for k in range(coeffs.shape[0]):
+                for l in range(coeffs.shape[1]):
+                    u = u + coeffs[k, l] * torch.sin((k + 1) * np.pi * x) * torch.sin((l + 1) * np.pi * y)
+        
+        else:
+            raise ValueError(f"coeffs must be 0D (scalar), 1D, or 2D tensor, got {coeffs.dim()}D")
         
         return u
     
@@ -289,10 +322,10 @@ class PINNDeepONet_Wave2D(nn.Module):
         
         return f
     
-    def train_pinn(self, n_epochs=5000, n_colloc=500, lr=1e-3, 
+    def train_pinn(self, n_epochs=5000, n_colloc=500, n_ic=200, lr=1e-3, 
                    a_range=(-1.5, 1.5), b_range=(0.0, 0.0), 
                    source_type='zero', source_amplitude=15.0, w_pde=1.0, w_ic_u=10.0, w_ic_v=10.0, strategy='fixed',
-                   center_x=0.5, center_y=0.5, center_range=(0.1, 0.9), n_ic_u=2, n_ic_v=2, T_max=1.0, output_fold=os.path.join(SCRIPT_DIR, 'logs_multibranch_wave')):
+                   center_x=0.5, center_y=0.5, center_y_range=(0.3, 0.7), center_x_range=(0.3, 0.7), n_ic_u=2, n_ic_v=2, T_max=1.0, output_fold=os.path.join(SCRIPT_DIR, 'logs_multibranch_wave')):
         """
         Train PINN-DeepONet for 2D wave equation
         
@@ -302,8 +335,8 @@ class PINNDeepONet_Wave2D(nn.Module):
         print(f"Epochs: {n_epochs}")
         print(f"Collocation points: {n_colloc}")
         print(f"a range: {a_range}, b range: {b_range}")
-        if center_range is not None:
-            print(f"Source: {source_type}, amplitude: {source_amplitude}, center range: {center_range}")
+        if center_x_range is not None and center_y_range is not None:
+            print(f"Source: {source_type}, amplitude: {source_amplitude}, center x range: {center_x_range}, center y range: {center_y_range}")
         else:
             print(f"Source: {source_type}, amplitude: {source_amplitude}, center: ({center_x}, {center_y})")
         print(f"Wave speed: {self.c}, Damping: {self.k}")
@@ -325,18 +358,21 @@ class PINNDeepONet_Wave2D(nn.Module):
         best_loss = float('inf')
         best_model_state = None
         best_epoch = 0
+        best_losses = {'pde': float('inf'), 'ic_u': float('inf'), 'ic_v': float('inf')}
+        
+        # Print initial weights only for fixed strategy
+        if strategy == 'fixed':
+            print(f"\nInitial Weights -> PDE: {initial_weights['PDE']:.2e}, IC_u: {initial_weights['IC_u']:.2e}, IC_v: {initial_weights['IC_v']:.2e}\n")
         
         for epoch in range(n_epochs):
-            # Sample random IC amplitudes
-            # a = a_range[0] + (a_range[1] - a_range[0]) * torch.rand(1).item()
-            # b = b_range[0] + (b_range[1] - b_range[0]) * torch.rand(1).item()
-            a_coeffs = sample_coeffs(n_ic_u, a_range, p=3.0)
-            b_coeffs = sample_coeffs(n_ic_v, b_range)
+            # Sample random IC amplitudes with independent x and y modes
+            a_coeffs = sample_coeffs(n_ic_u, a_range, p=3.0, as_2d=True)
+            b_coeffs = sample_coeffs(n_ic_v, b_range, as_2d=True)
             
             # Sample random source center
-            if center_range is not None and source_type == 'gaussian':
-                cx = center_range[0] + (center_range[1] - center_range[0]) * torch.rand(1).item()
-                cy = center_range[0] + (center_range[1] - center_range[0]) * torch.rand(1).item()
+            if center_x_range is not None and center_y_range is not None and source_type == 'gaussian':
+                cx = center_x_range[0] + (center_x_range[1] - center_x_range[0]) * torch.rand(1).item()
+                cy = center_y_range[0] + (center_y_range[1] - center_y_range[0]) * torch.rand(1).item()
             else:
                 cx, cy = center_x, center_y
             
@@ -360,7 +396,6 @@ class PINNDeepONet_Wave2D(nn.Module):
             loss_pde = torch.mean(residual ** 2)
             
             # Displacement IC Loss
-            n_ic = 50
             x_ic_1d = torch.linspace(self.domain[0], self.domain[1], n_ic)
             y_ic_1d = torch.linspace(self.domain[0], self.domain[1], n_ic)
             X_ic, Y_ic = torch.meshgrid(x_ic_1d, y_ic_1d, indexing='ij')
@@ -400,6 +435,18 @@ class PINNDeepONet_Wave2D(nn.Module):
                 'b_coeffs': b_coeffs,
                 'output_fold': output_fold
             }
+            
+            # Subsample for NTK computation (reduce from 800/2500 to ~100/200 points)
+            if strategy == 'ntk':
+                n_pde_subsample = min(100, xyt_colloc.shape[0])
+                n_ic_subsample = min(200, xyt_ic.shape[0])
+                
+                idx_pde = torch.randperm(xyt_colloc.shape[0])[:n_pde_subsample]
+                idx_ic = torch.randperm(xyt_ic.shape[0])[:n_ic_subsample]
+                
+                context['xyt_colloc'] = xyt_colloc[idx_pde]
+                context['src_colloc'] = src_colloc[idx_pde]
+                context['xyt_ic'] = xyt_ic[idx_ic]
 
             weights = adaptive_weights.update(epoch, context) if strategy != 'fixed' else initial_weights
             loss_total = weights['PDE'] * loss_pde + weights['IC_u'] * loss_ic_u + weights['IC_v'] * loss_ic_v
@@ -415,14 +462,25 @@ class PINNDeepONet_Wave2D(nn.Module):
             history['ic_u'].append(loss_ic_u.item())
             history['ic_v'].append(loss_ic_v.item())
             
-            # Save best model
-            if loss_total.item() < best_loss:
-                best_loss = loss_total.item()
+            # Save best model based on L2 norm of unweighted losses
+            # This is independent of adaptive weighting scheme
+            unweighted_metric = np.sqrt(loss_pde.item()**2 + loss_ic_u.item()**2 + loss_ic_v.item()**2)
+            # unweighted_metric = np.sqrt(loss_pde.item() + loss_ic_u.item() + loss_ic_v.item())
+            if unweighted_metric < best_loss:
+                best_loss = unweighted_metric
                 best_model_state = {key: value.cpu().clone() for key, value in self.state_dict().items()}
                 best_epoch = epoch
+                best_losses = {
+                    'pde': loss_pde.item(),
+                    'ic_u': loss_ic_u.item(),
+                    'ic_v': loss_ic_v.item()
+                }
             
             scheduler.step(loss_total)
-            
+
+            if strategy == 'equal_init' and epoch == 2:
+                print(f"\nInitial Weights -> PDE: {weights['PDE']:.2e}, IC_u: {weights['IC_u']:.2e}, IC_v: {weights['IC_v']:.2e}\n")
+                
             if epoch % 500 == 0 or epoch == n_epochs - 1:
                 current_lr = optimizer.param_groups[0]['lr']
                 # Diagnostic: check prediction scale
@@ -433,10 +491,10 @@ class PINNDeepONet_Wave2D(nn.Module):
                       f"PDE: {loss_pde.item():.6f} | IC_u: {loss_ic_u.item():.6f} | "
                       f"IC_v: {loss_ic_v.item():.6f} | LR: {current_lr:.2e} | "
                       f"u_range: [{u_min:.3f}, {u_max:.3f}]")
-                if strategy != 'fixed':
+                if strategy not in ['fixed', 'equal_init']:
                     print(f"          Weights -> PDE: {weights['PDE']:.2e}, IC_u: {weights['IC_u']:.2e}, IC_v: {weights['IC_v']:.2e}")
         
-        if strategy != 'fixed':
+        if strategy not in ['fixed', 'equal_init']:
             adaptive_weights.plot_weights_evolution(output_fold)
             if strategy == 'ntk':
                 adaptive_weights.plot_ntk_traces(output_fold)
@@ -444,10 +502,11 @@ class PINNDeepONet_Wave2D(nn.Module):
         # Restore best model
         if best_model_state is not None:
             self.load_state_dict(best_model_state)
-            print(f"\n✓ Restored best model from epoch {best_epoch} with loss {best_loss:.6f}")
+            print(f"\n✓ Restored best model from epoch {best_epoch} with metric {best_loss:.6f}")
+            print(f"  Best model loss components -> PDE: {best_losses['pde']:.6e}, IC_u: {best_losses['ic_u']:.6e}, IC_v: {best_losses['ic_v']:.6e}")
         
         print("\n✓ Training complete!\n")
-        return history
+        return history, {'best_epoch': best_epoch, 'best_metric': best_loss, 'best_losses': best_losses}
 
 
 class FourierFeatureTransform(nn.Module):

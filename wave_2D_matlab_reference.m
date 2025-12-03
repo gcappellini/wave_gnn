@@ -15,13 +15,20 @@ wave_speed = 1;
 d = 1;
 a = 0;
 m = 1;
-u0_coeff = 0.5;
-v0_coeff = 0.0;
+
+% 2D coefficient arrays for IC (n=2): independent x and y modes
+% u(x,y) = 0.5*sin(π*x)*sin(π*y) + 0.3*sin(π*x)*sin(2π*y) + 0.2*sin(2π*x)*sin(π*y) + 0.1*sin(2π*x)*sin(2π*y)
+% u0_coeffs = [0.5, 0.3; 0.2, 0.1];
+u0_coeffs = [0.0, 0.0; 0.0, 0.0];
+
+% v(x,y) similar structure
+% v0_coeffs = [0.2, 0.1; 0.05, 0.025];
+v0_coeffs = [0.0, 0.0; 0.0, 0.0];
 
 source_center_x = 0.35;
 source_center_y = 0.65;
 source_width=0.3;
-source_amp = 0; %15.0;
+source_amp = 15.0;
 
 numberOfPDE = 1;
 model = createpde(numberOfPDE);
@@ -86,8 +93,16 @@ end
 boundary_nodes = unique(boundary_nodes) - 1; % 0-indexed for Python
 writematrix(boundary_nodes, '/Users/guglielmocappellini/Desktop/research/code/pinns-wave/wave-gnn/1_gcn_string/logs_multibranch_wave2D/boundary_nodes.csv');
 
-u0 = @(location) u0_coeff*sin(pi*location.x).*sin(pi*location.y);% v0_coeff*sin(pi*location.x).*sin(pi*location.y)];% atan(cos(pi/2*location.x));
-ut0 = @(location) v0_coeff*sin(pi*location.x).*sin(pi*location.y);% 3*sin(pi*location.x).*exp(sin(pi/2*location.y));
+u0 = @(location) (u0_coeffs(1,1)*sin(pi*location.x).*sin(pi*location.y) + ...
+                   u0_coeffs(1,2)*sin(pi*location.x).*sin(2*pi*location.y) + ...
+                   u0_coeffs(2,1)*sin(2*pi*location.x).*sin(pi*location.y) + ...
+                   u0_coeffs(2,2)*sin(2*pi*location.x).*sin(2*pi*location.y));
+
+ut0 = @(location) (v0_coeffs(1,1)*sin(pi*location.x).*sin(pi*location.y) + ...
+                   v0_coeffs(1,2)*sin(pi*location.x).*sin(2*pi*location.y) + ...
+                   v0_coeffs(2,1)*sin(2*pi*location.x).*sin(pi*location.y) + ...
+                   v0_coeffs(2,2)*sin(2*pi*location.x).*sin(2*pi*location.y));
+
 
 setInitialConditions(model,u0, ut0);
 
@@ -177,6 +192,6 @@ f_flat = source_amp * exp(-r2 / source_width^2);
 output_data = [x_flat, y_flat, t_flat, f_flat, u_flat, v_flat];
 
 % Write to CSV
-writematrix(output_data, '/Users/guglielmocappellini/Desktop/research/code/pinns-wave/wave-gnn/1_gcn_string/data/gt_wave2D_no_source.csv');
+writematrix(output_data, '/Users/guglielmocappellini/Desktop/research/code/pinns-wave/wave-gnn/1_gcn_string/data/gt_wave2D_with_source.csv');
 
 fprintf('CSV export complete: %d rows x %d columns\n', size(output_data,1), size(output_data,2));
