@@ -38,12 +38,12 @@ def main():
     n_sensors_ic = 40      # Creates 20x20 grid (400 sensors)
     n_sensors_src = 20     # Creates 20x20 grid (400 sensors)
     branch_width = 300
-    trunk_width = 300
+    trunk_width = 512
     branch_act=nn.LeakyReLU()
     trunk_act=nn.Tanh()
     branch_depth = 4
     trunk_depth = 6
-    p = 512 
+    p = 300 
     n_colloc = 800
     n_ic = 50
 
@@ -256,7 +256,7 @@ def main():
         print(f"\nModel saved to {model_filename}")
         print(f"\nBest Model Info:")
         print(f"  Epoch: {best_model_info['best_epoch']}")
-        print(f"  L2 Metric: {best_model_info['best_metric']:.6e}")
+        print(f"  L2 Metric: {best_model_info['best_test_metric']:.6e}")
         print(f"  Loss Components:")
         print(f"    - PDE: {best_model_info['best_losses']['pde']:.6e}")
         print(f"    - IC_u: {best_model_info['best_losses']['ic_u']:.6e}")
@@ -300,10 +300,10 @@ def main():
         metrics['best_pde_loss'] = best_model_info['best_losses']['pde']
         metrics['best_ic_u_loss'] = best_model_info['best_losses']['ic_u']
         metrics['best_ic_v_loss'] = best_model_info['best_losses']['ic_v']
-        metrics['selection_method'] = best_model_info['selection_method']
-        metrics['test_n_cases'] = best_model_info['n_test_cases']
-        metrics['test_eval_freq'] = best_model_info['eval_freq']
-        metrics['test_early_stopping_patience'] = best_model_info['early_stopping_patience']
+        # metrics['selection_method'] = best_model_info['selection_method']
+        # metrics['test_n_cases'] = best_model_info['n_test_cases']
+        # metrics['test_eval_freq'] = best_model_info['eval_freq']
+        # metrics['test_early_stopping_patience'] = best_model_info['early_stopping_patience']
     
     # Save metrics to txt file in output folder
     metrics_txt_path = os.path.join(output_fold, "metrics.txt")
