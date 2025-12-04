@@ -133,7 +133,7 @@ class PINNDeepONet_Wave2D(nn.Module):
     """
     
     def __init__(self, n_sensors_ic=20, n_sensors_src=20, 
-                 branch_width=100, trunk_width=100, branch_depth=4, trunk_depth=4, p=100, wave_speed=1.0, damping_coeff=1.0, use_fft_trunk=False, fft_trunk_args=None):
+                 branch_width=100, trunk_width=100, branch_depth=4, trunk_depth=4, p=100, wave_speed=1.0, damping_coeff=1.0, branch_activation=nn.LeakyReLU(), trunk_activation=nn.Tanh(), use_fft_trunk=False, fft_trunk_args=None):
         super().__init__()
         
         self.n_sensors_ic = n_sensors_ic
@@ -146,13 +146,13 @@ class PINNDeepONet_Wave2D(nn.Module):
         fft_trunk = FourierFeatureTransform(**(fft_trunk_args or {})) if use_fft_trunk else None
         
         # IC branch: takes BOTH u0 and v0 sensors (2D grids flattened)
-        self.branch_ic = BranchNet(2 * n_sensors_ic * n_sensors_ic, branch_width, 2 * p, n_hidden_layers=branch_depth)
+        self.branch_ic = BranchNet(2 * n_sensors_ic * n_sensors_ic, branch_width, 2 * p, n_hidden_layers=branch_depth, activation=branch_activation)
         
         # Source branch: 2D grid flattened
-        self.branch_source = BranchNet(n_sensors_src * n_sensors_src, branch_width, p, n_hidden_layers=branch_depth)
+        self.branch_source = BranchNet(n_sensors_src * n_sensors_src, branch_width, p, n_hidden_layers=branch_depth, activation=branch_activation)
         
         # Trunk network for (x, y, t)
-        self.trunk = TrunkNet(trunk_width, p, n_hidden_layers=trunk_depth, fft_transform=fft_trunk)
+        self.trunk = TrunkNet(trunk_width, p, n_hidden_layers=trunk_depth, fft_transform=fft_trunk, activation=trunk_activation)
         
         # Bias term
         self.bias = nn.Parameter(torch.zeros(1))
@@ -325,12 +325,15 @@ class PINNDeepONet_Wave2D(nn.Module):
     def train_pinn(self, n_epochs=5000, n_colloc=500, n_ic=200, lr=1e-3, 
                    a_range=(-1.5, 1.5), b_range=(0.0, 0.0), 
                    source_type='zero', source_amplitude=15.0, w_pde=1.0, w_ic_u=10.0, w_ic_v=10.0, strategy='fixed',
-                   center_x=0.5, center_y=0.5, center_y_range=(0.3, 0.7), center_x_range=(0.3, 0.7), n_ic_u=2, n_ic_v=2, T_max=1.0, output_fold=os.path.join(SCRIPT_DIR, 'logs_multibranch_wave')):
+                   center_x=0.5, center_y=0.5, center_y_range=(0.3, 0.7), center_x_range=(0.3, 0.7), n_ic_u=2, n_ic_v=2, T_max=1.0, output_fold=os.path.join(SCRIPT_DIR, 'logs_multibranch_wave'), eval_freq=100, n_test_cases=50, early_stopping_patience=100, test_seed=42):
         """
-        Train PINN-DeepONet for 2D wave equation
+        Train PINN-DeepONet for 2D wave equation with early stopping based on test loss
         
         Args:
-            center_range: if provided, tuple (min, max) for random center sampling
+            eval_freq: Evaluate test loss every N epochs
+            n_test_cases: Number of random test cases (fixed seed)
+            early_stopping_patience: Stop if no improvement for N epochs
+            test_seed: Random seed for test set generation (deterministic)
         """
         print(f"Epochs: {n_epochs}")
         print(f"Collocation points: {n_colloc}")
@@ -340,6 +343,25 @@ class PINNDeepONet_Wave2D(nn.Module):
         else:
             print(f"Source: {source_type}, amplitude: {source_amplitude}, center: ({center_x}, {center_y})")
         print(f"Wave speed: {self.c}, Damping: {self.k}")
+        print(f"Early stopping: patience={early_stopping_patience}, eval_freq={eval_freq}, n_test_cases={n_test_cases}\n")
+        
+        # Generate deterministic test set with fixed seed
+        test_rng = np.random.RandomState(test_seed)
+        test_cases = []
+        for _ in range(n_test_cases):
+            a_test = sample_coeffs(n_ic_u, a_range, p=3.0, as_2d=True)
+            b_test = sample_coeffs(n_ic_v, b_range, p=3.0, as_2d=True)
+            if center_x_range is not None and center_y_range is not None and source_type == 'gaussian':
+                cx_test = test_rng.uniform(center_x_range[0], center_x_range[1])
+                cy_test = test_rng.uniform(center_y_range[0], center_y_range[1])
+            else:
+                cx_test, cy_test = center_x, center_y
+            test_cases.append({
+                'a_coeffs': a_test,
+                'b_coeffs': b_test,
+                'center_x': cx_test,
+                'center_y': cy_test
+            })
         
         initial_weights = {'PDE': w_pde, 'IC_u': w_ic_u, 'IC_v': w_ic_v}
         adaptive_weights = AdaptiveLossWeights(
@@ -352,17 +374,18 @@ class PINNDeepONet_Wave2D(nn.Module):
             optimizer, mode='min', factor=0.5, patience=500, verbose=True
         )
         
-        history = {'total': [], 'pde': [], 'ic_u': [], 'ic_v': []}
+        history = {'total': [], 'pde': [], 'ic_u': [], 'ic_v': [], 'test_metric': []}
         
-        # Track best model
-        best_loss = float('inf')
+        # Track best model based on TEST loss
+        best_test_loss = float('inf')
         best_model_state = None
         best_epoch = 0
         best_losses = {'pde': float('inf'), 'ic_u': float('inf'), 'ic_v': float('inf')}
+        epochs_without_improvement = 0
         
         # Print initial weights only for fixed strategy
         if strategy == 'fixed':
-            print(f"\nInitial Weights -> PDE: {initial_weights['PDE']:.2e}, IC_u: {initial_weights['IC_u']:.2e}, IC_v: {initial_weights['IC_v']:.2e}\n")
+            print(f"Initial Weights -> PDE: {initial_weights['PDE']:.2e}, IC_u: {initial_weights['IC_u']:.2e}, IC_v: {initial_weights['IC_v']:.2e}\n")
         
         for epoch in range(n_epochs):
             # Sample random IC amplitudes with independent x and y modes
@@ -462,19 +485,83 @@ class PINNDeepONet_Wave2D(nn.Module):
             history['ic_u'].append(loss_ic_u.item())
             history['ic_v'].append(loss_ic_v.item())
             
-            # Save best model based on L2 norm of unweighted losses
-            # This is independent of adaptive weighting scheme
-            unweighted_metric = np.sqrt(loss_pde.item()**2 + loss_ic_u.item()**2 + loss_ic_v.item()**2)
-            # unweighted_metric = np.sqrt(loss_pde.item() + loss_ic_u.item() + loss_ic_v.item())
-            if unweighted_metric < best_loss:
-                best_loss = unweighted_metric
-                best_model_state = {key: value.cpu().clone() for key, value in self.state_dict().items()}
-                best_epoch = epoch
-                best_losses = {
-                    'pde': loss_pde.item(),
-                    'ic_u': loss_ic_u.item(),
-                    'ic_v': loss_ic_v.item()
-                }
+            # Evaluate on test set every eval_freq epochs
+            if (epoch + 1) % eval_freq == 0:
+                test_metric = 0.0
+                with torch.no_grad():
+                    for test_case in test_cases:
+                        u0_test = self.generate_ic_sine_series(test_case['a_coeffs'])
+                        v0_test = self.generate_ic_sine_series(test_case['b_coeffs'])
+                        src_test = self.generate_source(source_type, source_amplitude, test_case['center_x'], test_case['center_y'])
+                        
+                        # Sample test collocation and IC points
+                        x_test_colloc = self.domain[0] + (self.domain[1] - self.domain[0]) * torch.rand(n_colloc)
+                        y_test_colloc = self.domain[0] + (self.domain[1] - self.domain[0]) * torch.rand(n_colloc)
+                        t_test_colloc = T_max * torch.rand(n_colloc)
+                        xyt_test_colloc = torch.stack([x_test_colloc, y_test_colloc, t_test_colloc], dim=1)
+                        src_test_colloc = self.source_function(x_test_colloc, y_test_colloc, source_type, source_amplitude, test_case['center_x'], test_case['center_y'])
+                        
+                        # Test PDE loss
+                        xyt_test_grad = xyt_test_colloc.clone().requires_grad_(True)
+                        u_test = self.forward(u0_test, v0_test, src_test, xyt_test_grad)
+                        grad_u_test = torch.autograd.grad(u_test, xyt_test_grad, torch.ones_like(u_test), create_graph=True)[0]
+                        u_x_test = grad_u_test[:, 0]
+                        u_y_test = grad_u_test[:, 1]
+                        u_t_test = grad_u_test[:, 2]
+                        u_xx_test = torch.autograd.grad(u_x_test, xyt_test_grad, torch.ones_like(u_x_test), create_graph=True)[0][:, 0]
+                        u_yy_test = torch.autograd.grad(u_y_test, xyt_test_grad, torch.ones_like(u_y_test), create_graph=True)[0][:, 1]
+                        u_tt_test = torch.autograd.grad(u_t_test, xyt_test_grad, torch.ones_like(u_t_test), create_graph=True)[0][:, 2]
+                        residual_test = u_tt_test + self.k * u_t_test - self.c**2 * (u_xx_test + u_yy_test) - src_test_colloc
+                        loss_pde_test = torch.mean(residual_test ** 2)
+                        
+                        # Test IC losses
+                        x_test_ic_1d = torch.linspace(self.domain[0], self.domain[1], n_ic)
+                        y_test_ic_1d = torch.linspace(self.domain[0], self.domain[1], n_ic)
+                        X_test_ic, Y_test_ic = torch.meshgrid(x_test_ic_1d, y_test_ic_1d, indexing='ij')
+                        x_test_ic = X_test_ic.flatten()
+                        y_test_ic = Y_test_ic.flatten()
+                        t_test_ic = torch.zeros_like(x_test_ic)
+                        xyt_test_ic = torch.stack([x_test_ic, y_test_ic, t_test_ic], dim=1)
+                        
+                        u_test_ic = self.forward(u0_test, v0_test, src_test, xyt_test_ic)
+                        u_ic_true_test = self.generate_ic_sine_series(test_case['a_coeffs'], x_test_ic, y_test_ic)
+                        loss_ic_u_test = torch.mean((u_test_ic - u_ic_true_test) ** 2)
+                        
+                        xyt_test_ic_grad = xyt_test_ic.clone().requires_grad_(True)
+                        u_test_ic_grad = self.forward(u0_test, v0_test, src_test, xyt_test_ic_grad)
+                        u_t_test_ic = torch.autograd.grad(u_test_ic_grad, xyt_test_ic_grad, torch.ones_like(u_test_ic_grad), create_graph=True)[0][:, 2]
+                        v_ic_true_test = self.generate_ic_sine_series(test_case['b_coeffs'], x_test_ic, y_test_ic)
+                        loss_ic_v_test = torch.mean((u_t_test_ic - v_ic_true_test) ** 2)
+                        
+                        # Accumulate test metric
+                        test_metric += np.sqrt(loss_pde_test.item()**2 + loss_ic_u_test.item()**2 + loss_ic_v_test.item()**2)
+                
+                # Average test metric over all test cases
+                test_metric /= n_test_cases
+                history['test_metric'].append(test_metric)
+                
+                # Check for improvement
+                if test_metric < best_test_loss:
+                    best_test_loss = test_metric
+                    best_model_state = {key: value.cpu().clone() for key, value in self.state_dict().items()}
+                    best_epoch = epoch
+                    epochs_without_improvement = 0
+                    # Store best losses at this epoch
+                    best_losses = {
+                        'pde': loss_pde.item(),
+                        'ic_u': loss_ic_u.item(),
+                        'ic_v': loss_ic_v.item()
+                    }
+                    print(f"  ✓ Test metric improved to {test_metric:.6e} at epoch {epoch}")
+                else:
+                    epochs_without_improvement += eval_freq
+                    if epochs_without_improvement % (eval_freq * 5) == 0:  # Print every 5 evals
+                        print(f"  No improvement for {epochs_without_improvement} epochs (best: {best_test_loss:.6e})")
+                
+                # Early stopping
+                if epochs_without_improvement >= early_stopping_patience:
+                    print(f"\n✓ Early stopping triggered at epoch {epoch} (patience={early_stopping_patience})")
+                    break
             
             scheduler.step(loss_total)
 
@@ -502,11 +589,19 @@ class PINNDeepONet_Wave2D(nn.Module):
         # Restore best model
         if best_model_state is not None:
             self.load_state_dict(best_model_state)
-            print(f"\n✓ Restored best model from epoch {best_epoch} with metric {best_loss:.6f}")
+            print(f"\n✓ Restored best model from epoch {best_epoch} with test metric {best_test_loss:.6f}")
             print(f"  Best model loss components -> PDE: {best_losses['pde']:.6e}, IC_u: {best_losses['ic_u']:.6e}, IC_v: {best_losses['ic_v']:.6e}")
         
         print("\n✓ Training complete!\n")
-        return history, {'best_epoch': best_epoch, 'best_metric': best_loss, 'best_losses': best_losses}
+        return history, {
+            'best_epoch': best_epoch, 
+            'best_test_metric': best_test_loss, 
+            'best_losses': best_losses, 
+            'selection_method': 'test_physics_informed',
+            'n_test_cases': n_test_cases,
+            'eval_freq': eval_freq,
+            'early_stopping_patience': early_stopping_patience
+        }
 
 
 class FourierFeatureTransform(nn.Module):

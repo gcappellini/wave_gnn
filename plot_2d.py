@@ -225,6 +225,12 @@ def plot_training_history(history):
     ax.semilogy(history['ic_u'], color='#FFDAC1', label='Displacement IC Loss', linewidth=2)
     ax.semilogy(history['ic_v'], color='#FFB7B2', label='Velocity IC Loss', linewidth=2)
     
+    # Plot test metric if available
+    if 'test_metric' in history and len(history['test_metric']) > 0:
+        # Align test metric x-axis (evaluated every eval_freq epochs)
+        test_epochs = [(i+1) * 100 for i in range(len(history['test_metric']))]  # Assuming eval_freq=100
+        ax.semilogy(test_epochs, history['test_metric'], color='#E6B89C', label='Test Metric', linewidth=2, marker='o', markersize=4)
+    
     ax.set_title('Training Loss History')
     ax.set_xlabel('Epoch')
     ax.set_ylabel('Loss (log scale)')

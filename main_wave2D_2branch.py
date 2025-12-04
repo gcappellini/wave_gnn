@@ -1,5 +1,6 @@
 import torch
 import numpy as np
+import torch.nn as nn
 import pandas as pd
 import os
 from datetime import datetime
@@ -33,14 +34,16 @@ def main():
                              # The pretrained model's FFT weights are fixed and won't change.
     
     # Training parameters
-    n_epochs = 4000
-    n_sensors_ic = 20      # Creates 20x20 grid (400 sensors)
+    n_epochs = 2000
+    n_sensors_ic = 40      # Creates 20x20 grid (400 sensors)
     n_sensors_src = 20     # Creates 20x20 grid (400 sensors)
     branch_width = 300
     trunk_width = 300
+    branch_act=nn.LeakyReLU()
+    trunk_act=nn.Tanh()
     branch_depth = 4
-    trunk_depth = 4
-    p = 300 
+    trunk_depth = 6
+    p = 512 
     n_colloc = 800
     n_ic = 50
 
@@ -66,7 +69,7 @@ def main():
         "seed": 52
     }   
     w_pde, w_ic_u, w_ic_v = 1.0, 50.0, 50.0
-    strategy = 'fixed'
+    strategy = 'ntk'
     
     # Test parameters - 2D coefficient arrays (matching MATLAB)
     # u(x,y) = 0.5*sin(π*x)*sin(π*y) + 0.3*sin(π*x)*sin(2π*y) + 0.2*sin(2π*x)*sin(π*y) + 0.1*sin(2π*x)*sin(2π*y)
@@ -99,8 +102,7 @@ def main():
         "strategy": strategy,
         "branch_depth": branch_depth,
         "trunk_depth": trunk_depth,
-        # "branch_activation": str(branch_activation),
-        # "trunk_activation": str(trunk_activation),
+        "trunk_activation": str(trunk_act),
         # "use_fft_branch": use_fft_branch,
         "use_fft_trunk": use_fft_trunk,
         # "fft_branch_params": fft_branch_params,
@@ -144,12 +146,15 @@ def main():
         trunk_depth=trunk_depth,
         branch_width=branch_width,
         trunk_width=trunk_width,
+        branch_activation=branch_act,
+        trunk_activation=trunk_act,
         p=p,
         use_fft_trunk=use_fft_trunk,
         fft_trunk_args=fft_trunk_args
     )
     
     print(f"Model initialized with {sum(p.numel() for p in model.parameters())} parameters")
+    print(model)
     
     # ============================================================
     # LOAD GROUND TRUTH (if available)
@@ -287,6 +292,19 @@ def main():
         gt_data=gt_data
     )
     metrics["training_time"] = str(training_time) if 'training_time' in locals() else None
+    
+    # Add best model info to metrics if available
+    if 'best_model_info' in locals():
+        metrics['best_epoch'] = best_model_info['best_epoch']
+        metrics['best_test_metric'] = best_model_info['best_test_metric']
+        metrics['best_pde_loss'] = best_model_info['best_losses']['pde']
+        metrics['best_ic_u_loss'] = best_model_info['best_losses']['ic_u']
+        metrics['best_ic_v_loss'] = best_model_info['best_losses']['ic_v']
+        metrics['selection_method'] = best_model_info['selection_method']
+        metrics['test_n_cases'] = best_model_info['n_test_cases']
+        metrics['test_eval_freq'] = best_model_info['eval_freq']
+        metrics['test_early_stopping_patience'] = best_model_info['early_stopping_patience']
+    
     # Save metrics to txt file in output folder
     metrics_txt_path = os.path.join(output_fold, "metrics.txt")
     with open(metrics_txt_path, "w") as f:
