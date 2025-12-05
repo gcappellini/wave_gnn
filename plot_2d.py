@@ -216,7 +216,7 @@ def plot_solution_2d_comparison(model, a_test=0.5, b_test=0.0, source_type='zero
     return fig, metrics
 
 
-def plot_training_history(history):
+def plot_training_history(history, val_interval=100):
     """Plot all training loss histories on a single figure with pastel colors"""
     fig, ax = plt.subplots(figsize=(10, 6))
     
@@ -225,10 +225,9 @@ def plot_training_history(history):
     ax.semilogy(history['ic_u'], color='#FFDAC1', label='Displacement IC Loss', linewidth=2)
     ax.semilogy(history['ic_v'], color='#FFB7B2', label='Velocity IC Loss', linewidth=2)
     
-    # Plot test metric if available
+    # Plot test metric if available with proper epoch alignment
     if 'test_metric' in history and len(history['test_metric']) > 0:
-        # Align test metric x-axis (evaluated every eval_freq epochs)
-        test_epochs = [(i+1) * 100 for i in range(len(history['test_metric']))]  # Assuming eval_freq=100
+        test_epochs = history['test_epochs'] if 'test_epochs' in history else [(i+1) * val_interval for i in range(len(history['test_metric']))]
         ax.semilogy(test_epochs, history['test_metric'], color='#E6B89C', label='Test Metric', linewidth=2, marker='o', markersize=4)
     
     ax.set_title('Training Loss History')

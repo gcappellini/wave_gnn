@@ -325,12 +325,13 @@ class PINNDeepONet_Wave2D(nn.Module):
     def train_pinn(self, n_epochs=5000, n_colloc=500, n_ic=200, lr=1e-3, 
                    a_range=(-1.5, 1.5), b_range=(0.0, 0.0), 
                    source_type='zero', source_amplitude=15.0, w_pde=1.0, w_ic_u=10.0, w_ic_v=10.0, strategy='fixed',
-                   center_x=0.5, center_y=0.5, center_y_range=(0.3, 0.7), center_x_range=(0.3, 0.7), n_ic_u=2, n_ic_v=2, T_max=1.0, output_fold=os.path.join(SCRIPT_DIR, 'logs_multibranch_wave'), eval_freq=1, n_test_cases=20, early_stopping_patience=100, test_seed=42):
+                   center_x=0.5, center_y=0.5, center_y_range=(0.3, 0.7), center_x_range=(0.3, 0.7), n_ic_u=2, n_ic_v=2, T_max=1.0, output_fold=os.path.join(SCRIPT_DIR, 'logs_multibranch_wave'), 
+                   val_interval=1, n_test_cases=20, log_interval=500, early_stopping_patience=100, test_seed=42, lr_scheduler_gamma=0.95, lr_scheduler_step=100):
         """
         Train PINN-DeepONet for 2D wave equation with early stopping based on test loss
         
         Args:
-            eval_freq: Evaluate test loss every N epochs
+            val_interval: Evaluate test loss every N epochs
             n_test_cases: Number of random test cases (fixed seed)
             early_stopping_patience: Stop if no improvement for N epochs
             test_seed: Random seed for test set generation (deterministic)
@@ -343,7 +344,7 @@ class PINNDeepONet_Wave2D(nn.Module):
         else:
             print(f"Source: {source_type}, amplitude: {source_amplitude}, center: ({center_x}, {center_y})")
         print(f"Wave speed: {self.c}, Damping: {self.k}")
-        print(f"Early stopping: patience={early_stopping_patience}, eval_freq={eval_freq}, n_test_cases={n_test_cases}\n")
+        print(f"Early stopping: patience={early_stopping_patience}, val_interval={val_interval}, n_test_cases={n_test_cases}\n")
         
         # Generate deterministic test set with fixed seed
         test_rng = np.random.RandomState(test_seed)
@@ -370,11 +371,11 @@ class PINNDeepONet_Wave2D(nn.Module):
         )
 
         optimizer = torch.optim.Adam(self.parameters(), lr=lr)
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer, mode='min', factor=0.5, patience=500, verbose=True
+        scheduler = torch.optim.lr_scheduler.ExponentialLR(
+            optimizer, gamma=lr_scheduler_gamma
         )
         
-        history = {'total': [], 'pde': [], 'ic_u': [], 'ic_v': [], 'test_metric': []}
+        history = {'total': [], 'pde': [], 'ic_u': [], 'ic_v': [], 'test_metric': [], 'test_epochs': []}
         
         # Track best model based on TEST loss
         best_test_loss = float('inf')
@@ -485,8 +486,12 @@ class PINNDeepONet_Wave2D(nn.Module):
             history['ic_u'].append(loss_ic_u.item())
             history['ic_v'].append(loss_ic_v.item())
             
-            # Evaluate on test set every eval_freq epochs
-            if (epoch + 1) % eval_freq == 0:
+            # Update learning rate scheduler every lr_scheduler_step epochs
+            if (epoch + 1) % lr_scheduler_step == 0:
+                scheduler.step()
+            
+            # Evaluate on test set every val_interval epochs
+            if (epoch + 1) % val_interval == 0:
                 test_metric = 0.0
                 test_pde_loss_sum = 0.0
                 test_ic_u_loss_sum = 0.0
@@ -503,17 +508,8 @@ class PINNDeepONet_Wave2D(nn.Module):
                     xyt_test_colloc = torch.stack([x_test_colloc, y_test_colloc, t_test_colloc], dim=1)
                     src_test_colloc = self.source_function(x_test_colloc, y_test_colloc, source_type, source_amplitude, test_case['center_x'], test_case['center_y'])
                     
-                    # Test PDE loss (requires gradients)
-                    xyt_test_grad = xyt_test_colloc.clone().requires_grad_(True)
-                    u_test = self.forward(u0_test, v0_test, src_test, xyt_test_grad)
-                    grad_u_test = torch.autograd.grad(u_test, xyt_test_grad, torch.ones_like(u_test), create_graph=True)[0]
-                    u_x_test = grad_u_test[:, 0]
-                    u_y_test = grad_u_test[:, 1]
-                    u_t_test = grad_u_test[:, 2]
-                    u_xx_test = torch.autograd.grad(u_x_test, xyt_test_grad, torch.ones_like(u_x_test), create_graph=True)[0][:, 0]
-                    u_yy_test = torch.autograd.grad(u_y_test, xyt_test_grad, torch.ones_like(u_y_test), create_graph=True)[0][:, 1]
-                    u_tt_test = torch.autograd.grad(u_t_test, xyt_test_grad, torch.ones_like(u_t_test), create_graph=True)[0][:, 2]
-                    residual_test = u_tt_test + self.k * u_t_test - self.c**2 * (u_xx_test + u_yy_test) - src_test_colloc
+                    # Test PDE loss using same method as training
+                    residual_test = self.compute_pde_residual(u0_test, v0_test, src_test, xyt_test_colloc, src_test_colloc)
                     loss_pde_test = torch.mean(residual_test ** 2)
                     
                     # Test IC losses (no gradients needed for prediction, but needed for velocity)
@@ -549,6 +545,7 @@ class PINNDeepONet_Wave2D(nn.Module):
                 test_ic_u_loss_avg = test_ic_u_loss_sum / n_test_cases
                 test_ic_v_loss_avg = test_ic_v_loss_sum / n_test_cases
                 history['test_metric'].append(test_metric)
+                history['test_epochs'].append(epoch + 1)  # Record current epoch
                 
                 # Check for improvement
                 if test_metric < best_test_loss:
@@ -564,21 +561,19 @@ class PINNDeepONet_Wave2D(nn.Module):
                     }
                     print(f"  ✓ Test metric improved to {test_metric:.6e} at epoch {epoch}")
                 else:
-                    epochs_without_improvement += eval_freq
-                    if epochs_without_improvement % (eval_freq * 5) == 0:  # Print every 5 evals
+                    epochs_without_improvement += val_interval
+                    if epochs_without_improvement % (val_interval * 5) == 0:  # Print every 5 evals
                         print(f"  No improvement for {epochs_without_improvement} epochs (best: {best_test_loss:.6e})")
                 
                 # Early stopping
                 if epochs_without_improvement >= early_stopping_patience:
                     print(f"\n✓ Early stopping triggered at epoch {epoch} (patience={early_stopping_patience})")
                     break
-            
-            scheduler.step(loss_total)
 
             if strategy == 'equal_init' and epoch == 2:
                 print(f"\nInitial Weights -> PDE: {weights['PDE']:.2e}, IC_u: {weights['IC_u']:.2e}, IC_v: {weights['IC_v']:.2e}\n")
                 
-            if epoch % 500 == 0 or epoch == n_epochs - 1:
+            if epoch % log_interval == 0 or epoch == n_epochs - 1:
                 current_lr = optimizer.param_groups[0]['lr']
                 # Diagnostic: check prediction scale
                 with torch.no_grad():
