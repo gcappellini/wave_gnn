@@ -2,9 +2,12 @@ import numpy as np
 import torch
 import torch.nn as nn
 import warnings
+import logging
 from adaptive_weights import AdaptiveLossWeights
 import os
 warnings.filterwarnings('ignore')
+
+log = logging.getLogger(__name__)
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -322,11 +325,121 @@ class PINNDeepONet_Wave2D(nn.Module):
         
         return f
     
+    def _compute_batch_losses(self, u0_sensors, v0_sensors, src_sensors, 
+                              n_colloc, n_ic, T_max, source_type, source_amplitude, 
+                              cx, cy, a_coeffs, b_coeffs):
+        """
+        Compute PDE and IC losses for a single batch (IC/source configuration).
+        
+        Returns:
+            loss_pde, loss_ic_u, loss_ic_v (scalars)
+        """
+        # Sample 3D collocation points
+        x_colloc = self.domain[0] + (self.domain[1] - self.domain[0]) * torch.rand(n_colloc)
+        y_colloc = self.domain[0] + (self.domain[1] - self.domain[0]) * torch.rand(n_colloc)
+        t_colloc = T_max * torch.rand(n_colloc)
+        xyt_colloc = torch.stack([x_colloc, y_colloc, t_colloc], dim=1)
+        
+        # Source values at collocation points
+        src_colloc = self.source_function(x_colloc, y_colloc, source_type, source_amplitude, cx, cy)
+        
+        # PDE Loss
+        residual = self.compute_pde_residual(u0_sensors, v0_sensors, src_sensors, 
+                                             xyt_colloc, src_colloc)
+        loss_pde = torch.mean(residual ** 2)
+        
+        # IC grid (fixed across batches within epoch)
+        x_ic_1d = torch.linspace(self.domain[0], self.domain[1], n_ic)
+        y_ic_1d = torch.linspace(self.domain[0], self.domain[1], n_ic)
+        X_ic, Y_ic = torch.meshgrid(x_ic_1d, y_ic_1d, indexing='ij')
+        x_ic = X_ic.flatten()
+        y_ic = Y_ic.flatten()
+        t_ic = torch.zeros_like(x_ic)
+        xyt_ic = torch.stack([x_ic, y_ic, t_ic], dim=1)
+        
+        # Displacement IC Loss
+        u_ic_pred = self.forward(u0_sensors, v0_sensors, src_sensors, xyt_ic)
+        u_ic_true = self.generate_ic_sine_series(a_coeffs, x_ic, y_ic)
+        loss_ic_u = torch.mean((u_ic_pred - u_ic_true) ** 2)
+        
+        # Velocity IC Loss
+        xyt_ic_grad = xyt_ic.clone().requires_grad_(True)
+        u_ic_grad = self.forward(u0_sensors, v0_sensors, src_sensors, xyt_ic_grad)
+        u_t_ic_pred = torch.autograd.grad(u_ic_grad, xyt_ic_grad,
+                                          torch.ones_like(u_ic_grad),
+                                          create_graph=True)[0][:, 2]
+        v_ic_true = self.generate_ic_sine_series(b_coeffs, x_ic, y_ic)
+        loss_ic_v = torch.mean((u_t_ic_pred - v_ic_true) ** 2)
+        
+        return loss_pde, loss_ic_u, loss_ic_v
+    
+    def _train_epoch_batched(self, n_batches, n_colloc, n_ic, T_max, 
+                             a_range, b_range, source_type, source_amplitude,
+                             center_x, center_y, center_x_range, center_y_range,
+                             n_ic_u, n_ic_v, weights, optimizer, max_grad_norm):
+        """
+        Execute one epoch with mini-batch training: sample multiple IC/source configs,
+        compute losses, accumulate gradients, then update once per epoch.
+        
+        Returns:
+            epoch_loss_pde, epoch_loss_ic_u, epoch_loss_ic_v (averaged over batches)
+        """
+        loss_pde_accum = 0.0
+        loss_ic_u_accum = 0.0
+        loss_ic_v_accum = 0.0
+        
+        for batch_idx in range(n_batches):
+            # Sample IC and source for this batch
+            a_coeffs = sample_coeffs(n_ic_u, a_range, p=3.0, as_2d=True)
+            b_coeffs = sample_coeffs(n_ic_v, b_range, as_2d=True)
+            
+            # Sample source center
+            if center_x_range is not None and center_y_range is not None and source_type == 'gaussian':
+                cx = center_x_range[0] + (center_x_range[1] - center_x_range[0]) * torch.rand(1).item()
+                cy = center_y_range[0] + (center_y_range[1] - center_y_range[0]) * torch.rand(1).item()
+            else:
+                cx, cy = center_x, center_y
+            
+            # Generate sensors
+            u0_sensors = self.generate_ic_sine_series(a_coeffs)
+            v0_sensors = self.generate_ic_sine_series(b_coeffs)
+            src_sensors = self.generate_source(source_type, source_amplitude, cx, cy)
+            
+            # Compute batch losses
+            loss_pde, loss_ic_u, loss_ic_v = self._compute_batch_losses(
+                u0_sensors, v0_sensors, src_sensors,
+                n_colloc, n_ic, T_max, source_type, source_amplitude, cx, cy,
+                a_coeffs, b_coeffs
+            )
+            
+            # Weighted total loss
+            loss_batch = (weights['PDE'] * loss_pde + 
+                          weights['IC_u'] * loss_ic_u + 
+                          weights['IC_v'] * loss_ic_v)
+            
+            # Backward (accumulates gradients across batches)
+            loss_batch.backward()
+            
+            # Accumulate losses
+            loss_pde_accum += loss_pde.item()
+            loss_ic_u_accum += loss_ic_u.item()
+            loss_ic_v_accum += loss_ic_v.item()
+        
+        # Gradient clipping and single weight update per epoch
+        torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=max_grad_norm)
+        optimizer.step()
+        optimizer.zero_grad()
+        
+        # Return averaged losses
+        return (loss_pde_accum / n_batches, 
+                loss_ic_u_accum / n_batches, 
+                loss_ic_v_accum / n_batches)
+    
     def train_pinn(self, n_epochs=5000, n_colloc=500, n_ic=200, lr=1e-3, 
                    a_range=(-1.5, 1.5), b_range=(0.0, 0.0), 
                    source_type='zero', source_amplitude=15.0, w_pde=1.0, w_ic_u=10.0, w_ic_v=10.0, strategy='fixed',
                    center_x=0.5, center_y=0.5, center_y_range=(0.3, 0.7), center_x_range=(0.3, 0.7), n_ic_u=2, n_ic_v=2, T_max=1.0, output_fold=os.path.join(SCRIPT_DIR, 'logs_multibranch_wave'), 
-                   val_interval=1, n_test_cases=20, log_interval=500, early_stopping_patience=100, test_seed=42, lr_scheduler_gamma=0.95, lr_scheduler_step=100):
+                   val_interval=1, n_test_cases=20, log_interval=500, early_stopping_patience=100, test_seed=42, lr_scheduler_gamma=0.95, lr_scheduler_step=100, max_grad_norm=1.0, n_batches=1):
         """
         Train PINN-DeepONet for 2D wave equation with early stopping based on test loss
         
@@ -335,16 +448,17 @@ class PINNDeepONet_Wave2D(nn.Module):
             n_test_cases: Number of random test cases (fixed seed)
             early_stopping_patience: Stop if no improvement for N epochs
             test_seed: Random seed for test set generation (deterministic)
+            n_batches: Number of mini-batches per epoch (gradient accumulation). Default 1 = single batch (no mini-batching)
         """
-        print(f"Epochs: {n_epochs}")
-        print(f"Collocation points: {n_colloc}")
-        print(f"a range: {a_range}, b range: {b_range}")
+        log.info(f"Epochs: {n_epochs}")
+        log.info(f"Collocation points: {n_colloc}")
+        log.info(f"a range: {a_range}, b range: {b_range}")
         if center_x_range is not None and center_y_range is not None:
-            print(f"Source: {source_type}, amplitude: {source_amplitude}, center x range: {center_x_range}, center y range: {center_y_range}")
+            log.info(f"Source: {source_type}, amplitude: {source_amplitude}, center x range: {center_x_range}, center y range: {center_y_range}")
         else:
-            print(f"Source: {source_type}, amplitude: {source_amplitude}, center: ({center_x}, {center_y})")
-        print(f"Wave speed: {self.c}, Damping: {self.k}")
-        print(f"Early stopping: patience={early_stopping_patience}, val_interval={val_interval}, n_test_cases={n_test_cases}\n")
+            log.info(f"Source: {source_type}, amplitude: {source_amplitude}, center: ({center_x}, {center_y})")
+        log.info(f"Wave speed: {self.c}, Damping: {self.k}")
+        log.info(f"Early stopping: patience={early_stopping_patience}, val_interval={val_interval}, n_test_cases={n_test_cases}")
         
         # Generate deterministic test set with fixed seed
         test_rng = np.random.RandomState(test_seed)
@@ -386,105 +500,109 @@ class PINNDeepONet_Wave2D(nn.Module):
         
         # Print initial weights only for fixed strategy
         if strategy == 'fixed':
-            print(f"Initial Weights -> PDE: {initial_weights['PDE']:.2e}, IC_u: {initial_weights['IC_u']:.2e}, IC_v: {initial_weights['IC_v']:.2e}\n")
+            log.info(f"Initial Weights -> PDE: {initial_weights['PDE']:.2e}, IC_u: {initial_weights['IC_u']:.2e}, IC_v: {initial_weights['IC_v']:.2e}")
         
         for epoch in range(n_epochs):
-            # Sample random IC amplitudes with independent x and y modes
-            a_coeffs = sample_coeffs(n_ic_u, a_range, p=3.0, as_2d=True)
-            b_coeffs = sample_coeffs(n_ic_v, b_range, as_2d=True)
-            
-            # Sample random source center
-            if center_x_range is not None and center_y_range is not None and source_type == 'gaussian':
-                cx = center_x_range[0] + (center_x_range[1] - center_x_range[0]) * torch.rand(1).item()
-                cy = center_y_range[0] + (center_y_range[1] - center_y_range[0]) * torch.rand(1).item()
+            # Get weights for this epoch
+            if strategy != 'fixed':
+                # For adaptive weights, need a single context (use first batch config)
+                a_coeffs_temp = sample_coeffs(n_ic_u, a_range, p=3.0, as_2d=True)
+                b_coeffs_temp = sample_coeffs(n_ic_v, b_range, as_2d=True)
+                if center_x_range is not None and center_y_range is not None and source_type == 'gaussian':
+                    cx_temp = center_x_range[0] + (center_x_range[1] - center_x_range[0]) * torch.rand(1).item()
+                    cy_temp = center_y_range[0] + (center_y_range[1] - center_y_range[0]) * torch.rand(1).item()
+                else:
+                    cx_temp, cy_temp = center_x, center_y
+                u0_sensors_temp = self.generate_ic_sine_series(a_coeffs_temp)
+                v0_sensors_temp = self.generate_ic_sine_series(b_coeffs_temp)
+                src_sensors_temp = self.generate_source(source_type, source_amplitude, cx_temp, cy_temp)
+                x_colloc_temp = self.domain[0] + (self.domain[1] - self.domain[0]) * torch.rand(n_colloc)
+                y_colloc_temp = self.domain[0] + (self.domain[1] - self.domain[0]) * torch.rand(n_colloc)
+                t_colloc_temp = T_max * torch.rand(n_colloc)
+                xyt_colloc_temp = torch.stack([x_colloc_temp, y_colloc_temp, t_colloc_temp], dim=1)
+                src_colloc_temp = self.source_function(x_colloc_temp, y_colloc_temp, source_type, source_amplitude, cx_temp, cy_temp)
+                x_ic_1d = torch.linspace(self.domain[0], self.domain[1], n_ic)
+                y_ic_1d = torch.linspace(self.domain[0], self.domain[1], n_ic)
+                X_ic_temp, Y_ic_temp = torch.meshgrid(x_ic_1d, y_ic_1d, indexing='ij')
+                x_ic_temp = X_ic_temp.flatten()
+                y_ic_temp = Y_ic_temp.flatten()
+                t_ic_temp = torch.zeros_like(x_ic_temp)
+                xyt_ic_temp = torch.stack([x_ic_temp, y_ic_temp, t_ic_temp], dim=1)
+                
+                # Dummy losses for context
+                residual_temp = self.compute_pde_residual(u0_sensors_temp, v0_sensors_temp, src_sensors_temp, 
+                                                          xyt_colloc_temp, src_colloc_temp)
+                loss_pde_temp = torch.mean(residual_temp ** 2)
+                u_ic_pred_temp = self.forward(u0_sensors_temp, v0_sensors_temp, src_sensors_temp, xyt_ic_temp)
+                u_ic_true_temp = self.generate_ic_sine_series(a_coeffs_temp, x_ic_temp, y_ic_temp)
+                loss_ic_u_temp = torch.mean((u_ic_pred_temp - u_ic_true_temp) ** 2)
+                xyt_ic_grad_temp = xyt_ic_temp.clone().requires_grad_(True)
+                u_ic_grad_temp = self.forward(u0_sensors_temp, v0_sensors_temp, src_sensors_temp, xyt_ic_grad_temp)
+                u_t_ic_pred_temp = torch.autograd.grad(u_ic_grad_temp, xyt_ic_grad_temp,
+                                                       torch.ones_like(u_ic_grad_temp),
+                                                       create_graph=True)[0][:, 2]
+                v_ic_true_temp = self.generate_ic_sine_series(b_coeffs_temp, x_ic_temp, y_ic_temp)
+                loss_ic_v_temp = torch.mean((u_t_ic_pred_temp - v_ic_true_temp) ** 2)
+                
+                context = {
+                    'loss_values': {
+                        'PDE': loss_pde_temp.item(),
+                        'IC_u': loss_ic_u_temp.item(),
+                        'IC_v': loss_ic_v_temp.item(),
+                    },
+                    'model': self,
+                    'xyt_colloc': xyt_colloc_temp,
+                    'xyt_ic': xyt_ic_temp,
+                    'u0_sensors': u0_sensors_temp,
+                    'v0_sensors': v0_sensors_temp,
+                    'src_sensors': src_sensors_temp,
+                    'src_colloc': src_colloc_temp,
+                    'a_coeffs': a_coeffs_temp,
+                    'b_coeffs': b_coeffs_temp,
+                    'output_fold': output_fold
+                }
+                
+                if strategy == 'ntk':
+                    n_pde_subsample = min(100, xyt_colloc_temp.shape[0])
+                    n_ic_subsample = min(200, xyt_ic_temp.shape[0])
+                    idx_pde = torch.randperm(xyt_colloc_temp.shape[0])[:n_pde_subsample]
+                    idx_ic = torch.randperm(xyt_ic_temp.shape[0])[:n_ic_subsample]
+                    context['xyt_colloc'] = xyt_colloc_temp[idx_pde]
+                    context['src_colloc'] = src_colloc_temp[idx_pde]
+                    context['xyt_ic'] = xyt_ic_temp[idx_ic]
+                
+                weights = adaptive_weights.update(epoch, context)
             else:
-                cx, cy = center_x, center_y
+                weights = initial_weights
             
-            # Generate sensors
-            u0_sensors = self.generate_ic_sine_series(a_coeffs)
-            v0_sensors = self.generate_ic_sine_series(b_coeffs)
-            src_sensors = self.generate_source(source_type, source_amplitude, cx, cy)
-            
-            # Sample 3D collocation points
-            x_colloc = self.domain[0] + (self.domain[1] - self.domain[0]) * torch.rand(n_colloc)
-            y_colloc = self.domain[0] + (self.domain[1] - self.domain[0]) * torch.rand(n_colloc)
-            t_colloc = T_max * torch.rand(n_colloc)
-            xyt_colloc = torch.stack([x_colloc, y_colloc, t_colloc], dim=1)
-            
-            # Source values at collocation points
-            src_colloc = self.source_function(x_colloc, y_colloc, source_type, source_amplitude, cx, cy)
-            
-            # PDE Loss
-            residual = self.compute_pde_residual(u0_sensors, v0_sensors, src_sensors, 
-                                                 xyt_colloc, src_colloc)
-            loss_pde = torch.mean(residual ** 2)
-            
-            # Displacement IC Loss
-            x_ic_1d = torch.linspace(self.domain[0], self.domain[1], n_ic)
-            y_ic_1d = torch.linspace(self.domain[0], self.domain[1], n_ic)
-            X_ic, Y_ic = torch.meshgrid(x_ic_1d, y_ic_1d, indexing='ij')
-            x_ic = X_ic.flatten()
-            y_ic = Y_ic.flatten()
-            t_ic = torch.zeros_like(x_ic)
-            xyt_ic = torch.stack([x_ic, y_ic, t_ic], dim=1)
-            
-            u_ic_pred = self.forward(u0_sensors, v0_sensors, src_sensors, xyt_ic)
-            u_ic_true = self.generate_ic_sine_series(a_coeffs, x_ic, y_ic)
-            loss_ic_u = torch.mean((u_ic_pred - u_ic_true) ** 2)
-            
-            # Velocity IC Loss
-            xyt_ic_grad = xyt_ic.clone().requires_grad_(True)
-            u_ic_grad = self.forward(u0_sensors, v0_sensors, src_sensors, xyt_ic_grad)
-            u_t_ic_pred = torch.autograd.grad(u_ic_grad, xyt_ic_grad,
-                                              torch.ones_like(u_ic_grad),
-                                              create_graph=True)[0][:, 2]
-            v_ic_true = self.generate_ic_sine_series(b_coeffs, x_ic, y_ic)
-            loss_ic_v = torch.mean((u_t_ic_pred - v_ic_true) ** 2)
-
-            # === Total Loss ===
-            context = {
-                'loss_values': {
-                    'PDE': loss_pde.item(),
-                    'IC_u': loss_ic_u.item(),
-                    'IC_v': loss_ic_v.item(),
-                },
-                'model': self,
-                'xyt_colloc': xyt_colloc,
-                'xyt_ic': xyt_ic,
-                'u0_sensors': u0_sensors,
-                'v0_sensors': v0_sensors,
-                'src_sensors': src_sensors,
-                'src_colloc': src_colloc,
-                'a_coeffs': a_coeffs,
-                'b_coeffs': b_coeffs,
-                'output_fold': output_fold
-            }
-            
-            # Subsample for NTK computation (reduce from 800/2500 to ~100/200 points)
-            if strategy == 'ntk':
-                n_pde_subsample = min(100, xyt_colloc.shape[0])
-                n_ic_subsample = min(200, xyt_ic.shape[0])
-                
-                idx_pde = torch.randperm(xyt_colloc.shape[0])[:n_pde_subsample]
-                idx_ic = torch.randperm(xyt_ic.shape[0])[:n_ic_subsample]
-                
-                context['xyt_colloc'] = xyt_colloc[idx_pde]
-                context['src_colloc'] = src_colloc[idx_pde]
-                context['xyt_ic'] = xyt_ic[idx_ic]
-
-            weights = adaptive_weights.update(epoch, context) if strategy != 'fixed' else initial_weights
-            loss_total = weights['PDE'] * loss_pde + weights['IC_u'] * loss_ic_u + weights['IC_v'] * loss_ic_v
-
-            
+            # Train with mini-batches
             optimizer.zero_grad()
-            loss_total.backward()
-            torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=1.0)
-            optimizer.step()
+            loss_pde_avg, loss_ic_u_avg, loss_ic_v_avg = self._train_epoch_batched(
+                n_batches=n_batches,
+                n_colloc=n_colloc,
+                n_ic=n_ic,
+                T_max=T_max,
+                a_range=a_range,
+                b_range=b_range,
+                source_type=source_type,
+                source_amplitude=source_amplitude,
+                center_x=center_x,
+                center_y=center_y,
+                center_x_range=center_x_range,
+                center_y_range=center_y_range,
+                n_ic_u=n_ic_u,
+                n_ic_v=n_ic_v,
+                weights=weights,
+                optimizer=optimizer,
+                max_grad_norm=max_grad_norm
+            )
             
-            history['total'].append(loss_total.item())
-            history['pde'].append(loss_pde.item())
-            history['ic_u'].append(loss_ic_u.item())
-            history['ic_v'].append(loss_ic_v.item())
+            loss_total_avg = weights['PDE'] * loss_pde_avg + weights['IC_u'] * loss_ic_u_avg + weights['IC_v'] * loss_ic_v_avg
+            
+            history['total'].append(loss_total_avg)
+            history['pde'].append(loss_pde_avg)
+            history['ic_u'].append(loss_ic_u_avg)
+            history['ic_v'].append(loss_ic_v_avg)
             
             # Update learning rate scheduler every lr_scheduler_step epochs
             if (epoch + 1) % lr_scheduler_step == 0:
@@ -536,7 +654,7 @@ class PINNDeepONet_Wave2D(nn.Module):
                     test_pde_loss_sum += loss_pde_test.item()
                     test_ic_u_loss_sum += loss_ic_u_test.item()
                     test_ic_v_loss_sum += loss_ic_v_test.item()
-                    test_metric += np.sqrt(loss_pde_test.item()**2 + loss_ic_u_test.item()**2 + loss_ic_v_test.item()**2)
+                    test_metric += np.sqrt(loss_pde_test.item()**2 + 10*loss_ic_u_test.item()**2 + loss_ic_v_test.item()**2)
                 
                 
                 # Average test metric and losses over all test cases
@@ -559,32 +677,65 @@ class PINNDeepONet_Wave2D(nn.Module):
                         'ic_u': test_ic_u_loss_avg,
                         'ic_v': test_ic_v_loss_avg
                     }
-                    print(f"  ✓ Test metric improved to {test_metric:.6e} at epoch {epoch}")
+                    log.info(f"✓ Test metric improved to {test_metric:.6e} at epoch {epoch}")
+                    
+                    # Save checkpoint immediately when new best is achieved (overwrites previous best)
+                    checkpoint_path = os.path.join(output_fold, 'model.pth')
+                    torch.save({
+                        'epoch': epoch,
+                        'model_state_dict': self.state_dict(),
+                        'test_metric': test_metric,
+                        'test_losses': best_test_losses,
+                        'history': history,
+                        'config': {
+                            'n_epochs': n_epochs,
+                            'lr': lr,
+                            'strategy': strategy,
+                            'w_pde': w_pde,
+                            'w_ic_u': w_ic_u,
+                            'w_ic_v': w_ic_v,
+                        }
+                    }, checkpoint_path)
+                    # log.info(f"  → Saved to {checkpoint_path}")
                 else:
                     epochs_without_improvement += val_interval
                     if epochs_without_improvement % (val_interval * 5) == 0:  # Print every 5 evals
-                        print(f"  No improvement for {epochs_without_improvement} epochs (best: {best_test_loss:.6e})")
+                        log.info(f"  No improvement for {epochs_without_improvement} epochs (best: {best_test_loss:.6e})")
                 
                 # Early stopping
                 if epochs_without_improvement >= early_stopping_patience:
-                    print(f"\n✓ Early stopping triggered at epoch {epoch} (patience={early_stopping_patience})")
+                    log.info(f"Early stopping triggered at epoch {epoch} (patience={early_stopping_patience})")
                     break
 
             if strategy == 'equal_init' and epoch == 2:
-                print(f"\nInitial Weights -> PDE: {weights['PDE']:.2e}, IC_u: {weights['IC_u']:.2e}, IC_v: {weights['IC_v']:.2e}\n")
+                log.info(f"Initial Weights -> PDE: {weights['PDE']:.2e}, IC_u: {weights['IC_u']:.2e}, IC_v: {weights['IC_v']:.2e}")
                 
             if epoch % log_interval == 0 or epoch == n_epochs - 1:
                 current_lr = optimizer.param_groups[0]['lr']
-                # Diagnostic: check prediction scale
+                # Diagnostic: check prediction scale (use first batch for sampling)
+                a_diag = sample_coeffs(n_ic_u, a_range, p=3.0, as_2d=True)
+                b_diag = sample_coeffs(n_ic_v, b_range, as_2d=True)
+                if center_x_range is not None and center_y_range is not None and source_type == 'gaussian':
+                    cx_diag = center_x_range[0] + (center_x_range[1] - center_x_range[0]) * torch.rand(1).item()
+                    cy_diag = center_y_range[0] + (center_y_range[1] - center_y_range[0]) * torch.rand(1).item()
+                else:
+                    cx_diag, cy_diag = center_x, center_y
+                u0_diag = self.generate_ic_sine_series(a_diag)
+                v0_diag = self.generate_ic_sine_series(b_diag)
+                src_diag = self.generate_source(source_type, source_amplitude, cx_diag, cy_diag)
+                x_ic_1d_diag = torch.linspace(self.domain[0], self.domain[1], n_ic)
+                y_ic_1d_diag = torch.linspace(self.domain[0], self.domain[1], n_ic)
+                X_ic_diag, Y_ic_diag = torch.meshgrid(x_ic_1d_diag, y_ic_1d_diag, indexing='ij')
+                xyt_ic_diag = torch.stack([X_ic_diag.flatten(), Y_ic_diag.flatten(), torch.zeros_like(X_ic_diag.flatten())], dim=1)
                 with torch.no_grad():
-                    u_sample = self.forward(u0_sensors, v0_sensors, src_sensors, xyt_ic[:100])
+                    u_sample = self.forward(u0_diag, v0_diag, src_diag, xyt_ic_diag[:100])
                     u_min, u_max = u_sample.min().item(), u_sample.max().item()
-                print(f"Epoch {epoch:5d} | Loss: {loss_total.item():.6f} | "
-                      f"PDE: {loss_pde.item():.6f} | IC_u: {loss_ic_u.item():.6f} | "
-                      f"IC_v: {loss_ic_v.item():.6f} | LR: {current_lr:.2e} | "
+                log.info(f"Epoch {epoch:5d} | Loss: {loss_total_avg:.6f} | "
+                      f"PDE: {loss_pde_avg:.6f} | IC_u: {loss_ic_u_avg:.6f} | "
+                      f"IC_v: {loss_ic_v_avg:.6f} | LR: {current_lr:.2e} | "
                       f"u_range: [{u_min:.3f}, {u_max:.3f}]")
                 if strategy not in ['fixed', 'equal_init']:
-                    print(f"          Weights -> PDE: {weights['PDE']:.2e}, IC_u: {weights['IC_u']:.2e}, IC_v: {weights['IC_v']:.2e}")
+                    log.info(f"          Weights -> PDE: {weights['PDE']:.2e}, IC_u: {weights['IC_u']:.2e}, IC_v: {weights['IC_v']:.2e}")
         
         if strategy not in ['fixed', 'equal_init']:
             adaptive_weights.plot_weights_evolution(output_fold)
@@ -594,10 +745,10 @@ class PINNDeepONet_Wave2D(nn.Module):
         # Restore best model
         if best_model_state is not None:
             self.load_state_dict(best_model_state)
-            print(f"\n✓ Restored best model from epoch {best_epoch} with test metric {best_test_loss:.6f}")
-            print(f"  Best model loss components -> PDE: {best_test_losses['pde']:.6e}, IC_u: {best_test_losses['ic_u']:.6e}, IC_v: {best_test_losses['ic_v']:.6e}")
+            log.info(f"Restored best model from epoch {best_epoch} with test metric {best_test_loss:.6f}")
+            log.info(f"  Best model loss components -> PDE: {best_test_losses['pde']:.6e}, IC_u: {best_test_losses['ic_u']:.6e}, IC_v: {best_test_losses['ic_v']:.6e}")
         
-        print("\n✓ Training complete!\n")
+        log.info(f"Training complete!")
         return history, {
             'best_epoch': best_epoch, 
             'best_test_metric': best_test_loss, 

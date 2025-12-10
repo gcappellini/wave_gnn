@@ -3,11 +3,16 @@ import numpy as np
 import torch.nn as nn
 import pandas as pd
 import os
+import logging
 from datetime import datetime
 from hydra import main as hydra_main
+from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf
 from model_2d import PINNDeepONet_Wave2D
 from plot_2d import plot_solution_2d, plot_solution_2d_comparison, plot_training_history
+
+# Setup logging
+log = logging.getLogger(__name__)
 
 # Get script directory for absolute paths
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -15,11 +20,21 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 @hydra_main(version_base=None, config_path="configs", config_name="config")
 def main(cfg: DictConfig):
     # ============================================================
+    # LOGGING
+    # ============================================================
+    log.info("=" * 70)
+    log.info("CONFIGURATION")
+    log.info("=" * 70)
+    log.info(f"\n{OmegaConf.to_yaml(cfg)}\n")
+    
+    # ============================================================
     # EXTRACT CONFIGURATION FROM HYDRA
     # ============================================================
     
     # Get output folder from Hydra (automatically created in outputs/day/hour/)
-    output_fold = cfg.hydra.runtime.output_dir
+    hydra_cfg = HydraConfig.get()
+    output_fold = hydra_cfg.runtime.output_dir
+    log.info(f"Output directory: {output_fold}")
     
     # Extract configuration values
     load_from = cfg.run.load_from
@@ -34,6 +49,8 @@ def main(cfg: DictConfig):
     lr_scheduler_step = cfg.training.lr_scheduler_step
     lr_scheduler_gamma = cfg.training.lr_scheduler_gamma
     log_interval = cfg.training.log_interval
+    max_grad_norm = cfg.training.max_grad_norm
+    n_batches = cfg.training.n_batches
     
     # Model parameters
     n_sensors_ic = cfg.model.n_sensors_ic
@@ -64,7 +81,7 @@ def main(cfg: DictConfig):
     n_ic_u = cfg.data.n_ic_u
     n_ic_v = cfg.data.n_ic_v
     
-    print(f"✓ Configuration loaded from Hydra (saved to {output_fold}/.hydra/)\n")
+    log.info(f"✓ Configuration loaded from Hydra (saved to {output_fold}/.hydra/)\n")
     
     # ============================================================
     # TEST CASE DEFINITION
@@ -101,8 +118,8 @@ def main(cfg: DictConfig):
         damping_coeff=damping_coeff
     )
     
-    print(f"Model initialized with {sum(p.numel() for p in model.parameters())} parameters")
-    print(model)
+    log.info(f"Model initialized with {sum(p.numel() for p in model.parameters())} parameters")
+    log.info(f"\nModel architecture:\n{model}")
     
     # ============================================================
     # LOAD GROUND TRUTH (if available)
@@ -114,18 +131,18 @@ def main(cfg: DictConfig):
     gt_rollout_data = None
     
     if os.path.exists(gt_file):
-        print(f"\nLoading ground truth from {gt_file}")
+        log.info(f"Loading ground truth from {gt_file}")
         gt_data = pd.read_csv(gt_file, header=None).values
-        print(f"Ground truth shape: {gt_data.shape}")
-        print(f"Columns: [x, y, t, f, u, v]")
+        log.info(f"Ground truth shape: {gt_data.shape}")
+        log.info(f"Columns: [x, y, t, f, u, v]")
     else:
-        print(f"\nWarning: Ground truth file {gt_file} not found")
-        print("Training will proceed without validation")
+        log.warning(f"Ground truth file {gt_file} not found")
+        log.warning(f"Training will proceed without validation")
     
     if os.path.exists(gt_rollout_file):
-        print(f"Loading rollout ground truth from {gt_rollout_file}")
+        log.info(f"Loading rollout ground truth from {gt_rollout_file}")
         gt_rollout_data = pd.read_csv(gt_rollout_file, header=None).values
-        print(f"Rollout ground truth shape: {gt_rollout_data.shape}")
+        log.info(f"Rollout ground truth shape: {gt_rollout_data.shape}")
     
     # ============================================================
     # TRAINING OR LOADING
@@ -138,21 +155,21 @@ def main(cfg: DictConfig):
         if os.path.exists(checkpoint_path):
             checkpoint = torch.load(checkpoint_path)
             model.load_state_dict(checkpoint['model_state_dict'])
-            print(f"Model loaded from {checkpoint_path}")
+            log.info(f"Model loaded from {checkpoint_path}")
             history = None
             training_time = None
         else:
-            print(f"Error: Checkpoint file {checkpoint_path} not found!")
-            print("Set load_model=False to train a new model.")
+            log.error(f"Checkpoint file {checkpoint_path} not found!")
+            log.error(f"Set load_model=False to train a new model.")
             return
     else:
         if resume_training:
             if not os.path.exists(checkpoint_path):
-                print(f"✗ Pretrained model not found: {checkpoint_path}")
+                log.error(f"Pretrained model not found: {checkpoint_path}")
                 exit(1)
             checkpoint = torch.load(checkpoint_path)
             model.load_state_dict(checkpoint['model_state_dict'])
-            print(f"✓ Pretrained model loaded for curriculum learning: {checkpoint_path}\n")
+            log.info(f"✓ Pretrained model loaded for curriculum learning: {checkpoint_path}")
         
         if TRAINING_CASE == 'with_source':
             source_type = 'gaussian'
@@ -182,7 +199,9 @@ def main(cfg: DictConfig):
             val_interval=val_interval,
             lr_scheduler_gamma=lr_scheduler_gamma,
             lr_scheduler_step=lr_scheduler_step,
-            log_interval=log_interval
+            log_interval=log_interval,
+            max_grad_norm=max_grad_norm,
+            n_batches=n_batches,
         )
         
         end_time = datetime.now()
@@ -196,14 +215,14 @@ def main(cfg: DictConfig):
             'best_model_info': best_model_info
         }, model_filename)
         
-        print(f"\nModel saved to {model_filename}")
-        print(f"\nBest Model Info:")
-        print(f"  Epoch: {best_model_info['best_epoch']}")
-        print(f"  L2 Metric: {best_model_info['best_test_metric']:.6e}")
-        print(f"  Loss Components:")
-        print(f"    - PDE: {best_model_info['best_losses']['pde']:.6e}")
-        print(f"    - IC_u: {best_model_info['best_losses']['ic_u']:.6e}")
-        print(f"    - IC_v: {best_model_info['best_losses']['ic_v']:.6e}")
+        log.info(f"Model saved to {model_filename}")
+        log.info(f"Best Model Info:")
+        log.info(f"  Epoch: {best_model_info['best_epoch']}")
+        log.info(f"  L2 Metric: {best_model_info['best_test_metric']:.6e}")
+        log.info(f"  Loss Components:")
+        log.info(f"    - PDE: {best_model_info['best_losses']['pde']:.6e}")
+        log.info(f"    - IC_u: {best_model_info['best_losses']['ic_u']:.6e}")
+        log.info(f"    - IC_v: {best_model_info['best_losses']['ic_v']:.6e}")
         
         # ============================================================
         # PLOT TRAINING HISTORY
@@ -212,7 +231,7 @@ def main(cfg: DictConfig):
         fig_history = plot_training_history(history, val_interval=val_interval)
         training_plot_filename = os.path.join(output_fold, f'pinn_wave_training_{TRAINING_CASE}.png')
         fig_history.savefig(training_plot_filename, dpi=150, bbox_inches='tight')
-        print(f"Training history saved to {training_plot_filename}")
+        log.info(f"Training history saved to {training_plot_filename}")
     
     # ============================================================
     # PLOT SOLUTION SNAPSHOTS
@@ -253,12 +272,20 @@ def main(cfg: DictConfig):
     with open(metrics_txt_path, "w") as f:
         for k, v in metrics.items():
             f.write(f"{k}: {v}\n")
-    print(f"Metrics saved to {metrics_txt_path}")
+    log.info(f"Metrics saved to {metrics_txt_path}")
     solution_plot_filename = os.path.join(output_fold, f'pinn_wave_solution_{TRAINING_CASE}.png')
     fig_solution.savefig(solution_plot_filename, dpi=150, bbox_inches='tight')
-    print(f"Solution comparison saved to {solution_plot_filename}")
+    log.info(f"Solution comparison saved to {solution_plot_filename}")
     
-    # ===========================================================
+    # ============================================================
+    # COMPLETION
+    # ============================================================
+    log.info("=" * 70)
+    log.info("EXPERIMENT COMPLETE")
+    log.info("=" * 70)
+    log.info(f"All outputs saved to: {output_fold}")
+    
+    # ============================================================
     # ROLLOUT TEST
     # ===========================================================
     
