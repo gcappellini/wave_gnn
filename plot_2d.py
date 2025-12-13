@@ -237,3 +237,56 @@ def plot_training_history(history, val_interval=100):
     ax.legend()
     plt.tight_layout()
     return fig
+
+
+def plot_training_with_pretraining(history, pretrain_history, val_interval=100):
+    """
+    Plot training history with pretraining phase separately highlighted.
+    Shows pretraining IC_u and IC_v losses + test metric alongside main training losses.
+    """
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+    
+    # ========== Left panel: Pretraining phase ==========
+    if pretrain_history is not None and len(pretrain_history) > 0:
+        pretrain_epochs = list(range(1, len(pretrain_history.get('loss_ic_u', [])) + 1))
+        if 'loss_ic_u' in pretrain_history and len(pretrain_history['loss_ic_u']) > 0:
+            ax1.semilogy(pretrain_epochs, pretrain_history['loss_ic_u'], color='#FFDAC1', label='IC_u Loss', linewidth=2.5, marker='.')
+        if 'loss_ic_v' in pretrain_history and len(pretrain_history['loss_ic_v']) > 0:
+            ax1.semilogy(pretrain_epochs, pretrain_history['loss_ic_v'], color='#FFB7B2', label='IC_v Loss', linewidth=2.5, marker='.')
+        
+        # Plot test metric if available
+        if 'test_metric' in pretrain_history and len(pretrain_history['test_metric']) > 0:
+            test_epochs_pre = pretrain_history.get('test_epochs', 
+                                                    [(i+1) * val_interval for i in range(len(pretrain_history['test_metric']))])
+            ax1.semilogy(test_epochs_pre, pretrain_history['test_metric'], color='#E6B89C', 
+                         label='Test Metric', linewidth=2.5, marker='o', markersize=5)
+        
+        ax1.set_title('Phase 1: Pretraining IC Reconstruction', fontsize=12, fontweight='bold')
+        ax1.set_xlabel('Epoch')
+        ax1.set_ylabel('Loss (log scale)')
+        ax1.grid(True, alpha=0.3)
+        ax1.legend(fontsize=11)
+    else:
+        ax1.text(0.5, 0.5, 'No pretraining data', ha='center', va='center', transform=ax1.transAxes)
+        ax1.set_title('Phase 1: Pretraining (Not Run)', fontsize=12, fontweight='bold')
+    
+    # ========== Right panel: Main training phase ==========
+    ax2.semilogy(history['total'], color='#A3C1DA', label='Total Loss', linewidth=2)
+    ax2.semilogy(history['pde'], color='#B5EAD7', label='PDE Residual Loss', linewidth=2)
+    ax2.semilogy(history['ic_u'], color='#FFDAC1', label='Displacement IC Loss', linewidth=2)
+    ax2.semilogy(history['ic_v'], color='#FFB7B2', label='Velocity IC Loss', linewidth=2)
+    
+    # Plot test metric if available with proper epoch alignment
+    if 'test_metric' in history and len(history['test_metric']) > 0:
+        test_epochs = history['test_epochs'] if 'test_epochs' in history else [(i+1) * val_interval for i in range(len(history['test_metric']))]
+        ax2.semilogy(test_epochs, history['test_metric'], color='#E6B89C', label='Test Metric', linewidth=2, marker='o', markersize=4)
+    
+    ax2.set_title('Phase 2: Main Training (Adaptive Weights)', fontsize=12, fontweight='bold')
+    ax2.set_xlabel('Epoch')
+    ax2.set_ylabel('Loss (log scale)')
+    ax2.grid(True, alpha=0.3)
+    ax2.legend(fontsize=11)
+    
+    plt.tight_layout()
+    return fig
+

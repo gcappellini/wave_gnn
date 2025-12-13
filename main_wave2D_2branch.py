@@ -1,6 +1,4 @@
 import torch
-import numpy as np
-import torch.nn as nn
 import pandas as pd
 import os
 import logging
@@ -42,44 +40,9 @@ def main(cfg: DictConfig):
     resume_training = cfg.run.resume_training
     
     # Training parameters
-    n_epochs = cfg.training.n_epochs
-    es_patience = cfg.training.es_patience
     val_interval = cfg.training.val_interval
-    lr = cfg.training.lr
-    lr_scheduler_step = cfg.training.lr_scheduler_step
-    lr_scheduler_gamma = cfg.training.lr_scheduler_gamma
-    log_interval = cfg.training.log_interval
-    max_grad_norm = cfg.training.max_grad_norm
-    n_batches = cfg.training.n_batches
     
     # Model parameters
-    n_sensors_ic = cfg.model.n_sensors_ic
-    n_sensors_src = cfg.model.n_sensors_src
-    branch_width = cfg.model.branch_width
-    trunk_width = cfg.model.trunk_width
-    branch_act = eval(cfg.model.branch_act)  # Convert string to nn module
-    trunk_act = eval(cfg.model.trunk_act)
-    branch_depth = cfg.model.branch_depth
-    trunk_depth = cfg.model.trunk_depth
-    p = cfg.model.p
-    wave_speed = cfg.model.wave_speed
-    damping_coeff = cfg.model.damping_coeff
-    w_pde = cfg.model.w_pde
-    w_ic_u = cfg.model.w_ic_u
-    w_ic_v = cfg.model.w_ic_v
-    strategy = cfg.model.strategy
-    use_fft_trunk = cfg.model.use_fft_trunk
-    fft_trunk_args = OmegaConf.to_container(cfg.model.fft_trunk_args) if cfg.model.use_fft_trunk else None
-    
-    # Dataset parameters
-    n_colloc = cfg.data.n_colloc
-    n_ic = cfg.data.n_ic
-    a_range = tuple(cfg.data.a_range)
-    b_range = tuple(cfg.data.b_range)
-    center_x_range = tuple(cfg.data.center_x_range)
-    center_y_range = tuple(cfg.data.center_y_range)
-    n_ic_u = cfg.data.n_ic_u
-    n_ic_v = cfg.data.n_ic_v
     
     log.info(f"✓ Configuration loaded from Hydra (saved to {output_fold}/.hydra/)\n")
     
@@ -102,21 +65,7 @@ def main(cfg: DictConfig):
     # INITIALIZE MODEL
     # ============================================================
     
-    model = PINNDeepONet_Wave2D(
-        n_sensors_ic=n_sensors_ic,
-        n_sensors_src=n_sensors_src,
-        branch_depth=branch_depth,
-        trunk_depth=trunk_depth,
-        branch_width=branch_width,
-        trunk_width=trunk_width,
-        branch_activation=branch_act,
-        trunk_activation=trunk_act,
-        p=p,
-        use_fft_trunk=use_fft_trunk,
-        fft_trunk_args=fft_trunk_args,
-        wave_speed=wave_speed,
-        damping_coeff=damping_coeff
-    )
+    model = PINNDeepONet_Wave2D(cfg)
     
     log.info(f"Model initialized with {sum(p.numel() for p in model.parameters())} parameters")
     log.info(f"\nModel architecture:\n{model}")
@@ -147,10 +96,16 @@ def main(cfg: DictConfig):
     # ============================================================
     # TRAINING OR LOADING
     # ============================================================
-    
-    checkpoint_path = f'checkpoints/pinn_wave2D_{load_from}.pth'
+
     
     if load_model:
+        load_date = load_from[0]
+        load_time = load_from[1]
+        if '/' in load_time:
+            load_fold = 'multirun'
+        else:
+            load_fold = 'outputs'
+        checkpoint_path = f'{load_fold}/{load_date}/{load_time}/model.pth'
         
         if os.path.exists(checkpoint_path):
             checkpoint = torch.load(checkpoint_path)
@@ -164,6 +119,13 @@ def main(cfg: DictConfig):
             return
     else:
         if resume_training:
+            load_date = load_from[0]
+            load_time = load_from[1]
+            if '/' in load_time:
+                load_fold = 'multirun'
+            else:
+                load_fold = 'outputs'
+            checkpoint_path = f'{load_fold}/{load_date}/{load_time}/model.pth'
             if not os.path.exists(checkpoint_path):
                 log.error(f"Pretrained model not found: {checkpoint_path}")
                 exit(1)
@@ -177,31 +139,9 @@ def main(cfg: DictConfig):
             source_type = 'zero'
         
         start_time = datetime.now()
-        history, best_model_info = model.train_pinn(
-            n_epochs=n_epochs,
-            n_colloc=n_colloc,
-            n_ic=n_ic,
-            a_range = a_range,
-            b_range=b_range,
-            center_x_range=center_x_range,
-            center_y_range=center_y_range,
-            T_max=T_max,
-            source_type=source_type,
-            lr=lr,
-            strategy=strategy,
+        history, pretrain_history, best_model_info = model.train_pinn(
+            cfg,
             output_fold=output_fold,
-            n_ic_u=n_ic_u,
-            n_ic_v=n_ic_v,
-            w_pde=w_pde,
-            w_ic_u=w_ic_u,
-            w_ic_v=w_ic_v,
-            early_stopping_patience=es_patience,
-            val_interval=val_interval,
-            lr_scheduler_gamma=lr_scheduler_gamma,
-            lr_scheduler_step=lr_scheduler_step,
-            log_interval=log_interval,
-            max_grad_norm=max_grad_norm,
-            n_batches=n_batches,
         )
         
         end_time = datetime.now()
@@ -212,6 +152,7 @@ def main(cfg: DictConfig):
         torch.save({
             'model_state_dict': model.state_dict(),
             'history': history,
+            'pretrain_history': pretrain_history,
             'best_model_info': best_model_info
         }, model_filename)
         
@@ -228,10 +169,12 @@ def main(cfg: DictConfig):
         # PLOT TRAINING HISTORY
         # ============================================================
         
-        fig_history = plot_training_history(history, val_interval=val_interval)
+        # Plot with pretraining history if available
+        from plot_2d import plot_training_with_pretraining
+        fig_history = plot_training_with_pretraining(history, pretrain_history, val_interval=val_interval)
         training_plot_filename = os.path.join(output_fold, f'pinn_wave_training_{TRAINING_CASE}.png')
         fig_history.savefig(training_plot_filename, dpi=150, bbox_inches='tight')
-        log.info(f"Training history saved to {training_plot_filename}")
+        log.info(f"Training history (with pretraining) saved to {training_plot_filename}")
     
     # ============================================================
     # PLOT SOLUTION SNAPSHOTS

@@ -135,95 +135,186 @@ class PINNDeepONet_Wave2D(nn.Module):
         damping_coeff: damping coefficient k
     """
     
-    def __init__(self, n_sensors_ic=20, n_sensors_src=20, 
-                 branch_width=100, trunk_width=100, branch_depth=4, trunk_depth=4, p=100, wave_speed=1.0, damping_coeff=1.0, branch_activation=nn.LeakyReLU(), trunk_activation=nn.Tanh(), use_fft_trunk=False, fft_trunk_args=None):
+    def __init__(self, cfg):
         super().__init__()
         
-        self.n_sensors_ic = n_sensors_ic
-        self.n_sensors_src = n_sensors_src
-        self.p = p
-        self.c = wave_speed
-        self.k = damping_coeff
+        self.n_sensors_ic = cfg.model.n_sensors_ic
+        self.n_sensors_src = cfg.model.n_sensors_src
+        self.p = cfg.model.p
+        self.c = cfg.model.wave_speed
+        self.k = cfg.model.damping_coeff
         self.domain = [0.0, 1.0]  # Square domain [0,1] × [0,1]
 
-        fft_trunk = FourierFeatureTransform(**(fft_trunk_args or {})) if use_fft_trunk else None
+        fft_trunk = FourierFeatureTransform(**(cfg.model.fft_trunk_args or {})) if cfg.model.use_fft_trunk else None
         
         # IC branch: takes BOTH u0 and v0 sensors (2D grids flattened)
-        self.branch_ic = BranchNet(2 * n_sensors_ic * n_sensors_ic, branch_width, 2 * p, n_hidden_layers=branch_depth, activation=branch_activation)
+        self.branch_ic = BranchNet(2 * cfg.model.n_sensors_ic * cfg.model.n_sensors_ic, cfg.model.branch_width, 2 * cfg.model.p, n_hidden_layers=cfg.model.branch_depth, activation=eval(cfg.model.branch_act))
         
         # Source branch: 2D grid flattened
-        self.branch_source = BranchNet(n_sensors_src * n_sensors_src, branch_width, p, n_hidden_layers=branch_depth, activation=branch_activation)
+        self.branch_source = BranchNet(cfg.model.n_sensors_src * cfg.model.n_sensors_src, cfg.model.branch_width, cfg.model.p, n_hidden_layers=cfg.model.branch_depth, activation=eval(cfg.model.branch_act))
         
         # Trunk network for (x, y, t)
-        self.trunk = TrunkNet(trunk_width, p, n_hidden_layers=trunk_depth, fft_transform=fft_trunk, activation=trunk_activation)
+        self.trunk = TrunkNet(cfg.model.trunk_width, cfg.model.p, n_hidden_layers=cfg.model.trunk_depth, fft_transform=fft_trunk, activation=eval(cfg.model.trunk_act))
         
         # Bias term
         self.bias = nn.Parameter(torch.zeros(1))
+        self.fusion = cfg.model.fusion
+
+        if cfg.model.fusion in ['comb_mlp', 'pure_mlp', 'hc']:
+            self.fusion_mlp = nn.Sequential(
+                nn.Linear(3 * self.p, 2 * self.p), # Hidden layer (e.g., 1024 neurons)
+                nn.Tanh(),                         # Use Tanh as it worked best for your Branch
+                nn.Linear(2 * self.p, self.p)      # Project back to rank p
+            )
+        if cfg.model.fusion == 'hc':
+            self.trunk_spatial = nn.Sequential(
+            nn.Linear(2, 128),
+            nn.Tanh(),
+            nn.Linear(128, 128),
+            nn.Tanh(),
+            nn.Linear(128, self.p)
+        )
+
         
         # Fixed sensor locations (2D grid)
-        x_1d = torch.linspace(self.domain[0], self.domain[1], n_sensors_ic)
-        y_1d = torch.linspace(self.domain[0], self.domain[1], n_sensors_ic)
+        x_1d = torch.linspace(self.domain[0], self.domain[1], cfg.model.n_sensors_ic)
+        y_1d = torch.linspace(self.domain[0], self.domain[1], cfg.model.n_sensors_ic)
         X_grid, Y_grid = torch.meshgrid(x_1d, y_1d, indexing='ij')
         self.register_buffer('sensor_x_ic', X_grid.flatten())
         self.register_buffer('sensor_y_ic', Y_grid.flatten())
         
-        x_1d_src = torch.linspace(self.domain[0], self.domain[1], n_sensors_src)
-        y_1d_src = torch.linspace(self.domain[0], self.domain[1], n_sensors_src)
+        x_1d_src = torch.linspace(self.domain[0], self.domain[1], cfg.model.n_sensors_src)
+        y_1d_src = torch.linspace(self.domain[0], self.domain[1], cfg.model.n_sensors_src)
         X_grid_src, Y_grid_src = torch.meshgrid(x_1d_src, y_1d_src, indexing='ij')
         self.register_buffer('sensor_x_src', X_grid_src.flatten())
         self.register_buffer('sensor_y_src', Y_grid_src.flatten())
     
+    def predict_ic(self, u0_sensors, v0_sensors, xyt):
+            """
+            Pre-training helper for Standard DeepONet (Sum/MLP Mixing).
+            Predicts u0 and v0 using the MAIN Trunk at t=0.
+            """
+            # 1. Branch Encoding
+            # Same as before: encode inputs to get latent vectors
+            if u0_sensors.dim() == 1: u0_sensors = u0_sensors.unsqueeze(0)
+            if v0_sensors.dim() == 1: v0_sensors = v0_sensors.unsqueeze(0)
+                
+            ic_concat = torch.cat([u0_sensors, v0_sensors], dim=1)
+            ic_encoded = self.branch_ic(ic_concat)
+            b_u = ic_encoded[:, :self.p]
+            b_v = ic_encoded[:, self.p:]
+
+            # 2. Trunk Evaluation at t=0
+            # We must enforce t=0 for the IC prediction context
+            # Check if input xyt already has t=0, or force it.
+            # Ideally, pass xyt where t is explicitly 0.0
+            
+            if xyt.dim() == 2:
+                tau = self.trunk(xyt) # Shape: (n_points, p)
+                # Reconstruct: (batch, p) @ (p, n_points)
+                u0_pred = torch.matmul(b_u, tau.T)
+                v0_pred = torch.matmul(b_v, tau.T)
+                
+            elif xyt.dim() == 3:
+                tau = self.trunk(xyt) # Shape: (batch, n_points, p)
+                # Reconstruct: Element-wise sum
+                u0_pred = torch.sum(b_u.unsqueeze(1) * tau, dim=-1)
+                v0_pred = torch.sum(b_v.unsqueeze(1) * tau, dim=-1)
+
+            return u0_pred, v0_pred
+    
     def forward(self, u0_sensors, v0_sensors, src_sensors, xyt):
-        """
-        Args:
-            u0_sensors: (n_sensors²,) - displacement IC on 2D grid (flattened)
-            v0_sensors: (n_sensors²,) - velocity IC on 2D grid (flattened)
-            src_sensors: (n_sensors²,) - source on 2D grid (flattened)
-            xyt: (n_points, 3) spatiotemporal coordinates [x, y, t]
-        
-        Returns:
-            u: (n_points,) - displacement
-        """
-        single_sample = u0_sensors.dim() == 1
-        if single_sample:
-            u0_sensors = u0_sensors.unsqueeze(0)
-            v0_sensors = v0_sensors.unsqueeze(0)
-            src_sensors = src_sensors.unsqueeze(0)
-        
-        # Concatenate ICs and encode
-        ic_concat = torch.cat([u0_sensors, v0_sensors], dim=1)
-        ic_encoded = self.branch_ic(ic_concat)
-        
-        # Split into displacement and velocity contributions
-        b_u = ic_encoded[:, :self.p]
-        b_v = ic_encoded[:, self.p:]
-        
-        # Encode source
-        b_src = self.branch_source(src_sensors)
-        
-        # Combine contributions
-        b_combined = b_u + b_v + b_src
-        
-        # Encode spatiotemporal locations
-        tau = self.trunk(xyt)
-        
-        # DeepONet operation
-        u_net = torch.matmul(b_combined, tau.T) + self.bias
-        
-        # Extract x, y coordinates
-        x = xyt[:, 0]
-        y = xyt[:, 1]
-        
-        # Hard BC enforcement: u = x*(1-x) * y*(1-y) * u_net
-        # bc_factor = x * (1.0 - x) * y * (1.0 - y)
-        bc_factor = torch.sin(np.pi * x) * torch.sin(np.pi * y)  # max = 1.0
-        
-        if single_sample:
-            u = bc_factor * u_net
-        else:
-            u = bc_factor.unsqueeze(0) * u_net
-        
-        return u.squeeze(0) if single_sample else u
+            """
+            Args:
+                u0_sensors: (n_sensors²,) - displacement IC on 2D grid (flattened)
+                v0_sensors: (n_sensors²,) - velocity IC on 2D grid (flattened)
+                src_sensors: (n_sensors²,) - source on 2D grid (flattened)
+                xyt: (n_points, 3) spatiotemporal coordinates [x, y, t]
+            
+            Returns:
+                u: (n_points,) - displacement
+            """
+            single_sample = u0_sensors.dim() == 1
+            if single_sample:
+                u0_sensors = u0_sensors.unsqueeze(0)
+                v0_sensors = v0_sensors.unsqueeze(0)
+                src_sensors = src_sensors.unsqueeze(0)
+            
+            # 1. Coordinate Extraction (Needed for HC and BCs)
+            x = xyt[:, 0]
+            y = xyt[:, 1]
+            t = xyt[:, 2]
+
+            # 2. Branch Encoding (Common to all methods)
+            ic_concat = torch.cat([u0_sensors, v0_sensors], dim=1)
+            ic_encoded = self.branch_ic(ic_concat)
+            
+            b_u = ic_encoded[:, :self.p]
+            b_v = ic_encoded[:, self.p:]
+            b_src = self.branch_source(src_sensors)
+            
+            # 3. Fusion Strategy Switch
+            if self.fusion == 'hc':
+                # --- HARD CONSTRAINT ANSATZ (Neural Ansatz) ---
+                
+                # A. Static Reconstruction (u0, v0)
+                # Use separate Spatial Trunk (inputs: x,y)
+                xy = xyt[:, :2]
+                tau_x = self.trunk_spatial(xy)  # Shape: (n_points, p)
+                
+                # Reconstruct ICs: (batch, p) @ (p, n_points) -> (batch, n_points)
+                u0_pred = torch.matmul(b_u, tau_x.T)
+                v0_pred = torch.matmul(b_v, tau_x.T)
+                
+                # B. Dynamic Correction Part
+                # We use the Residual MLP mixing for the dynamic coefficients
+                b_concat = torch.cat([b_u, b_v, b_src], dim=1)
+                b_correction = self.fusion_mlp(b_concat)
+                b_dynamic = b_u + b_v + b_src + b_correction
+                
+                # Spatiotemporal Trunk (inputs: x,y,t)
+                tau = self.trunk(xyt)  # Shape: (n_points, p)
+                
+                # Compute dynamic term
+                u_dynamic = torch.matmul(b_dynamic, tau.T) + self.bias
+                
+                # C. The Ansatz Combination
+                # u = u0 + t*v0 + (1 - exp(-t)) * u_dynamic
+                time_factor = 1.0 - torch.exp(-t)
+                
+                u_net = u0_pred + (t * v0_pred) + (time_factor * u_dynamic)
+
+            else:
+                # --- STANDARD DEEPONET (Soft Constraints) ---
+                
+                if self.fusion == 'comb_mlp':
+                    b_concat = torch.cat([b_u, b_v, b_src], dim=1)
+                    b_correction = self.fusion_mlp(b_concat)
+                    b_combined = b_u + b_v + b_src + b_correction
+                if self.fusion == 'pure_mlp':
+                    b_concat = torch.cat([b_u, b_v, b_src], dim=1)
+                    b_combined = self.fusion_mlp(b_concat)
+                elif self.fusion == 'sum':
+                    b_combined = b_u + b_v + b_src
+                
+                # Encode spatiotemporal locations
+                tau = self.trunk(xyt)
+                
+                # Standard DeepONet operation
+                u_net = torch.matmul(b_combined, tau.T) + self.bias
+            
+            # 4. Global Boundary Condition Enforcement
+            # Applies to the final solution regardless of method
+            # bc_factor = x * (1.0 - x) * y * (1.0 - y)
+            bc_factor = torch.sin(np.pi * x) * torch.sin(np.pi * y)
+            
+            # Ensure dimensionality matches for broadcasting
+            if single_sample:
+                u = bc_factor * u_net
+            else:
+                u = bc_factor.unsqueeze(0) * u_net
+            
+            return u.squeeze(0) if single_sample else u
     
     def compute_pde_residual(self, u0_sensors, v0_sensors, src_sensors, xyt, src_values):
         """
@@ -435,21 +526,48 @@ class PINNDeepONet_Wave2D(nn.Module):
                 loss_ic_u_accum / n_batches, 
                 loss_ic_v_accum / n_batches)
     
-    def train_pinn(self, n_epochs=5000, n_colloc=500, n_ic=200, lr=1e-3, 
-                   a_range=(-1.5, 1.5), b_range=(0.0, 0.0), 
-                   source_type='zero', source_amplitude=15.0, w_pde=1.0, w_ic_u=10.0, w_ic_v=10.0, strategy='fixed',
-                   center_x=0.5, center_y=0.5, center_y_range=(0.3, 0.7), center_x_range=(0.3, 0.7), n_ic_u=2, n_ic_v=2, T_max=1.0, output_fold=os.path.join(SCRIPT_DIR, 'logs_multibranch_wave'), 
-                   val_interval=1, n_test_cases=20, log_interval=500, early_stopping_patience=100, test_seed=42, lr_scheduler_gamma=0.95, lr_scheduler_step=100, max_grad_norm=1.0, n_batches=1):
+    def train_pinn(self, cfg, output_fold=os.path.join(SCRIPT_DIR, 'logs_multibranch_wave')):
         """
         Train PINN-DeepONet for 2D wave equation with early stopping based on test loss
         
         Args:
-            val_interval: Evaluate test loss every N epochs
-            n_test_cases: Number of random test cases (fixed seed)
-            early_stopping_patience: Stop if no improvement for N epochs
-            test_seed: Random seed for test set generation (deterministic)
-            n_batches: Number of mini-batches per epoch (gradient accumulation). Default 1 = single batch (no mini-batching)
+            cfg: Config object containing all training parameters
+            output_fold: Output directory for checkpoints and logs
         """
+        # Extract training parameters from config
+        n_epochs = cfg.training.n_epochs
+        n_colloc = cfg.data.n_colloc
+        n_ic = cfg.data.n_ic
+        lr = cfg.training.lr
+        strategy = cfg.model.strategy
+        w_pde = cfg.model.w_pde
+        w_ic_u = cfg.model.w_ic_u
+        w_ic_v = cfg.model.w_ic_v
+        val_interval = cfg.training.val_interval
+        early_stopping_patience = cfg.training.es_patience
+        n_test_cases = cfg.training.n_test_cases
+        test_seed = cfg.training.test_seed
+        lr_scheduler_gamma = cfg.training.lr_scheduler_gamma
+        lr_scheduler_step = cfg.training.lr_scheduler_step
+        max_grad_norm = cfg.training.max_grad_norm
+        n_batches = cfg.training.n_batches
+        log_interval = cfg.training.log_interval
+        
+        # Extract IC/source parameters from config
+        a_range = tuple(cfg.data.a_range)
+        b_range = tuple(cfg.data.b_range)
+        n_ic_u = cfg.data.n_ic_u
+        n_ic_v = cfg.data.n_ic_v
+        T_max = cfg.data.T_max
+        source_type = cfg.data.source_type
+        source_amplitude = cfg.data.source_amplitude
+        center_x = cfg.data.center_x
+        center_y = cfg.data.center_y
+        center_x_range = tuple(cfg.data.center_x_range) if cfg.data.center_x_range else None
+        center_y_range = tuple(cfg.data.center_y_range) if cfg.data.center_y_range else None
+        pretrain_ic = cfg.training.pretrain_ic 
+        n_epochs_pretrain = cfg.training.n_epochs_pretrain
+        
         log.info(f"Epochs: {n_epochs}")
         log.info(f"Collocation points: {n_colloc}")
         log.info(f"a range: {a_range}, b range: {b_range}")
@@ -477,7 +595,146 @@ class PINNDeepONet_Wave2D(nn.Module):
                 'center_x': cx_test,
                 'center_y': cy_test
             })
-        
+        # ==============================================================================
+        # PHASE 1: IC Pre-training (The "Freeze" Strategy)
+        # ==============================================================================
+        # Assuming n_epochs_pretrain is set (e.g., 1000)
+        pretrain_history = None  # Will be populated if pretrain_ic is True
+        if pretrain_ic: 
+            log.info(f"=== PHASE 1: Pre-training IC Reconstruction for {n_epochs_pretrain} epochs (Standard DeepONet) ===")
+            pretrain_history = {'loss_ic_u': [], 'loss_ic_v': [], 'test_metric': [], 'test_epochs': []}
+            
+            # 1. Freeze Dynamic Components (All layers initially)
+            for param in self.parameters():
+                param.requires_grad = False
+            
+            # 2. Unfreeze components for Standard DeepONet IC Reconstruction:
+            trainable_params = []
+            
+            # a. Unfreeze Branch IC
+            if hasattr(self, 'branch_ic'):
+                for param in self.branch_ic.parameters():
+                    param.requires_grad = True
+                    trainable_params.append(param)
+                    
+            # b. Unfreeze the MAIN TRUNK (The trunk must learn the basis functions)
+            if hasattr(self, 'trunk'): 
+                for param in self.trunk.parameters():
+                    param.requires_grad = True
+                    trainable_params.append(param)
+            
+            # 3. Optimizer for Phase 1 (Tracks only the unfrozen parameters)
+            optimizer_pre = torch.optim.Adam(trainable_params, lr=lr)
+            
+            # Track best pretraining model
+            best_pretrain_loss = float('inf')
+            best_pretrain_model_state = None
+            best_pretrain_epoch = 0
+            
+            # 4. Pre-training Loop
+            for epoch_pre in range(n_epochs_pretrain):
+                loss_ic_u_accum = 0.0
+                loss_ic_v_accum = 0.0
+                
+                for _ in range(n_batches):
+                    # Sample random IC coefficients
+                    a_coeffs_pre = sample_coeffs(n_ic_u, a_range, p=3.0, as_2d=True)
+                    b_coeffs_pre = sample_coeffs(n_ic_v, b_range, as_2d=True)
+                    
+                    # Generate Input Sensors
+                    u0_sensors_pre = self.generate_ic_sine_series(a_coeffs_pre)
+                    v0_sensors_pre = self.generate_ic_sine_series(b_coeffs_pre)
+                    
+                    # Generate Target Ground Truth Points (IC Grid)
+                    x_ic_1d = torch.linspace(self.domain[0], self.domain[1], n_ic)
+                    y_ic_1d = torch.linspace(self.domain[0], self.domain[1], n_ic)
+                    X_ic, Y_ic = torch.meshgrid(x_ic_1d, y_ic_1d, indexing='ij')
+                    x_ic = X_ic.flatten()
+                    y_ic = Y_ic.flatten()
+                    t_ic = torch.zeros_like(x_ic)
+                    xyt_ic = torch.stack([x_ic, y_ic, t_ic], dim=1)
+                    
+                    # Compute Ground Truth Field (u0 and v0)
+                    u0_true = self.generate_ic_sine_series(a_coeffs_pre, x_ic, y_ic)
+                    v0_true = self.generate_ic_sine_series(b_coeffs_pre, x_ic, y_ic)
+                    
+                    # Forward Pass: Compute reconstruction (requires custom logic in forward or helper)
+                    # NOTE: Since we reverted to the standard model, you MUST ensure
+                    # your self.predict_ic (or a similar block) now calls self.trunk (not trunk_spatial).
+                    u0_pred, v0_pred = self.predict_ic(u0_sensors_pre, v0_sensors_pre, xyt_ic)
+                    
+                    # Loss: Compute separate losses for Displacement and Velocity reconstruction
+                    loss_ic_u = torch.mean((u0_pred - u0_true)**2)
+                    loss_ic_v = torch.mean((v0_pred - v0_true)**2)
+                    loss_pre = loss_ic_u + loss_ic_v
+                    
+                    loss_pre.backward()
+                    loss_ic_u_accum += loss_ic_u.item()
+                    loss_ic_v_accum += loss_ic_v.item()
+                
+                # Update
+                optimizer_pre.step()
+                optimizer_pre.zero_grad()
+                
+                # Store pretraining history (separate IC_u and IC_v losses)
+                loss_ic_u_avg = loss_ic_u_accum / n_batches
+                loss_ic_v_avg = loss_ic_v_accum / n_batches
+                pretrain_history['loss_ic_u'].append(loss_ic_u_avg)
+                pretrain_history['loss_ic_v'].append(loss_ic_v_avg)
+                
+                # Compute test metric on test set every val_interval epochs (using IC components only)
+                if (epoch_pre + 1) % val_interval == 0:
+                    pretrain_test_metric = 0.0
+                    for test_case in test_cases:
+                        u0_test_pre = self.generate_ic_sine_series(test_case['a_coeffs'])
+                        v0_test_pre = self.generate_ic_sine_series(test_case['b_coeffs'])
+                        
+                        # Evaluate IC reconstruction on test set
+                        with torch.no_grad():
+                            x_test_ic_1d = torch.linspace(self.domain[0], self.domain[1], n_ic)
+                            y_test_ic_1d = torch.linspace(self.domain[0], self.domain[1], n_ic)
+                            X_test_ic, Y_test_ic = torch.meshgrid(x_test_ic_1d, y_test_ic_1d, indexing='ij')
+                            x_test_ic = X_test_ic.flatten()
+                            y_test_ic = Y_test_ic.flatten()
+                            t_test_ic = torch.zeros_like(x_test_ic)
+                            xyt_test_ic = torch.stack([x_test_ic, y_test_ic, t_test_ic], dim=1)
+                            
+                            u0_test_pred, v0_test_pred = self.predict_ic(u0_test_pre, v0_test_pre, xyt_test_ic)
+                            u0_test_true = self.generate_ic_sine_series(test_case['a_coeffs'], x_test_ic, y_test_ic)
+                            v0_test_true = self.generate_ic_sine_series(test_case['b_coeffs'], x_test_ic, y_test_ic)
+                            
+                            loss_test_ic_u = torch.mean((u0_test_pred - u0_test_true)**2)
+                            loss_test_ic_v = torch.mean((v0_test_pred - v0_test_true)**2)
+                            pretrain_test_metric += (loss_test_ic_u + loss_test_ic_v).item()
+                    
+                    pretrain_test_metric /= n_test_cases
+                    pretrain_history['test_metric'].append(pretrain_test_metric)
+                    pretrain_history['test_epochs'].append(epoch_pre + 1)
+                    
+                    # Save best pretraining model
+                    if pretrain_test_metric < best_pretrain_loss:
+                        best_pretrain_loss = pretrain_test_metric
+                        best_pretrain_model_state = {key: value.cpu().clone() for key, value in self.state_dict().items()}
+                        best_pretrain_epoch = epoch_pre
+                        log.info(f"  ✓ Pretrain test metric improved to {pretrain_test_metric:.6e} at epoch {epoch_pre+1}")
+                    
+                    if (epoch_pre + 1) % (val_interval * 5) == 0:
+                        log.info(f"  [Pre-train] Epoch {epoch_pre+1}/{n_epochs_pretrain} | IC_u Loss: {loss_ic_u_avg:.6e} | IC_v Loss: {loss_ic_v_avg:.6e} | Test Metric: {pretrain_test_metric:.6e}")
+                elif (epoch_pre + 1) % 100 == 0:
+                    log.info(f"  [Pre-train] Epoch {epoch_pre+1}/{n_epochs_pretrain} | IC_u Loss: {loss_ic_u_avg:.6e} | IC_v Loss: {loss_ic_v_avg:.6e}")
+            
+            log.info("=== PHASE 1 COMPLETE. ICs learned. Unfreezing for Phase 2. ===")
+            
+            # Restore best pretraining model if one was saved
+            if best_pretrain_model_state is not None:
+                self.load_state_dict(best_pretrain_model_state)
+                log.info(f"Restored best pretraining model from epoch {best_pretrain_epoch+1} with test metric {best_pretrain_loss:.6e}")
+            
+            # 5. Unfreeze Everything for Phase 2
+            for param in self.parameters():
+                param.requires_grad = True
+
+
         initial_weights = {'PDE': w_pde, 'IC_u': w_ic_u, 'IC_v': w_ic_v}
         adaptive_weights = AdaptiveLossWeights(
             initial_weights=initial_weights,
@@ -687,16 +944,8 @@ class PINNDeepONet_Wave2D(nn.Module):
                         'test_metric': test_metric,
                         'test_losses': best_test_losses,
                         'history': history,
-                        'config': {
-                            'n_epochs': n_epochs,
-                            'lr': lr,
-                            'strategy': strategy,
-                            'w_pde': w_pde,
-                            'w_ic_u': w_ic_u,
-                            'w_ic_v': w_ic_v,
-                        }
+                        'config': cfg,
                     }, checkpoint_path)
-                    # log.info(f"  → Saved to {checkpoint_path}")
                 else:
                     epochs_without_improvement += val_interval
                     if epochs_without_improvement % (val_interval * 5) == 0:  # Print every 5 evals
@@ -749,7 +998,7 @@ class PINNDeepONet_Wave2D(nn.Module):
             log.info(f"  Best model loss components -> PDE: {best_test_losses['pde']:.6e}, IC_u: {best_test_losses['ic_u']:.6e}, IC_v: {best_test_losses['ic_v']:.6e}")
         
         log.info(f"Training complete!")
-        return history, {
+        return history, pretrain_history, {
             'best_epoch': best_epoch, 
             'best_test_metric': best_test_loss, 
             'best_losses': best_test_losses,
