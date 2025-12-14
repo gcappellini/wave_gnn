@@ -16,6 +16,8 @@ ENV/
 
 # Hydra outputs
 outputs/
+!outputs/2025-12-11/10-06-18
+!outputs/2025-12-13/13-38-38
 pi-operator/
 multirun/
 .hydra/

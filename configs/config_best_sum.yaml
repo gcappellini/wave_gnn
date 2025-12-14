@@ -9,15 +9,15 @@ hydra:
 run:
   load_model: false
   resume_training: true
-  load_from: ['2025-12-13','13-38-38']
+  load_from: ['2025-12-11','10-06-18']
 
 training:
-  n_epochs: 15000
+  n_epochs: 1
   lr: 0.001
   lr_scheduler_step: 500
   lr_scheduler_gamma: 0.95
   # LBFGS fine-tuning (optional, applied after Adam training)
-  use_lbfgs_finetune: False  # Set to True to apply LBFGS after Adam
+  use_lbfgs_finetune: True  # Set to True to apply LBFGS after Adam
   lbfgs_n_epochs: 100  # Number of LBFGS epochs
   lbfgs_max_iter: 20  # Max line search iterations per LBFGS step
   lbfgs_lr: 0.001
@@ -56,8 +56,8 @@ model:
   w_pde: 1.0
   w_ic_u: 50.0
   w_ic_v: 50.0
-  strategy: 'ntk'
-  fusion: 'hc'
+  strategy: 'fixed'
+  fusion: 'sum'
 
 data:
   n_colloc: 800

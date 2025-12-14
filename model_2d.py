@@ -470,7 +470,7 @@ class PINNDeepONet_Wave2D(nn.Module):
                              n_ic_u, n_ic_v, weights, optimizer, max_grad_norm):
         """
         Execute one epoch with mini-batch training: sample multiple IC/source configs,
-        compute losses, accumulate gradients, then update once per epoch.
+        compute losses, accumulate gradients, then update once per epoch (Adam).
         
         Returns:
             epoch_loss_pde, epoch_loss_ic_u, epoch_loss_ic_v (averaged over batches)
@@ -540,6 +540,10 @@ class PINNDeepONet_Wave2D(nn.Module):
         n_ic = cfg.data.n_ic
         lr = cfg.training.lr
         strategy = cfg.model.strategy
+        use_lbfgs_finetune = cfg.training.get('use_lbfgs_finetune', False)
+        lbfgs_n_epochs = cfg.training.get('lbfgs_n_epochs', 100)
+        lbfgs_max_iter = cfg.training.get('lbfgs_max_iter', 20)
+        lbfgs_lr = cfg.training.get('lbfgs_lr', lr)
         w_pde = cfg.model.w_pde
         w_ic_u = cfg.model.w_ic_u
         w_ic_v = cfg.model.w_ic_v
@@ -741,10 +745,14 @@ class PINNDeepONet_Wave2D(nn.Module):
             strategy=strategy,  
         )
 
+        # Initialize Adam optimizer (LBFGS will be applied as optional fine-tuning after)
         optimizer = torch.optim.Adam(self.parameters(), lr=lr)
         scheduler = torch.optim.lr_scheduler.ExponentialLR(
             optimizer, gamma=lr_scheduler_gamma
         )
+        log.info(f"Using Adam optimizer with lr={lr}")
+        if use_lbfgs_finetune:
+            log.info(f"  LBFGS fine-tuning enabled: {lbfgs_n_epochs} epochs, max_iter={lbfgs_max_iter}, lr={lbfgs_lr}")
         
         history = {'total': [], 'pde': [], 'ic_u': [], 'ic_v': [], 'test_metric': [], 'test_epochs': []}
         
@@ -861,8 +869,8 @@ class PINNDeepONet_Wave2D(nn.Module):
             history['ic_u'].append(loss_ic_u_avg)
             history['ic_v'].append(loss_ic_v_avg)
             
-            # Update learning rate scheduler every lr_scheduler_step epochs
-            if (epoch + 1) % lr_scheduler_step == 0:
+            # Update learning rate scheduler every lr_scheduler_step epochs (only for Adam)
+            if scheduler is not None and (epoch + 1) % lr_scheduler_step == 0:
                 scheduler.step()
             
             # Evaluate on test set every val_interval epochs
@@ -996,6 +1004,112 @@ class PINNDeepONet_Wave2D(nn.Module):
             self.load_state_dict(best_model_state)
             log.info(f"Restored best model from epoch {best_epoch} with test metric {best_test_loss:.6f}")
             log.info(f"  Best model loss components -> PDE: {best_test_losses['pde']:.6e}, IC_u: {best_test_losses['ic_u']:.6e}, IC_v: {best_test_losses['ic_v']:.6e}")
+        
+        # Optional LBFGS fine-tuning phase
+        if use_lbfgs_finetune:
+            log.info(f"\n{'='*70}")
+            log.info(f"PHASE 3: LBFGS Fine-tuning ({lbfgs_n_epochs} epochs)")
+            log.info(f"{'='*70}")
+            
+            # Create LBFGS optimizer for fine-tuning
+            optimizer_lbfgs = torch.optim.LBFGS(self.parameters(), lr=lbfgs_lr, 
+                                                max_iter=lbfgs_max_iter,
+                                                line_search_fn='strong_wolfe')
+            
+            for epoch_lbfgs in range(lbfgs_n_epochs):
+                # Use current weights (fixed strategy used for LBFGS typically)
+                weights_lbfgs = initial_weights if strategy == 'fixed' else adaptive_weights.get_current_weights()
+                
+                # Define closure for LBFGS
+                def closure_lbfgs():
+                    optimizer_lbfgs.zero_grad()
+                    loss_total_lbfgs = 0.0
+                    
+                    # Sample single batch for LBFGS step
+                    a_lbfgs = sample_coeffs(n_ic_u, a_range, p=3.0, as_2d=True)
+                    b_lbfgs = sample_coeffs(n_ic_v, b_range, p=3.0, as_2d=True)
+                    
+                    if center_x_range is not None and center_y_range is not None and source_type == 'gaussian':
+                        cx_lbfgs = center_x_range[0] + (center_x_range[1] - center_x_range[0]) * torch.rand(1).item()
+                        cy_lbfgs = center_y_range[0] + (center_y_range[1] - center_y_range[0]) * torch.rand(1).item()
+                    else:
+                        cx_lbfgs, cy_lbfgs = center_x, center_y
+                    
+                    u0_lbfgs = self.generate_ic_sine_series(a_lbfgs)
+                    v0_lbfgs = self.generate_ic_sine_series(b_lbfgs)
+                    src_lbfgs = self.generate_source(source_type, source_amplitude, cx_lbfgs, cy_lbfgs)
+                    
+                    loss_pde_lbfgs, loss_ic_u_lbfgs, loss_ic_v_lbfgs = self._compute_batch_losses(
+                        u0_lbfgs, v0_lbfgs, src_lbfgs,
+                        n_colloc, n_ic, T_max, source_type, source_amplitude, cx_lbfgs, cy_lbfgs,
+                        a_lbfgs, b_lbfgs
+                    )
+                    
+                    loss_total_lbfgs = (weights_lbfgs['PDE'] * loss_pde_lbfgs + 
+                                       weights_lbfgs['IC_u'] * loss_ic_u_lbfgs + 
+                                       weights_lbfgs['IC_v'] * loss_ic_v_lbfgs)
+                    
+                    loss_total_lbfgs.backward()
+                    return loss_total_lbfgs
+                
+                # LBFGS step
+                optimizer_lbfgs.step(closure_lbfgs)
+                
+                # Evaluate test metric every val_interval epochs during LBFGS
+                if (epoch_lbfgs + 1) % val_interval == 0:
+                    test_metric_lbfgs = 0.0
+                    for test_case in test_cases:
+                        u0_test_lbfgs = self.generate_ic_sine_series(test_case['a_coeffs'])
+                        v0_test_lbfgs = self.generate_ic_sine_series(test_case['b_coeffs'])
+                        src_test_lbfgs = self.generate_source(source_type, source_amplitude, test_case['center_x'], test_case['center_y'])
+                        
+                        x_test_lbfgs = self.domain[0] + (self.domain[1] - self.domain[0]) * torch.rand(n_colloc)
+                        y_test_lbfgs = self.domain[0] + (self.domain[1] - self.domain[0]) * torch.rand(n_colloc)
+                        t_test_lbfgs = T_max * torch.rand(n_colloc)
+                        xyt_test_lbfgs = torch.stack([x_test_lbfgs, y_test_lbfgs, t_test_lbfgs], dim=1)
+                        src_test_lbfgs = self.source_function(x_test_lbfgs, y_test_lbfgs, source_type, source_amplitude, test_case['center_x'], test_case['center_y'])
+                        
+                        residual_test_lbfgs = self.compute_pde_residual(u0_test_lbfgs, v0_test_lbfgs, src_test_lbfgs, xyt_test_lbfgs, src_test_lbfgs)
+                        loss_pde_test_lbfgs = torch.mean(residual_test_lbfgs ** 2)
+                        
+                        with torch.no_grad():
+                            x_ic_lbfgs = torch.linspace(self.domain[0], self.domain[1], n_ic)
+                            y_ic_lbfgs = torch.linspace(self.domain[0], self.domain[1], n_ic)
+                            X_ic_lbfgs, Y_ic_lbfgs = torch.meshgrid(x_ic_lbfgs, y_ic_lbfgs, indexing='ij')
+                            xyt_ic_lbfgs = torch.stack([X_ic_lbfgs.flatten(), Y_ic_lbfgs.flatten(), torch.zeros_like(X_ic_lbfgs.flatten())], dim=1)
+                            
+                            u_ic_lbfgs = self.forward(u0_test_lbfgs, v0_test_lbfgs, src_test_lbfgs, xyt_ic_lbfgs)
+                            u_ic_true_lbfgs = self.generate_ic_sine_series(test_case['a_coeffs'], xyt_ic_lbfgs[:, 0], xyt_ic_lbfgs[:, 1])
+                            loss_ic_u_test_lbfgs = torch.mean((u_ic_lbfgs - u_ic_true_lbfgs) ** 2)
+                        
+                        xyt_ic_grad_lbfgs = xyt_ic_lbfgs.clone().requires_grad_(True)
+                        u_ic_grad_lbfgs = self.forward(u0_test_lbfgs, v0_test_lbfgs, src_test_lbfgs, xyt_ic_grad_lbfgs)
+                        u_t_ic_lbfgs = torch.autograd.grad(u_ic_grad_lbfgs, xyt_ic_grad_lbfgs, torch.ones_like(u_ic_grad_lbfgs), create_graph=True)[0][:, 2]
+                        v_ic_true_lbfgs = self.generate_ic_sine_series(test_case['b_coeffs'], xyt_ic_lbfgs[:, 0], xyt_ic_lbfgs[:, 1])
+                        loss_ic_v_test_lbfgs = torch.mean((u_t_ic_lbfgs - v_ic_true_lbfgs) ** 2)
+                        
+                        test_metric_lbfgs += np.sqrt(loss_pde_test_lbfgs.item()**2 + 10*loss_ic_u_test_lbfgs.item()**2 + loss_ic_v_test_lbfgs.item()**2)
+                    
+                    test_metric_lbfgs /= n_test_cases
+                    
+                    # Track in history
+                    history['test_metric'].append(test_metric_lbfgs)
+                    history['test_epochs'].append(n_epochs + epoch_lbfgs + 1)  # Epoch number includes main training
+                    
+                    # Save checkpoint if improved
+                    if test_metric_lbfgs < best_test_loss:
+                        best_test_loss = test_metric_lbfgs
+                        best_model_state = {key: value.cpu().clone() for key, value in self.state_dict().items()}
+                        best_epoch = n_epochs + epoch_lbfgs
+                        log.info(f"✓ LBFGS: Test metric improved to {test_metric_lbfgs:.6e} at epoch {n_epochs + epoch_lbfgs + 1}")
+                    
+                    if (epoch_lbfgs + 1) % (val_interval * 5) == 0:
+                        log.info(f"  LBFGS Epoch {epoch_lbfgs+1}/{lbfgs_n_epochs} | Test Metric: {test_metric_lbfgs:.6e}")
+            
+            # Restore best model found during LBFGS if better
+            if best_model_state is not None:
+                self.load_state_dict(best_model_state)
+                log.info(f"\nRestored best model from LBFGS phase (epoch {best_epoch + 1}) with test metric {best_test_loss:.6f}")
         
         log.info(f"Training complete!")
         return history, pretrain_history, {
