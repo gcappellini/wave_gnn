@@ -303,16 +303,23 @@ class PINNDeepONet_Wave2D(nn.Module):
                 # Standard DeepONet operation
                 u_net = torch.matmul(b_combined, tau.T) + self.bias
             
-            # 4. Global Boundary Condition Enforcement
-            # Applies to the final solution regardless of method
-            # bc_factor = x * (1.0 - x) * y * (1.0 - y)
-            bc_factor = torch.sin(np.pi * x) * torch.sin(np.pi * y)
+            # 4. Global Boundary Condition Enforcement (Sharp polynomial BC)
+            # Uses polynomial: x(1-x)*y(1-y) which ensures:
+            #   - u = 0 at all four boundaries (x=0, x=1, y=0, y=1)
+            #   - du/dx = 0 and du/dy = 0 at boundaries (zero normal derivative)
+            # This is sharper than sin(πx)*sin(πy) and provides stronger constraints
+
+            # 1. New BC factor with zero derivative at boundaries
+            bc_factor_sq = (x * (1.0 - x))**2 * (y * (1.0 - y))**2
+
+            # 2. Rescale u_net by 16.0 to compensate for the smaller bc_factor_sq peak (0.0625)
+            u_net_rescaled = 16.0 * u_net
             
             # Ensure dimensionality matches for broadcasting
             if single_sample:
-                u = bc_factor * u_net
+                u = bc_factor_sq * u_net_rescaled
             else:
-                u = bc_factor.unsqueeze(0) * u_net
+                u = bc_factor_sq.unsqueeze(0) * u_net_rescaled
             
             return u.squeeze(0) if single_sample else u
     
