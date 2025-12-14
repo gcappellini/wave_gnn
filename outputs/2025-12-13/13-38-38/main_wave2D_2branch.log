@@ -1,0 +1,340 @@
+[2025-12-13 13:38:38,067][__main__][INFO] - ======================================================================
+[2025-12-13 13:38:38,067][__main__][INFO] - CONFIGURATION
+[2025-12-13 13:38:38,067][__main__][INFO] - ======================================================================
+[2025-12-13 13:38:38,068][__main__][INFO] - 
+run:
+  load_model: false
+  resume_training: false
+  load_from: null
+training:
+  n_epochs: 5000
+  lr: 0.001
+  lr_scheduler_step: 500
+  lr_scheduler_gamma: 0.95
+  log_interval: 200
+  val_interval: 20
+  es_patience: 5000
+  max_grad_norm: 1.0
+  n_batches: 16
+  n_test_cases: 50
+  test_seed: 42
+  pretrain_ic: true
+  n_epochs_pretrain: 4000
+model:
+  n_sensors_ic: 40
+  n_sensors_src: 20
+  branch_width: 300
+  trunk_width: 300
+  branch_act: nn.Tanh()
+  trunk_act: nn.Tanh()
+  branch_depth: 4
+  trunk_depth: 8
+  p: 512
+  wave_speed: 1.0
+  damping_coeff: 1.0
+  use_fft_trunk: true
+  fft_trunk_args:
+    input_dim: 3
+    m_spatial_x: 64
+    m_spatial_y: 64
+    m_temporal: 64
+    sigma_spatial_x: 0.1
+    sigma_spatial_y: 0.1
+    sigma_temporal_list:
+    - 0.1
+    seed: 42
+  w_pde: 1.0
+  w_ic_u: 50.0
+  w_ic_v: 50.0
+  strategy: ntk
+  fusion: hc
+data:
+  n_colloc: 800
+  n_ic: 50
+  a_range:
+  - -0.1
+  - 0.6
+  b_range:
+  - -0.1
+  - 0.1
+  center_x_range:
+  - 0.3
+  - 0.7
+  center_y_range:
+  - 0.3
+  - 0.7
+  center_x: 0.5
+  center_y: 0.5
+  n_ic_u: 2
+  n_ic_v: 2
+  source_type: zero
+  source_amplitude: 15.0
+  T_max: 1.0
+
+
+[2025-12-13 13:38:38,068][__main__][INFO] - Output directory: /Users/guglielmocappellini/Desktop/research/code/pinns-wave/wave-gnn/1_gcn_string/outputs/2025-12-13/13-38-38
+[2025-12-13 13:38:38,068][__main__][INFO] - ✓ Configuration loaded from Hydra (saved to /Users/guglielmocappellini/Desktop/research/code/pinns-wave/wave-gnn/1_gcn_string/outputs/2025-12-13/13-38-38/.hydra/)
+
+[2025-12-13 13:38:38,083][__main__][INFO] - Model initialized with 5438981 parameters
+[2025-12-13 13:38:38,083][__main__][INFO] - 
+Model architecture:
+PINNDeepONet_Wave2D(
+  (branch_ic): BranchNet(
+    (input_layer): Linear(in_features=3200, out_features=300, bias=True)
+    (activation): Tanh()
+    (hidden_layers): ModuleList(
+      (0-3): 4 x Linear(in_features=300, out_features=300, bias=True)
+    )
+    (output_layer): Linear(in_features=300, out_features=1024, bias=True)
+  )
+  (branch_source): BranchNet(
+    (input_layer): Linear(in_features=400, out_features=300, bias=True)
+    (activation): Tanh()
+    (hidden_layers): ModuleList(
+      (0-3): 4 x Linear(in_features=300, out_features=300, bias=True)
+    )
+    (output_layer): Linear(in_features=300, out_features=512, bias=True)
+  )
+  (trunk): TrunkNet(
+    (fft_transform): FourierFeatureTransform()
+    (input_layer): Linear(in_features=384, out_features=300, bias=True)
+    (activation): Tanh()
+    (hidden_layers): ModuleList(
+      (0-7): 8 x Linear(in_features=300, out_features=300, bias=True)
+    )
+    (output_layer): Linear(in_features=300, out_features=512, bias=True)
+  )
+  (fusion_mlp): Sequential(
+    (0): Linear(in_features=1536, out_features=1024, bias=True)
+    (1): Tanh()
+    (2): Linear(in_features=1024, out_features=512, bias=True)
+  )
+  (trunk_spatial): Sequential(
+    (0): Linear(in_features=2, out_features=128, bias=True)
+    (1): Tanh()
+    (2): Linear(in_features=128, out_features=128, bias=True)
+    (3): Tanh()
+    (4): Linear(in_features=128, out_features=512, bias=True)
+  )
+)
+[2025-12-13 13:38:38,083][__main__][INFO] - Loading ground truth from /Users/guglielmocappellini/Desktop/research/code/pinns-wave/wave-gnn/1_gcn_string/data/gt_wave2D_no_source.csv
+[2025-12-13 13:38:38,134][__main__][INFO] - Ground truth shape: (153700, 6)
+[2025-12-13 13:38:38,134][__main__][INFO] - Columns: [x, y, t, f, u, v]
+[2025-12-13 13:38:38,134][__main__][INFO] - Loading rollout ground truth from /Users/guglielmocappellini/Desktop/research/code/pinns-wave/wave-gnn/1_gcn_string/data/gt_wave2D_no_source_rollout.csv
+[2025-12-13 13:38:38,185][__main__][INFO] - Rollout ground truth shape: (153700, 6)
+[2025-12-13 13:38:38,185][model_2d][INFO] - Epochs: 5000
+[2025-12-13 13:38:38,185][model_2d][INFO] - Collocation points: 800
+[2025-12-13 13:38:38,185][model_2d][INFO] - a range: (-0.1, 0.6), b range: (-0.1, 0.1)
+[2025-12-13 13:38:38,185][model_2d][INFO] - Source: zero, amplitude: 15.0, center x range: (0.3, 0.7), center y range: (0.3, 0.7)
+[2025-12-13 13:38:38,185][model_2d][INFO] - Wave speed: 1.0, Damping: 1.0
+[2025-12-13 13:38:38,185][model_2d][INFO] - Early stopping: patience=5000, val_interval=20, n_test_cases=50
+[2025-12-13 13:38:38,187][model_2d][INFO] - === PHASE 1: Pre-training IC Reconstruction for 4000 epochs (Standard DeepONet) ===
+[2025-12-13 13:38:53,754][model_2d][INFO] -   ✓ Pretrain test metric improved to 1.389525e-01 at epoch 20
+[2025-12-13 13:39:09,127][model_2d][INFO] -   ✓ Pretrain test metric improved to 5.429502e-02 at epoch 40
+[2025-12-13 13:39:56,177][model_2d][INFO] -   [Pre-train] Epoch 100/4000 | IC_u Loss: 6.010262e-02 | IC_v Loss: 9.040648e-03 | Test Metric: 5.959950e-02
+[2025-12-13 13:40:11,399][model_2d][INFO] -   ✓ Pretrain test metric improved to 4.880908e-02 at epoch 120
+[2025-12-13 13:40:27,391][model_2d][INFO] -   ✓ Pretrain test metric improved to 4.749130e-02 at epoch 140
+[2025-12-13 13:40:42,948][model_2d][INFO] -   ✓ Pretrain test metric improved to 4.493516e-02 at epoch 160
+[2025-12-13 13:40:58,585][model_2d][INFO] -   ✓ Pretrain test metric improved to 4.314462e-02 at epoch 180
+[2025-12-13 13:41:14,271][model_2d][INFO] -   ✓ Pretrain test metric improved to 3.917194e-02 at epoch 200
+[2025-12-13 13:41:14,271][model_2d][INFO] -   [Pre-train] Epoch 200/4000 | IC_u Loss: 3.094901e-02 | IC_v Loss: 1.681695e-03 | Test Metric: 3.917194e-02
+[2025-12-13 13:41:44,493][model_2d][INFO] -   ✓ Pretrain test metric improved to 3.855939e-02 at epoch 240
+[2025-12-13 13:41:59,633][model_2d][INFO] -   ✓ Pretrain test metric improved to 3.701442e-02 at epoch 260
+[2025-12-13 13:42:14,816][model_2d][INFO] -   ✓ Pretrain test metric improved to 3.651098e-02 at epoch 280
+[2025-12-13 13:42:29,949][model_2d][INFO] -   ✓ Pretrain test metric improved to 3.529354e-02 at epoch 300
+[2025-12-13 13:42:29,949][model_2d][INFO] -   [Pre-train] Epoch 300/4000 | IC_u Loss: 3.135981e-02 | IC_v Loss: 1.213988e-03 | Test Metric: 3.529354e-02
+[2025-12-13 13:42:45,351][model_2d][INFO] -   ✓ Pretrain test metric improved to 3.347934e-02 at epoch 320
+[2025-12-13 13:43:30,845][model_2d][INFO] -   ✓ Pretrain test metric improved to 3.162319e-02 at epoch 380
+[2025-12-13 13:43:45,921][model_2d][INFO] -   ✓ Pretrain test metric improved to 2.702309e-02 at epoch 400
+[2025-12-13 13:43:45,921][model_2d][INFO] -   [Pre-train] Epoch 400/4000 | IC_u Loss: 2.852561e-02 | IC_v Loss: 1.089564e-03 | Test Metric: 2.702309e-02
+[2025-12-13 13:44:01,132][model_2d][INFO] -   ✓ Pretrain test metric improved to 2.477476e-02 at epoch 420
+[2025-12-13 13:44:16,320][model_2d][INFO] -   ✓ Pretrain test metric improved to 2.445524e-02 at epoch 440
+[2025-12-13 13:44:31,428][model_2d][INFO] -   ✓ Pretrain test metric improved to 1.865329e-02 at epoch 460
+[2025-12-13 13:44:46,732][model_2d][INFO] -   ✓ Pretrain test metric improved to 1.258647e-02 at epoch 480
+[2025-12-13 13:45:01,886][model_2d][INFO] -   [Pre-train] Epoch 500/4000 | IC_u Loss: 2.242603e-02 | IC_v Loss: 2.049821e-03 | Test Metric: 3.063847e-02
+[2025-12-13 13:45:32,068][model_2d][INFO] -   ✓ Pretrain test metric improved to 1.010362e-02 at epoch 540
+[2025-12-13 13:45:47,224][model_2d][INFO] -   ✓ Pretrain test metric improved to 8.422172e-03 at epoch 560
+[2025-12-13 13:46:02,365][model_2d][INFO] -   ✓ Pretrain test metric improved to 7.674032e-03 at epoch 580
+[2025-12-13 13:46:17,656][model_2d][INFO] -   ✓ Pretrain test metric improved to 4.791932e-03 at epoch 600
+[2025-12-13 13:46:17,657][model_2d][INFO] -   [Pre-train] Epoch 600/4000 | IC_u Loss: 4.832464e-03 | IC_v Loss: 5.572401e-04 | Test Metric: 4.791932e-03
+[2025-12-13 13:47:03,082][model_2d][INFO] -   ✓ Pretrain test metric improved to 3.500716e-03 at epoch 660
+[2025-12-13 13:47:33,240][model_2d][INFO] -   [Pre-train] Epoch 700/4000 | IC_u Loss: 6.401115e-03 | IC_v Loss: 4.871652e-04 | Test Metric: 6.339428e-03
+[2025-12-13 13:48:18,575][model_2d][INFO] -   ✓ Pretrain test metric improved to 3.093855e-03 at epoch 760
+[2025-12-13 13:48:33,746][model_2d][INFO] -   ✓ Pretrain test metric improved to 3.000102e-03 at epoch 780
+[2025-12-13 13:48:48,846][model_2d][INFO] -   [Pre-train] Epoch 800/4000 | IC_u Loss: 1.727160e-03 | IC_v Loss: 1.604184e-04 | Test Metric: 4.454451e-03
+[2025-12-13 13:49:03,970][model_2d][INFO] -   ✓ Pretrain test metric improved to 1.843787e-03 at epoch 820
+[2025-12-13 13:50:04,199][model_2d][INFO] -   [Pre-train] Epoch 900/4000 | IC_u Loss: 2.374475e-03 | IC_v Loss: 1.254474e-04 | Test Metric: 2.529605e-03
+[2025-12-13 13:50:19,338][model_2d][INFO] -   ✓ Pretrain test metric improved to 1.350457e-03 at epoch 920
+[2025-12-13 13:50:34,561][model_2d][INFO] -   ✓ Pretrain test metric improved to 1.092263e-03 at epoch 940
+[2025-12-13 13:51:20,230][model_2d][INFO] -   [Pre-train] Epoch 1000/4000 | IC_u Loss: 2.223348e-03 | IC_v Loss: 1.283673e-04 | Test Metric: 1.589997e-03
+[2025-12-13 13:52:05,957][model_2d][INFO] -   ✓ Pretrain test metric improved to 9.132393e-04 at epoch 1060
+[2025-12-13 13:52:21,146][model_2d][INFO] -   ✓ Pretrain test metric improved to 7.759748e-04 at epoch 1080
+[2025-12-13 13:52:36,161][model_2d][INFO] -   [Pre-train] Epoch 1100/4000 | IC_u Loss: 1.741307e-03 | IC_v Loss: 1.046092e-04 | Test Metric: 1.576756e-03
+[2025-12-13 13:53:51,242][model_2d][INFO] -   [Pre-train] Epoch 1200/4000 | IC_u Loss: 1.946381e-03 | IC_v Loss: 1.154571e-04 | Test Metric: 1.018112e-03
+[2025-12-13 13:54:21,265][model_2d][INFO] -   ✓ Pretrain test metric improved to 7.218628e-04 at epoch 1240
+[2025-12-13 13:55:07,047][model_2d][INFO] -   [Pre-train] Epoch 1300/4000 | IC_u Loss: 1.083645e-03 | IC_v Loss: 6.900131e-05 | Test Metric: 7.219918e-04
+[2025-12-13 13:56:23,444][model_2d][INFO] -   [Pre-train] Epoch 1400/4000 | IC_u Loss: 8.386025e-04 | IC_v Loss: 5.932132e-05 | Test Metric: 1.046441e-03
+[2025-12-13 13:56:54,015][model_2d][INFO] -   ✓ Pretrain test metric improved to 5.855749e-04 at epoch 1440
+[2025-12-13 13:57:39,241][model_2d][INFO] -   [Pre-train] Epoch 1500/4000 | IC_u Loss: 5.682096e-04 | IC_v Loss: 4.853802e-05 | Test Metric: 7.926340e-04
+[2025-12-13 13:58:09,625][model_2d][INFO] -   ✓ Pretrain test metric improved to 5.485411e-04 at epoch 1540
+[2025-12-13 13:58:24,859][model_2d][INFO] -   ✓ Pretrain test metric improved to 5.224751e-04 at epoch 1560
+[2025-12-13 13:58:55,269][model_2d][INFO] -   ✓ Pretrain test metric improved to 3.886184e-04 at epoch 1600
+[2025-12-13 13:58:55,269][model_2d][INFO] -   [Pre-train] Epoch 1600/4000 | IC_u Loss: 5.720293e-04 | IC_v Loss: 4.267874e-05 | Test Metric: 3.886184e-04
+[2025-12-13 14:00:11,668][model_2d][INFO] -   [Pre-train] Epoch 1700/4000 | IC_u Loss: 6.447699e-04 | IC_v Loss: 5.998365e-05 | Test Metric: 6.491624e-04
+[2025-12-13 14:01:12,647][model_2d][INFO] -   ✓ Pretrain test metric improved to 3.259573e-04 at epoch 1780
+[2025-12-13 14:01:27,784][model_2d][INFO] -   [Pre-train] Epoch 1800/4000 | IC_u Loss: 4.337495e-04 | IC_v Loss: 3.733068e-05 | Test Metric: 3.996459e-04
+[2025-12-13 14:02:43,684][model_2d][INFO] -   [Pre-train] Epoch 1900/4000 | IC_u Loss: 4.713430e-03 | IC_v Loss: 1.733653e-04 | Test Metric: 3.310025e-03
+[2025-12-13 14:03:59,244][model_2d][INFO] -   [Pre-train] Epoch 2000/4000 | IC_u Loss: 5.454265e-04 | IC_v Loss: 1.022780e-04 | Test Metric: 1.579800e-03
+[2025-12-13 14:05:15,013][model_2d][INFO] -   [Pre-train] Epoch 2100/4000 | IC_u Loss: 2.570756e-04 | IC_v Loss: 5.130041e-05 | Test Metric: 3.617130e-04
+[2025-12-13 15:14:47,396][model_2d][INFO] -   [Pre-train] Epoch 2200/4000 | IC_u Loss: 9.766248e-04 | IC_v Loss: 6.499225e-05 | Test Metric: 1.017068e-03
+[2025-12-13 15:16:57,852][model_2d][INFO] -   [Pre-train] Epoch 2300/4000 | IC_u Loss: 1.566936e-03 | IC_v Loss: 8.133135e-05 | Test Metric: 1.120393e-03
+[2025-12-13 15:19:22,363][model_2d][INFO] -   [Pre-train] Epoch 2400/4000 | IC_u Loss: 9.856922e-04 | IC_v Loss: 7.926002e-05 | Test Metric: 8.841005e-04
+[2025-12-13 15:21:56,314][model_2d][INFO] -   [Pre-train] Epoch 2500/4000 | IC_u Loss: 1.408189e-03 | IC_v Loss: 1.535228e-04 | Test Metric: 1.488630e-03
+[2025-12-13 15:24:29,106][model_2d][INFO] -   [Pre-train] Epoch 2600/4000 | IC_u Loss: 4.283000e-04 | IC_v Loss: 6.154434e-05 | Test Metric: 4.353535e-04
+[2025-12-13 15:27:02,398][model_2d][INFO] -   [Pre-train] Epoch 2700/4000 | IC_u Loss: 3.944639e-04 | IC_v Loss: 4.277833e-05 | Test Metric: 5.755775e-04
+[2025-12-13 15:29:35,658][model_2d][INFO] -   [Pre-train] Epoch 2800/4000 | IC_u Loss: 1.426508e-03 | IC_v Loss: 1.108128e-04 | Test Metric: 5.342130e-04
+[2025-12-13 15:32:08,042][model_2d][INFO] -   ✓ Pretrain test metric improved to 2.582795e-04 at epoch 2900
+[2025-12-13 15:32:08,042][model_2d][INFO] -   [Pre-train] Epoch 2900/4000 | IC_u Loss: 5.118535e-04 | IC_v Loss: 6.745119e-05 | Test Metric: 2.582795e-04
+[2025-12-13 15:34:40,522][model_2d][INFO] -   [Pre-train] Epoch 3000/4000 | IC_u Loss: 1.726467e-03 | IC_v Loss: 9.411655e-05 | Test Metric: 1.297239e-03
+[2025-12-13 15:37:12,966][model_2d][INFO] -   [Pre-train] Epoch 3100/4000 | IC_u Loss: 1.054892e-03 | IC_v Loss: 9.434564e-05 | Test Metric: 8.332596e-04
+[2025-12-13 15:39:45,374][model_2d][INFO] -   [Pre-train] Epoch 3200/4000 | IC_u Loss: 1.925301e-03 | IC_v Loss: 1.346143e-04 | Test Metric: 2.049241e-03
+[2025-12-13 15:42:17,970][model_2d][INFO] -   [Pre-train] Epoch 3300/4000 | IC_u Loss: 2.331415e-03 | IC_v Loss: 1.716169e-04 | Test Metric: 3.148453e-03
+[2025-12-13 15:44:50,717][model_2d][INFO] -   [Pre-train] Epoch 3400/4000 | IC_u Loss: 3.731675e-03 | IC_v Loss: 3.351151e-04 | Test Metric: 4.950603e-03
+[2025-12-13 15:47:23,703][model_2d][INFO] -   [Pre-train] Epoch 3500/4000 | IC_u Loss: 7.666432e-04 | IC_v Loss: 9.228341e-05 | Test Metric: 1.355738e-03
+[2025-12-13 15:49:57,667][model_2d][INFO] -   [Pre-train] Epoch 3600/4000 | IC_u Loss: 5.455317e-04 | IC_v Loss: 6.227302e-05 | Test Metric: 1.284406e-03
+[2025-12-13 15:52:30,943][model_2d][INFO] -   [Pre-train] Epoch 3700/4000 | IC_u Loss: 6.795442e-04 | IC_v Loss: 7.476816e-05 | Test Metric: 7.583081e-04
+[2025-12-13 15:55:04,377][model_2d][INFO] -   [Pre-train] Epoch 3800/4000 | IC_u Loss: 8.514457e-04 | IC_v Loss: 8.110283e-05 | Test Metric: 5.548982e-04
+[2025-12-13 15:57:38,158][model_2d][INFO] -   [Pre-train] Epoch 3900/4000 | IC_u Loss: 2.159806e-03 | IC_v Loss: 1.229902e-04 | Test Metric: 2.074084e-03
+[2025-12-13 16:00:12,676][model_2d][INFO] -   [Pre-train] Epoch 4000/4000 | IC_u Loss: 4.319285e-03 | IC_v Loss: 1.693661e-04 | Test Metric: 5.186409e-03
+[2025-12-13 16:00:12,676][model_2d][INFO] - === PHASE 1 COMPLETE. ICs learned. Unfreezing for Phase 2. ===
+[2025-12-13 16:00:12,680][model_2d][INFO] - Restored best pretraining model from epoch 2900 with test metric 2.582795e-04
+[2025-12-13 16:00:12,680][adaptive_weights][INFO] - Adaptive loss weights initialized with strategy: ntk
+[2025-12-13 16:00:12,680][adaptive_weights][INFO] - Initial weights: {'PDE': 1.0, 'IC_u': 50.0, 'IC_v': 50.0}
+[2025-12-13 16:00:44,271][model_2d][INFO] - Epoch     0 | Loss: 64.680407 | PDE: 17.699079 | IC_u: 0.067475 | IC_v: 0.032947 | LR: 1.00e-03 | u_range: [-0.000, 0.124]
+[2025-12-13 16:00:44,273][model_2d][INFO] -           Weights -> PDE: 1.02e+00, IC_u: 6.64e+02, IC_v: 5.64e+01
+[2025-12-13 16:03:01,115][model_2d][INFO] - ✓ Test metric improved to 8.330861e+00 at epoch 19
+[2025-12-13 16:14:49,003][model_2d][INFO] - ✓ Test metric improved to 5.501490e+00 at epoch 119
+[2025-12-13 16:17:05,808][model_2d][INFO] - ✓ Test metric improved to 2.759084e+00 at epoch 139
+[2025-12-13 16:19:23,677][model_2d][INFO] - ✓ Test metric improved to 2.069740e+00 at epoch 159
+[2025-12-13 16:24:24,702][model_2d][INFO] - Epoch   200 | Loss: 11.654921 | PDE: 5.559085 | IC_u: 0.017280 | IC_v: 0.013893 | LR: 1.00e-03 | u_range: [-0.000, 0.044]
+[2025-12-13 16:24:24,704][model_2d][INFO] -           Weights -> PDE: 1.05e+00, IC_u: 3.19e+02, IC_v: 2.28e+01
+[2025-12-13 16:30:57,240][model_2d][INFO] - ✓ Test metric improved to 2.013339e+00 at epoch 259
+[2025-12-13 16:42:30,694][model_2d][INFO] -   No improvement for 100 epochs (best: 2.013339e+00)
+[2025-12-13 18:36:45,978][model_2d][INFO] - Epoch   400 | Loss: 6.451772 | PDE: 2.919439 | IC_u: 0.006915 | IC_v: 0.007627 | LR: 1.00e-03 | u_range: [-0.002, 0.040]
+[2025-12-13 18:36:45,979][model_2d][INFO] -           Weights -> PDE: 1.03e+00, IC_u: 4.57e+02, IC_v: 3.76e+01
+[2025-12-13 18:43:07,373][model_2d][INFO] - ✓ Test metric improved to 1.541331e+00 at epoch 459
+[2025-12-13 18:50:04,596][model_2d][INFO] - ✓ Test metric improved to 1.383396e+00 at epoch 519
+[2025-12-13 18:59:23,535][model_2d][INFO] - Epoch   600 | Loss: 4.901661 | PDE: 2.231301 | IC_u: 0.002572 | IC_v: 0.024504 | LR: 9.50e-04 | u_range: [-0.011, 0.058]
+[2025-12-13 18:59:23,536][model_2d][INFO] -           Weights -> PDE: 1.02e+00, IC_u: 5.50e+02, IC_v: 4.92e+01
+[2025-12-13 19:01:30,313][model_2d][INFO] - ✓ Test metric improved to 1.281459e+00 at epoch 619
+[2025-12-13 19:03:43,469][model_2d][INFO] - ✓ Test metric improved to 1.230326e+00 at epoch 639
+[2025-12-13 19:10:27,876][model_2d][INFO] - ✓ Test metric improved to 9.811342e-01 at epoch 699
+[2025-12-13 19:15:19,882][model_2d][INFO] - ✓ Test metric improved to 8.786131e-01 at epoch 739
+[2025-12-13 19:22:28,533][model_2d][INFO] - Epoch   800 | Loss: 5.369850 | PDE: 1.178574 | IC_u: 0.004467 | IC_v: 0.013157 | LR: 9.50e-04 | u_range: [-0.014, 0.033]
+[2025-12-13 19:22:28,534][model_2d][INFO] -           Weights -> PDE: 1.02e+00, IC_u: 7.75e+02, IC_v: 5.36e+01
+[2025-12-13 19:26:44,846][model_2d][INFO] -   No improvement for 100 epochs (best: 8.786131e-01)
+[2025-12-13 19:35:56,666][model_2d][INFO] - ✓ Test metric improved to 5.727327e-01 at epoch 919
+[2025-12-13 19:45:03,805][model_2d][INFO] - Epoch  1000 | Loss: 1.626556 | PDE: 0.650004 | IC_u: 0.001160 | IC_v: 0.005097 | LR: 9.02e-04 | u_range: [-0.024, 0.024]
+[2025-12-13 19:45:03,806][model_2d][INFO] -           Weights -> PDE: 1.03e+00, IC_u: 6.46e+02, IC_v: 4.12e+01
+[2025-12-13 19:47:07,716][model_2d][INFO] -   No improvement for 100 epochs (best: 5.727327e-01)
+[2025-12-13 19:58:19,994][model_2d][INFO] -   No improvement for 200 epochs (best: 5.727327e-01)
+[2025-12-13 20:07:23,379][model_2d][INFO] - Epoch  1200 | Loss: 1.512674 | PDE: 0.741200 | IC_u: 0.000782 | IC_v: 0.004357 | LR: 9.02e-04 | u_range: [-0.000, 0.122]
+[2025-12-13 20:07:23,380][model_2d][INFO] -           Weights -> PDE: 1.02e+00, IC_u: 6.92e+02, IC_v: 4.91e+01
+[2025-12-13 20:09:26,131][model_2d][INFO] -   No improvement for 300 epochs (best: 5.727327e-01)
+[2025-12-13 20:20:25,895][model_2d][INFO] -   No improvement for 400 epochs (best: 5.727327e-01)
+[2025-12-13 20:22:34,322][model_2d][INFO] - ✓ Test metric improved to 5.674187e-01 at epoch 1339
+[2025-12-13 20:26:51,733][model_2d][INFO] - ✓ Test metric improved to 4.908153e-01 at epoch 1379
+[2025-12-13 20:29:25,934][model_2d][INFO] - Epoch  1400 | Loss: 1.604983 | PDE: 0.560983 | IC_u: 0.001258 | IC_v: 0.003401 | LR: 9.02e-04 | u_range: [-0.000, 0.091]
+[2025-12-13 20:29:25,935][model_2d][INFO] -           Weights -> PDE: 1.02e+00, IC_u: 6.79e+02, IC_v: 5.25e+01
+[2025-12-13 20:37:51,024][model_2d][INFO] -   No improvement for 100 epochs (best: 4.908153e-01)
+[2025-12-13 20:48:46,806][model_2d][INFO] -   No improvement for 200 epochs (best: 4.908153e-01)
+[2025-12-13 20:51:17,785][model_2d][INFO] - Epoch  1600 | Loss: 0.887929 | PDE: 0.433013 | IC_u: 0.000352 | IC_v: 0.002007 | LR: 8.57e-04 | u_range: [-0.000, 0.098]
+[2025-12-13 20:51:17,786][model_2d][INFO] -           Weights -> PDE: 1.02e+00, IC_u: 9.29e+02, IC_v: 5.97e+01
+[2025-12-13 20:59:43,063][model_2d][INFO] -   No improvement for 300 epochs (best: 4.908153e-01)
+[2025-12-13 21:04:18,516][model_2d][INFO] - ✓ Test metric improved to 2.304283e-01 at epoch 1719
+[2025-12-13 21:13:18,555][model_2d][INFO] - Epoch  1800 | Loss: 0.965182 | PDE: 0.574846 | IC_u: 0.000507 | IC_v: 0.003910 | LR: 8.57e-04 | u_range: [-0.000, 0.046]
+[2025-12-13 21:13:18,556][model_2d][INFO] -           Weights -> PDE: 1.04e+00, IC_u: 5.12e+02, IC_v: 2.75e+01
+[2025-12-13 21:15:19,805][model_2d][INFO] -   No improvement for 100 epochs (best: 2.304283e-01)
+[2025-12-13 21:26:17,668][model_2d][INFO] -   No improvement for 200 epochs (best: 2.304283e-01)
+[2025-12-13 21:35:13,107][model_2d][INFO] - Epoch  2000 | Loss: 2.820943 | PDE: 1.376813 | IC_u: 0.001386 | IC_v: 0.010532 | LR: 8.15e-04 | u_range: [-0.001, 0.091]
+[2025-12-13 21:35:13,109][model_2d][INFO] -           Weights -> PDE: 1.03e+00, IC_u: 7.05e+02, IC_v: 4.08e+01
+[2025-12-13 21:37:14,857][model_2d][INFO] -   No improvement for 300 epochs (best: 2.304283e-01)
+[2025-12-13 21:48:10,460][model_2d][INFO] -   No improvement for 400 epochs (best: 2.304283e-01)
+[2025-12-13 21:57:02,723][model_2d][INFO] - Epoch  2200 | Loss: 0.892349 | PDE: 0.358017 | IC_u: 0.000537 | IC_v: 0.001144 | LR: 8.15e-04 | u_range: [-0.000, 0.072]
+[2025-12-13 21:57:02,724][model_2d][INFO] -           Weights -> PDE: 1.02e+00, IC_u: 8.74e+02, IC_v: 5.01e+01
+[2025-12-13 21:59:03,280][model_2d][INFO] -   No improvement for 500 epochs (best: 2.304283e-01)
+[2025-12-13 22:09:55,555][model_2d][INFO] -   No improvement for 600 epochs (best: 2.304283e-01)
+[2025-12-13 22:18:49,441][model_2d][INFO] - Epoch  2400 | Loss: 1.443461 | PDE: 0.356766 | IC_u: 0.000739 | IC_v: 0.001737 | LR: 8.15e-04 | u_range: [-0.000, 0.063]
+[2025-12-13 22:18:49,443][model_2d][INFO] -           Weights -> PDE: 1.01e+00, IC_u: 1.24e+03, IC_v: 9.41e+01
+[2025-12-13 22:20:49,491][model_2d][INFO] -   No improvement for 700 epochs (best: 2.304283e-01)
+[2025-12-13 22:31:43,722][model_2d][INFO] -   No improvement for 800 epochs (best: 2.304283e-01)
+[2025-12-13 22:40:37,351][model_2d][INFO] - Epoch  2600 | Loss: 0.696142 | PDE: 0.407142 | IC_u: 0.000243 | IC_v: 0.002325 | LR: 7.74e-04 | u_range: [-0.000, 0.030]
+[2025-12-13 22:40:37,352][model_2d][INFO] -           Weights -> PDE: 1.02e+00, IC_u: 7.10e+02, IC_v: 4.61e+01
+[2025-12-13 22:42:38,979][model_2d][INFO] -   No improvement for 900 epochs (best: 2.304283e-01)
+[2025-12-13 22:53:36,836][model_2d][INFO] -   No improvement for 1000 epochs (best: 2.304283e-01)
+[2025-12-13 23:02:37,446][model_2d][INFO] - Epoch  2800 | Loss: 7726437.688336 | PDE: 28910.901123 | IC_u: 0.008002 | IC_v: 556.746437 | LR: 7.74e-04 | u_range: [-0.000, 0.038]
+[2025-12-13 23:02:37,448][model_2d][INFO] -           Weights -> PDE: 1.00e+00, IC_u: 2.12e+05, IC_v: 1.38e+04
+[2025-12-13 23:04:38,868][model_2d][INFO] -   No improvement for 1100 epochs (best: 2.304283e-01)
+[2025-12-13 23:15:30,790][model_2d][INFO] -   No improvement for 1200 epochs (best: 2.304283e-01)
+[2025-12-13 23:24:19,741][model_2d][INFO] - Epoch  3000 | Loss: 103.252608 | PDE: 26.071802 | IC_u: 0.003859 | IC_v: 0.092284 | LR: 7.35e-04 | u_range: [-0.002, 0.035]
+[2025-12-13 23:24:19,742][model_2d][INFO] -           Weights -> PDE: 1.00e+00, IC_u: 7.18e+03, IC_v: 5.35e+02
+[2025-12-13 23:26:20,510][model_2d][INFO] -   No improvement for 1300 epochs (best: 2.304283e-01)
+[2025-12-13 23:37:23,928][model_2d][INFO] -   No improvement for 1400 epochs (best: 2.304283e-01)
+[2025-12-13 23:46:23,796][model_2d][INFO] - Epoch  3200 | Loss: 14.312545 | PDE: 4.528884 | IC_u: 0.004487 | IC_v: 0.037944 | LR: 7.35e-04 | u_range: [-0.000, 0.090]
+[2025-12-13 23:46:23,797][model_2d][INFO] -           Weights -> PDE: 1.01e+00, IC_u: 1.33e+03, IC_v: 9.94e+01
+[2025-12-13 23:48:24,767][model_2d][INFO] -   No improvement for 1500 epochs (best: 2.304283e-01)
+[2025-12-13 23:59:18,278][model_2d][INFO] -   No improvement for 1600 epochs (best: 2.304283e-01)
+[2025-12-14 00:08:14,415][model_2d][INFO] - Epoch  3400 | Loss: 2.360282 | PDE: 0.996627 | IC_u: 0.000714 | IC_v: 0.006445 | LR: 7.35e-04 | u_range: [-0.007, 0.003]
+[2025-12-14 00:08:14,417][model_2d][INFO] -           Weights -> PDE: 1.02e+00, IC_u: 1.26e+03, IC_v: 6.99e+01
+[2025-12-14 00:10:14,526][model_2d][INFO] -   No improvement for 1700 epochs (best: 2.304283e-01)
+[2025-12-14 00:21:13,242][model_2d][INFO] -   No improvement for 1800 epochs (best: 2.304283e-01)
+[2025-12-14 00:30:07,618][model_2d][INFO] - Epoch  3600 | Loss: 0.894623 | PDE: 0.300072 | IC_u: 0.000448 | IC_v: 0.002242 | LR: 6.98e-04 | u_range: [-0.000, 0.122]
+[2025-12-14 00:30:07,620][model_2d][INFO] -           Weights -> PDE: 1.02e+00, IC_u: 9.73e+02, IC_v: 6.86e+01
+[2025-12-14 00:32:08,998][model_2d][INFO] -   No improvement for 1900 epochs (best: 2.304283e-01)
+[2025-12-14 00:43:02,727][model_2d][INFO] -   No improvement for 2000 epochs (best: 2.304283e-01)
+[2025-12-14 00:51:50,962][model_2d][INFO] - Epoch  3800 | Loss: 0.895241 | PDE: 0.508582 | IC_u: 0.000131 | IC_v: 0.003539 | LR: 6.98e-04 | u_range: [-0.005, 0.076]
+[2025-12-14 00:51:50,964][model_2d][INFO] -           Weights -> PDE: 1.02e+00, IC_u: 9.77e+02, IC_v: 7.07e+01
+[2025-12-14 00:53:52,806][model_2d][INFO] -   No improvement for 2100 epochs (best: 2.304283e-01)
+[2025-12-14 01:04:51,028][model_2d][INFO] -   No improvement for 2200 epochs (best: 2.304283e-01)
+[2025-12-14 01:13:45,107][model_2d][INFO] - Epoch  4000 | Loss: 1.198479 | PDE: 0.352896 | IC_u: 0.000405 | IC_v: 0.003784 | LR: 6.63e-04 | u_range: [-0.000, 0.055]
+[2025-12-14 01:13:45,108][model_2d][INFO] -           Weights -> PDE: 1.01e+00, IC_u: 1.34e+03, IC_v: 7.90e+01
+[2025-12-14 01:15:46,359][model_2d][INFO] - ✓ Test metric improved to 1.852904e-01 at epoch 4019
+[2025-12-14 01:26:39,515][model_2d][INFO] -   No improvement for 100 epochs (best: 1.852904e-01)
+[2025-12-14 01:33:30,154][model_2d][INFO] - Epoch  4200 | Loss: 0.997047 | PDE: 0.348223 | IC_u: 0.000336 | IC_v: 0.003240 | LR: 6.63e-04 | u_range: [-0.000, 0.070]
+[2025-12-14 01:33:30,155][model_2d][INFO] -           Weights -> PDE: 1.01e+00, IC_u: 1.18e+03, IC_v: 7.62e+01
+[2025-12-14 01:34:43,160][model_2d][INFO] -   No improvement for 200 epochs (best: 1.852904e-01)
+[2025-12-14 01:41:27,737][model_2d][INFO] -   No improvement for 300 epochs (best: 1.852904e-01)
+[2025-12-14 01:42:46,239][model_2d][INFO] - ✓ Test metric improved to 1.809311e-01 at epoch 4339
+[2025-12-14 01:47:13,607][model_2d][INFO] - Epoch  4400 | Loss: 0.424860 | PDE: 0.184130 | IC_u: 0.000327 | IC_v: 0.001480 | LR: 6.63e-04 | u_range: [-0.029, 0.038]
+[2025-12-14 01:47:13,608][model_2d][INFO] -           Weights -> PDE: 1.03e+00, IC_u: 5.48e+02, IC_v: 3.80e+01
+[2025-12-14 01:49:42,954][model_2d][INFO] -   No improvement for 100 epochs (best: 1.809311e-01)
+[2025-12-14 01:56:23,764][model_2d][INFO] -   No improvement for 200 epochs (best: 1.809311e-01)
+[2025-12-14 02:00:33,580][model_2d][INFO] - Epoch  4600 | Loss: 0.445358 | PDE: 0.116547 | IC_u: 0.000243 | IC_v: 0.000970 | LR: 6.30e-04 | u_range: [-0.005, 0.002]
+[2025-12-14 02:00:33,581][model_2d][INFO] -           Weights -> PDE: 1.01e+00, IC_u: 1.02e+03, IC_v: 8.14e+01
+[2025-12-14 02:03:07,621][model_2d][INFO] -   No improvement for 300 epochs (best: 1.809311e-01)
+[2025-12-14 02:09:49,098][model_2d][INFO] -   No improvement for 400 epochs (best: 1.809311e-01)
+[2025-12-14 02:13:59,945][model_2d][INFO] - Epoch  4800 | Loss: 1.027316 | PDE: 0.362294 | IC_u: 0.000246 | IC_v: 0.003003 | LR: 6.30e-04 | u_range: [-0.000, 0.103]
+[2025-12-14 02:13:59,946][model_2d][INFO] -           Weights -> PDE: 1.01e+00, IC_u: 1.54e+03, IC_v: 9.42e+01
+[2025-12-14 02:15:15,296][model_2d][INFO] - ✓ Test metric improved to 1.478696e-01 at epoch 4819
+[2025-12-14 02:16:34,670][model_2d][INFO] - ✓ Test metric improved to 1.187528e-01 at epoch 4839
+[2025-12-14 02:23:15,779][model_2d][INFO] -   No improvement for 100 epochs (best: 1.187528e-01)
+[2025-12-14 02:27:08,764][model_2d][INFO] - Epoch  4999 | Loss: 0.878919 | PDE: 0.327743 | IC_u: 0.000338 | IC_v: 0.001346 | LR: 5.99e-04 | u_range: [-0.000, 0.020]
+[2025-12-14 02:27:08,764][model_2d][INFO] -           Weights -> PDE: 1.01e+00, IC_u: 1.29e+03, IC_v: 8.21e+01
+[2025-12-14 02:27:09,767][model_2d][INFO] - Restored best model from epoch 4839 with test metric 0.118753
+[2025-12-14 02:27:09,767][model_2d][INFO] -   Best model loss components -> PDE: 1.187235e-01, IC_u: 3.739785e-04, IC_v: 1.507826e-03
+[2025-12-14 02:27:09,767][model_2d][INFO] - Training complete!
+[2025-12-14 02:27:09,787][__main__][INFO] - Model saved to /Users/guglielmocappellini/Desktop/research/code/pinns-wave/wave-gnn/1_gcn_string/outputs/2025-12-13/13-38-38/model.pth
+[2025-12-14 02:27:09,787][__main__][INFO] - Best Model Info:
+[2025-12-14 02:27:09,787][__main__][INFO] -   Epoch: 4839
+[2025-12-14 02:27:09,787][__main__][INFO] -   L2 Metric: 1.187528e-01
+[2025-12-14 02:27:09,787][__main__][INFO] -   Loss Components:
+[2025-12-14 02:27:09,787][__main__][INFO] -     - PDE: 1.187235e-01
+[2025-12-14 02:27:09,787][__main__][INFO] -     - IC_u: 3.739785e-04
+[2025-12-14 02:27:09,787][__main__][INFO] -     - IC_v: 1.507826e-03
+[2025-12-14 02:27:10,133][__main__][INFO] - Training history (with pretraining) saved to /Users/guglielmocappellini/Desktop/research/code/pinns-wave/wave-gnn/1_gcn_string/outputs/2025-12-13/13-38-38/pinn_wave_training_no_source.png
+[2025-12-14 02:28:23,090][__main__][INFO] - Metrics saved to /Users/guglielmocappellini/Desktop/research/code/pinns-wave/wave-gnn/1_gcn_string/outputs/2025-12-13/13-38-38/metrics.txt
+[2025-12-14 02:28:24,017][__main__][INFO] - Solution comparison saved to /Users/guglielmocappellini/Desktop/research/code/pinns-wave/wave-gnn/1_gcn_string/outputs/2025-12-13/13-38-38/pinn_wave_solution_no_source.png
+[2025-12-14 02:28:24,017][__main__][INFO] - ======================================================================
+[2025-12-14 02:28:24,017][__main__][INFO] - EXPERIMENT COMPLETE
+[2025-12-14 02:28:24,017][__main__][INFO] - ======================================================================
+[2025-12-14 02:28:24,017][__main__][INFO] - All outputs saved to: /Users/guglielmocappellini/Desktop/research/code/pinns-wave/wave-gnn/1_gcn_string/outputs/2025-12-13/13-38-38

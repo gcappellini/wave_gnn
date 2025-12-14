@@ -1,0 +1,68 @@
+run:
+  load_model: false
+  resume_training: false
+  load_from: null
+training:
+  n_epochs: 5000
+  lr: 0.001
+  lr_scheduler_step: 500
+  lr_scheduler_gamma: 0.95
+  log_interval: 200
+  val_interval: 20
+  es_patience: 5000
+  max_grad_norm: 1.0
+  n_batches: 16
+  n_test_cases: 50
+  test_seed: 42
+  pretrain_ic: true
+  n_epochs_pretrain: 4000
+model:
+  n_sensors_ic: 40
+  n_sensors_src: 20
+  branch_width: 300
+  trunk_width: 300
+  branch_act: nn.Tanh()
+  trunk_act: nn.Tanh()
+  branch_depth: 4
+  trunk_depth: 8
+  p: 512
+  wave_speed: 1.0
+  damping_coeff: 1.0
+  use_fft_trunk: true
+  fft_trunk_args:
+    input_dim: 3
+    m_spatial_x: 64
+    m_spatial_y: 64
+    m_temporal: 64
+    sigma_spatial_x: 0.1
+    sigma_spatial_y: 0.1
+    sigma_temporal_list:
+    - 0.1
+    seed: 42
+  w_pde: 1.0
+  w_ic_u: 50.0
+  w_ic_v: 50.0
+  strategy: ntk
+  fusion: hc
+data:
+  n_colloc: 800
+  n_ic: 50
+  a_range:
+  - -0.1
+  - 0.6
+  b_range:
+  - -0.1
+  - 0.1
+  center_x_range:
+  - 0.3
+  - 0.7
+  center_y_range:
+  - 0.3
+  - 0.7
+  center_x: 0.5
+  center_y: 0.5
+  n_ic_u: 2
+  n_ic_v: 2
+  source_type: zero
+  source_amplitude: 15.0
+  T_max: 1.0
