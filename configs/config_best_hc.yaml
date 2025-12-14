@@ -9,7 +9,7 @@ hydra:
 run:
   load_model: false
   resume_training: true
-  load_from: ['2025-12-13','13-38-38']
+  load_from: ['2025-12-14','17-53-42']
 
 training:
   n_epochs: 15000
