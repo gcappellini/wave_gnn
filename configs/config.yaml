@@ -8,11 +8,11 @@ hydra:
 # Run settings
 run:
   load_model: false
-  resume_training: true
-  load_from: ['2025-12-13','13-38-38']
+  resume_training: false
+  load_from: null #['2025-12-13','13-38-38']
 
 training:
-  n_epochs: 15000
+  n_epochs: 20000
   lr: 0.001
   lr_scheduler_step: 500
   lr_scheduler_gamma: 0.95
@@ -28,7 +28,7 @@ training:
   n_batches: 16
   n_test_cases: 50
   test_seed: 42
-  pretrain_ic: False
+  pretrain_ic: True
   n_epochs_pretrain: 4000
 
 model:
