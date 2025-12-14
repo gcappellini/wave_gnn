@@ -11,7 +11,7 @@ Strategies:
 4. Softmax adaptation: Adjust weights based on relative loss values
 """
 
-from paddle import grad
+# from paddle import grad
 import torch
 import logging
 from typing import Dict, List, Optional, Tuple
