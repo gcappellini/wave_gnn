@@ -406,8 +406,10 @@ def plot_ic_reconstruction(model, test_case, n_grid=100, save_path="ic_reconstru
         # Model Output (Reconstruction) - use forward() with t=0 (unified approach)
         device = next(model.parameters()).device
         src_eval = model.generate_source('zero')  # Use zero source for IC evaluation
-        u0_pred_field = model.forward(u0_sensors, v0_sensors, src_eval, xyt_eval)
-        v0_pred_field = model.get_velocity(u0_sensors, v0_sensors, src_eval, xyt_eval)
+        
+        with torch.no_grad():
+            u0_pred_field = model.forward(u0_sensors, v0_sensors, src_eval, xyt_eval)
+            v0_pred_field = model.get_velocity(u0_sensors, v0_sensors, src_eval, xyt_eval)
 
     # 3. Reshape fields for plotting
     u0_true = u0_true_field.reshape(n_grid, n_grid).cpu().numpy()

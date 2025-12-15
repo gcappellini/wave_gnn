@@ -285,15 +285,16 @@ class PINNDeepONet_Wave2D(nn.Module):
             
             return u.squeeze(0) if single_sample else u
     
-    def get_velocity(self, u0_sensors, v0_sensors, src_sensors, xyt):
+    def get_velocity(self, u0_sensors, v0_sensors, src_sensors, xyt, create_graph=False):
         """
-        Compute time derivative of displacement (velocity) at inference.
+        Compute time derivative of displacement (velocity) at inference or training.
         
         Args:
             u0_sensors: (n_sensors²,) - displacement IC on 2D grid (flattened)
             v0_sensors: (n_sensors²,) - velocity IC on 2D grid (flattened)
             src_sensors: (n_sensors²,) - source on 2D grid (flattened)
             xyt: (n_points, 3) spatiotemporal coordinates [x, y, t]
+            create_graph: If True, compute second derivatives (for training). If False, no higher order derivatives.
         
         Returns:
             u_t: (n_points,) - time derivative of displacement (velocity field)
@@ -308,7 +309,7 @@ class PINNDeepONet_Wave2D(nn.Module):
         u_t = torch.autograd.grad(
             u, xyt_grad,
             torch.ones_like(u),
-            create_graph=False,
+            create_graph=create_graph,
             retain_graph=False
         )[0][:, 2]  # Extract time component (column 2)
         
@@ -523,18 +524,31 @@ class PINNDeepONet_Wave2D(nn.Module):
                 y_ic_1d = torch.linspace(self.domain[0], self.domain[1], n_ic, device=device)
                 X_ic, Y_ic = torch.meshgrid(x_ic_1d, y_ic_1d, indexing='ij')
                 xyt_ic = torch.stack([X_ic.flatten(), Y_ic.flatten(), torch.zeros_like(X_ic.flatten())], dim=1)
+                xyt_ic_grad = xyt_ic.clone().requires_grad_(True)
                 
                 u0_true = self.generate_ic_sine_series(a_coeffs_pre, X_ic.flatten(), Y_ic.flatten())
                 v0_true = self.generate_ic_sine_series(b_coeffs_pre, X_ic.flatten(), Y_ic.flatten())
                 
-                # Use forward() with t=0 to predict IC (unified approach)
+                # Phase 1: Learn u0 and v0 as direct network outputs
+                # The ansatz u = bc_factor * (u0 + t*v0 + ...) means the network learns u0 at t=0
+                # But v0 is NOT du/dt - it's learned directly from the network structure
                 src_sensors_pre = self.generate_source(cfg.data.source_type, cfg.data.source_amplitude, cfg.data.center_x, cfg.data.center_y)
-                u0_pred = self.forward(u0_sensors_pre, v0_sensors_pre, src_sensors_pre, xyt_ic)
-                v0_pred = self.get_velocity(u0_sensors_pre, v0_sensors_pre, src_sensors_pre, xyt_ic)
                 
+                # For HardConstraint ansatz: u0 and v0 come from branch_ic @ trunk_spatial
+                # For other fusions: we only have one output (u)
+                # In Phase 1, we focus on learning the IC reconstruction through the network
+                u0_pred = self.forward(u0_sensors_pre, v0_sensors_pre, src_sensors_pre, xyt_ic_grad)
+                
+                # For v0, we use a small time offset to approximate velocity
+                # Or simply skip it for Phase 1 and only learn u0
                 loss_ic_u = torch.mean((u0_pred - u0_true)**2)
-                loss_ic_v = torch.mean((v0_pred - v0_true)**2)
-                loss_pre = loss_ic_u + loss_ic_v
+                loss_pre = loss_ic_u
+
+                # Velocity with autograd
+                u_t_ic_pred = torch.autograd.grad(u0_pred, xyt_ic_grad,
+                                                torch.ones_like(u0_pred),
+                                                create_graph=True)[0][:, 2]
+                loss_ic_v = torch.mean((u_t_ic_pred - v0_true) ** 2)
                 
                 loss_pre.backward()
                 loss_ic_u_accum += loss_ic_u.item()
@@ -555,22 +569,20 @@ class PINNDeepONet_Wave2D(nn.Module):
                     u0_test_pre = self.generate_ic_sine_series(test_case['a_coeffs'])
                     v0_test_pre = self.generate_ic_sine_series(test_case['b_coeffs'])
                     
+                    x_test_ic_1d = torch.linspace(self.domain[0], self.domain[1], n_ic, device=device)
+                    y_test_ic_1d = torch.linspace(self.domain[0], self.domain[1], n_ic, device=device)
+                    X_test_ic, Y_test_ic = torch.meshgrid(x_test_ic_1d, y_test_ic_1d, indexing='ij')
+                    xyt_test_ic = torch.stack([X_test_ic.flatten(), Y_test_ic.flatten(), torch.zeros_like(X_test_ic.flatten())], dim=1)
+                    
+                    # Phase 1 evaluation: only compare u0 reconstruction
+                    src_test = self.generate_source(cfg.data.source_type, cfg.data.source_amplitude, test_case['center_x'], test_case['center_y'])
+                    u0_test_true = self.generate_ic_sine_series(test_case['a_coeffs'], X_test_ic.flatten(), Y_test_ic.flatten())
+                    
                     with torch.no_grad():
-                        x_test_ic_1d = torch.linspace(self.domain[0], self.domain[1], n_ic, device=device)
-                        y_test_ic_1d = torch.linspace(self.domain[0], self.domain[1], n_ic, device=device)
-                        X_test_ic, Y_test_ic = torch.meshgrid(x_test_ic_1d, y_test_ic_1d, indexing='ij')
-                        xyt_test_ic = torch.stack([X_test_ic.flatten(), Y_test_ic.flatten(), torch.zeros_like(X_test_ic.flatten())], dim=1)
-                        
-                        # Use forward() with t=0 to predict IC (unified approach)
-                        src_test = self.generate_source(cfg.data.source_type, cfg.data.source_amplitude, test_case['center_x'], test_case['center_y'])
                         u0_test_pred = self.forward(u0_test_pre, v0_test_pre, src_test, xyt_test_ic)
-                        v0_test_pred = self.get_velocity(u0_test_pre, v0_test_pre, src_test, xyt_test_ic)
-                        u0_test_true = self.generate_ic_sine_series(test_case['a_coeffs'], X_test_ic.flatten(), Y_test_ic.flatten())
-                        v0_test_true = self.generate_ic_sine_series(test_case['b_coeffs'], X_test_ic.flatten(), Y_test_ic.flatten())
-                        
                         loss_test_ic_u = torch.mean((u0_test_pred - u0_test_true)**2)
-                        loss_test_ic_v = torch.mean((v0_test_pred - v0_test_true)**2)
-                        pretrain_test_metric += (loss_test_ic_u + loss_test_ic_v).item()
+                    
+                    pretrain_test_metric += loss_test_ic_u.item()
                 
                 pretrain_test_metric /= len(test_cases)
                 pretrain_history['test_metric'].append(pretrain_test_metric)
