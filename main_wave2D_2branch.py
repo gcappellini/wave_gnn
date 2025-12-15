@@ -8,12 +8,23 @@ from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf
 from model_2d import PINNDeepONet_Wave2D
 from plot_2d import plot_solution_2d, plot_solution_2d_comparison, plot_training_history
+import torch.cuda
 
 # Setup logging
 log = logging.getLogger(__name__)
 
 # Get script directory for absolute paths
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# ============================================================
+# GPU SETUP AND OPTIMIZATION
+# ============================================================
+# Detect device
+DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+if torch.cuda.is_available():
+    torch.cuda.empty_cache()
+    torch.backends.cudnn.benchmark = True
+    torch.backends.cudnn.deterministic = False
 
 @hydra_main(version_base=None, config_path="configs", config_name="config")
 def main(cfg: DictConfig):
@@ -66,8 +77,14 @@ def main(cfg: DictConfig):
     # ============================================================
     
     model = PINNDeepONet_Wave2D(cfg)
+    model = model.to(DEVICE)
     
-    log.info(f"Model initialized with {sum(p.numel() for p in model.parameters())} parameters")
+    total_params = sum(p.numel() for p in model.parameters())
+    log.info(f"Device: {DEVICE}")
+    if torch.cuda.is_available():
+        log.info(f"GPU Memory: {torch.cuda.get_device_properties(DEVICE).total_memory / 1e9:.2f} GB")
+        log.info(f"GPU: {torch.cuda.get_device_name(DEVICE)}")
+    log.info(f"Model initialized with {total_params:,} parameters")
     log.info(f"\nModel architecture:\n{model}")
     
     # ============================================================
@@ -108,7 +125,7 @@ def main(cfg: DictConfig):
         checkpoint_path = f'{load_fold}/{load_date}/{load_time}/model.pth'
         
         if os.path.exists(checkpoint_path):
-            checkpoint = torch.load(checkpoint_path)
+            checkpoint = torch.load(checkpoint_path, map_location=DEVICE)
             model.load_state_dict(checkpoint['model_state_dict'])
             log.info(f"Model loaded from {checkpoint_path}")
             history = None
@@ -129,7 +146,7 @@ def main(cfg: DictConfig):
             if not os.path.exists(checkpoint_path):
                 log.error(f"Pretrained model not found: {checkpoint_path}")
                 exit(1)
-            checkpoint = torch.load(checkpoint_path)
+            checkpoint = torch.load(checkpoint_path, map_location=DEVICE)
             model.load_state_dict(checkpoint['model_state_dict'])
             log.info(f"✓ Pretrained model loaded for curriculum learning: {checkpoint_path}")
         
@@ -139,11 +156,17 @@ def main(cfg: DictConfig):
             source_type = 'zero'
         
         start_time = datetime.now()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        
         history, pretrain_history, best_model_info = model.train_pinn(
             cfg,
             output_fold=output_fold,
+            device=DEVICE
         )
         
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         end_time = datetime.now()
         training_time = end_time - start_time
         

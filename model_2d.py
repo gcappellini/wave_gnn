@@ -5,21 +5,24 @@ import warnings
 import logging
 from adaptive_weights import AdaptiveLossWeights
 import os
+from plot import plot_ic_reconstruction
 warnings.filterwarnings('ignore')
 
 log = logging.getLogger(__name__)
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
-def sample_coeffs(n, base_range, p=1.5, as_2d=False):
+def sample_coeffs(n, base_range, p=1.5, as_2d=False, device='cpu'):
     """
     Sample coefficients with decreasing range per mode.
+    GPU optimized: directly creates tensors on target device.
     
     Args:
         n: Number of modes (for 1D) or modes per dimension (for 2D)
         base_range: (min, max) range for first mode
         p: Power law decay exponent
         as_2d: If True, returns (n, n) 2D tensor with different x,y modes
+        device: torch.device to create tensors on
     
     Returns:
         1D tensor of shape (n,) or 2D tensor of shape (n, n)
@@ -32,11 +35,11 @@ def sample_coeffs(n, base_range, p=1.5, as_2d=False):
         coeff_range = (r0 * scale, r1 * scale) if k > 0 else (r0, r1)
         coeffs.append(torch.FloatTensor(1).uniform_(*coeff_range).item())
     
-    coeffs_1d = torch.tensor(coeffs)
+    coeffs_1d = torch.tensor(coeffs, device=device)
     
     if as_2d:
         # Create 2D coefficient matrix: different values for each (k, l) mode
-        coeffs_2d = torch.zeros(n, n)
+        coeffs_2d = torch.zeros(n, n, device=device)
         for k in range(n):
             for l in range(n):
                 # Use product of 1D scales for each dimension
@@ -323,6 +326,35 @@ class PINNDeepONet_Wave2D(nn.Module):
             
             return u.squeeze(0) if single_sample else u
     
+    def get_velocity(self, u0_sensors, v0_sensors, src_sensors, xyt):
+        """
+        Compute time derivative of displacement (velocity) at inference.
+        
+        Args:
+            u0_sensors: (n_sensors²,) - displacement IC on 2D grid (flattened)
+            v0_sensors: (n_sensors²,) - velocity IC on 2D grid (flattened)
+            src_sensors: (n_sensors²,) - source on 2D grid (flattened)
+            xyt: (n_points, 3) spatiotemporal coordinates [x, y, t]
+        
+        Returns:
+            u_t: (n_points,) - time derivative of displacement (velocity field)
+        """
+        # Ensure xyt requires gradients for differentiation
+        xyt_grad = xyt.clone().requires_grad_(True)
+        
+        # Forward pass
+        u = self.forward(u0_sensors, v0_sensors, src_sensors, xyt_grad)
+        
+        # Compute time derivative using autograd
+        u_t = torch.autograd.grad(
+            u, xyt_grad,
+            torch.ones_like(u),
+            create_graph=False,
+            retain_graph=False
+        )[0][:, 2]  # Extract time component (column 2)
+        
+        return u_t
+    
     def compute_pde_residual(self, u0_sensors, v0_sensors, src_sensors, xyt, src_values):
         """
         Compute PDE residual: R = u_tt + k*u_t - c²*(u_xx + u_yy) - f(x,y)
@@ -428,14 +460,18 @@ class PINNDeepONet_Wave2D(nn.Module):
                               cx, cy, a_coeffs, b_coeffs):
         """
         Compute PDE and IC losses for a single batch (IC/source configuration).
+        GPU optimized: Tensors created on same device as model parameters.
         
         Returns:
             loss_pde, loss_ic_u, loss_ic_v (scalars)
         """
-        # Sample 3D collocation points
-        x_colloc = self.domain[0] + (self.domain[1] - self.domain[0]) * torch.rand(n_colloc)
-        y_colloc = self.domain[0] + (self.domain[1] - self.domain[0]) * torch.rand(n_colloc)
-        t_colloc = T_max * torch.rand(n_colloc)
+        # Get device from model parameters
+        device = next(self.parameters()).device
+        
+        # Sample 3D collocation points (on GPU)
+        x_colloc = self.domain[0] + (self.domain[1] - self.domain[0]) * torch.rand(n_colloc, device=device)
+        y_colloc = self.domain[0] + (self.domain[1] - self.domain[0]) * torch.rand(n_colloc, device=device)
+        t_colloc = T_max * torch.rand(n_colloc, device=device)
         xyt_colloc = torch.stack([x_colloc, y_colloc, t_colloc], dim=1)
         
         # Source values at collocation points
@@ -446,9 +482,9 @@ class PINNDeepONet_Wave2D(nn.Module):
                                              xyt_colloc, src_colloc)
         loss_pde = torch.mean(residual ** 2)
         
-        # IC grid (fixed across batches within epoch)
-        x_ic_1d = torch.linspace(self.domain[0], self.domain[1], n_ic)
-        y_ic_1d = torch.linspace(self.domain[0], self.domain[1], n_ic)
+        # IC grid (fixed across batches within epoch, on GPU)
+        x_ic_1d = torch.linspace(self.domain[0], self.domain[1], n_ic, device=device)
+        y_ic_1d = torch.linspace(self.domain[0], self.domain[1], n_ic, device=device)
         X_ic, Y_ic = torch.meshgrid(x_ic_1d, y_ic_1d, indexing='ij')
         x_ic = X_ic.flatten()
         y_ic = Y_ic.flatten()
@@ -474,22 +510,26 @@ class PINNDeepONet_Wave2D(nn.Module):
     def _train_epoch_batched(self, n_batches, n_colloc, n_ic, T_max, 
                              a_range, b_range, source_type, source_amplitude,
                              center_x, center_y, center_x_range, center_y_range,
-                             n_ic_u, n_ic_v, weights, optimizer, max_grad_norm):
+                             n_ic_u, n_ic_v, weights, optimizer, max_grad_norm, device=None):
         """
         Execute one epoch with mini-batch training: sample multiple IC/source configs,
         compute losses, accumulate gradients, then update once per epoch (Adam).
+        GPU optimized: all tensors created on device.
         
         Returns:
             epoch_loss_pde, epoch_loss_ic_u, epoch_loss_ic_v (averaged over batches)
         """
+        if device is None:
+            device = next(self.parameters()).device
+            
         loss_pde_accum = 0.0
         loss_ic_u_accum = 0.0
         loss_ic_v_accum = 0.0
         
         for batch_idx in range(n_batches):
-            # Sample IC and source for this batch
-            a_coeffs = sample_coeffs(n_ic_u, a_range, p=3.0, as_2d=True)
-            b_coeffs = sample_coeffs(n_ic_v, b_range, as_2d=True)
+            # Sample IC and source for this batch (on GPU)
+            a_coeffs = sample_coeffs(n_ic_u, a_range, p=3.0, as_2d=True, device=device)
+            b_coeffs = sample_coeffs(n_ic_v, b_range, as_2d=True, device=device)
             
             # Sample source center
             if center_x_range is not None and center_y_range is not None and source_type == 'gaussian':
@@ -533,14 +573,21 @@ class PINNDeepONet_Wave2D(nn.Module):
                 loss_ic_u_accum / n_batches, 
                 loss_ic_v_accum / n_batches)
     
-    def train_pinn(self, cfg, output_fold=os.path.join(SCRIPT_DIR, 'logs_multibranch_wave')):
+    def train_pinn(self, cfg, output_fold=os.path.join(SCRIPT_DIR, 'logs_multibranch_wave'), device=None):
         """
         Train PINN-DeepONet for 2D wave equation with early stopping based on test loss
         
         Args:
             cfg: Config object containing all training parameters
             output_fold: Output directory for checkpoints and logs
+            device: torch.device to train on (cuda or cpu)
         """
+        # Set device if provided
+        if device is None:
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        
+        # Move model to device
+        self = self.to(device)
         # Extract training parameters from config
         n_epochs = cfg.training.n_epochs
         n_colloc = cfg.data.n_colloc
@@ -589,12 +636,12 @@ class PINNDeepONet_Wave2D(nn.Module):
         log.info(f"Wave speed: {self.c}, Damping: {self.k}")
         log.info(f"Early stopping: patience={early_stopping_patience}, val_interval={val_interval}, n_test_cases={n_test_cases}")
         
-        # Generate deterministic test set with fixed seed
+        # Generate deterministic test set with fixed seed (on GPU)
         test_rng = np.random.RandomState(test_seed)
         test_cases = []
         for _ in range(n_test_cases):
-            a_test = sample_coeffs(n_ic_u, a_range, p=3.0, as_2d=True)
-            b_test = sample_coeffs(n_ic_v, b_range, p=3.0, as_2d=True)
+            a_test = sample_coeffs(n_ic_u, a_range, p=3.0, as_2d=True, device=device)
+            b_test = sample_coeffs(n_ic_v, b_range, p=3.0, as_2d=True, device=device)
             if center_x_range is not None and center_y_range is not None and source_type == 'gaussian':
                 cx_test = test_rng.uniform(center_x_range[0], center_x_range[1])
                 cy_test = test_rng.uniform(center_y_range[0], center_y_range[1])
@@ -648,9 +695,9 @@ class PINNDeepONet_Wave2D(nn.Module):
                 loss_ic_v_accum = 0.0
                 
                 for _ in range(n_batches):
-                    # Sample random IC coefficients
-                    a_coeffs_pre = sample_coeffs(n_ic_u, a_range, p=3.0, as_2d=True)
-                    b_coeffs_pre = sample_coeffs(n_ic_v, b_range, as_2d=True)
+                    # Sample random IC coefficients (on GPU)
+                    a_coeffs_pre = sample_coeffs(n_ic_u, a_range, p=3.0, as_2d=True, device=device)
+                    b_coeffs_pre = sample_coeffs(n_ic_v, b_range, as_2d=True, device=device)
                     
                     # Generate Input Sensors
                     u0_sensors_pre = self.generate_ic_sine_series(a_coeffs_pre)
@@ -728,7 +775,16 @@ class PINNDeepONet_Wave2D(nn.Module):
                         best_pretrain_model_state = {key: value.cpu().clone() for key, value in self.state_dict().items()}
                         best_pretrain_epoch = epoch_pre
                         log.info(f"  ✓ Pretrain test metric improved to {pretrain_test_metric:.6e} at epoch {epoch_pre+1}")
-                    
+                        
+                        # Save checkpoint immediately when new best is achieved (overwrites previous best)
+                        checkpoint_path = os.path.join(output_fold, 'model_pretrain.pth')
+                        torch.save({
+                            'epoch': epoch_pre,
+                            'model_state_dict': self.state_dict(),
+                            'test_metric': pretrain_test_metric,
+                            'pretrain_history': pretrain_history,
+                            'config': cfg,
+                        }, checkpoint_path)
                     if (epoch_pre + 1) % (val_interval * 5) == 0:
                         log.info(f"  [Pre-train] Epoch {epoch_pre+1}/{n_epochs_pretrain} | IC_u Loss: {loss_ic_u_avg:.6e} | IC_v Loss: {loss_ic_v_avg:.6e} | Test Metric: {pretrain_test_metric:.6e}")
                 elif (epoch_pre + 1) % 100 == 0:
@@ -740,7 +796,11 @@ class PINNDeepONet_Wave2D(nn.Module):
             if best_pretrain_model_state is not None:
                 self.load_state_dict(best_pretrain_model_state)
                 log.info(f"Restored best pretraining model from epoch {best_pretrain_epoch+1} with test metric {best_pretrain_loss:.6e}")
-            
+            plot_ic_reconstruction(
+                self, 
+                test_cases[0], 
+                save_path=os.path.join(output_fold, 'ic_pretrain_diagnostic.png')
+            )
             # 5. Unfreeze Everything for Phase 2
             for param in self.parameters():
                 param.requires_grad = True
@@ -778,8 +838,8 @@ class PINNDeepONet_Wave2D(nn.Module):
             # Get weights for this epoch
             if strategy != 'fixed':
                 # For adaptive weights, need a single context (use first batch config)
-                a_coeffs_temp = sample_coeffs(n_ic_u, a_range, p=3.0, as_2d=True)
-                b_coeffs_temp = sample_coeffs(n_ic_v, b_range, as_2d=True)
+                a_coeffs_temp = sample_coeffs(n_ic_u, a_range, p=3.0, as_2d=True, device=device)
+                b_coeffs_temp = sample_coeffs(n_ic_v, b_range, as_2d=True, device=device)
                 if center_x_range is not None and center_y_range is not None and source_type == 'gaussian':
                     cx_temp = center_x_range[0] + (center_x_range[1] - center_x_range[0]) * torch.rand(1).item()
                     cy_temp = center_y_range[0] + (center_y_range[1] - center_y_range[0]) * torch.rand(1).item()
@@ -788,13 +848,13 @@ class PINNDeepONet_Wave2D(nn.Module):
                 u0_sensors_temp = self.generate_ic_sine_series(a_coeffs_temp)
                 v0_sensors_temp = self.generate_ic_sine_series(b_coeffs_temp)
                 src_sensors_temp = self.generate_source(source_type, source_amplitude, cx_temp, cy_temp)
-                x_colloc_temp = self.domain[0] + (self.domain[1] - self.domain[0]) * torch.rand(n_colloc)
-                y_colloc_temp = self.domain[0] + (self.domain[1] - self.domain[0]) * torch.rand(n_colloc)
-                t_colloc_temp = T_max * torch.rand(n_colloc)
+                x_colloc_temp = self.domain[0] + (self.domain[1] - self.domain[0]) * torch.rand(n_colloc, device=device)
+                y_colloc_temp = self.domain[0] + (self.domain[1] - self.domain[0]) * torch.rand(n_colloc, device=device)
+                t_colloc_temp = T_max * torch.rand(n_colloc, device=device)
                 xyt_colloc_temp = torch.stack([x_colloc_temp, y_colloc_temp, t_colloc_temp], dim=1)
                 src_colloc_temp = self.source_function(x_colloc_temp, y_colloc_temp, source_type, source_amplitude, cx_temp, cy_temp)
-                x_ic_1d = torch.linspace(self.domain[0], self.domain[1], n_ic)
-                y_ic_1d = torch.linspace(self.domain[0], self.domain[1], n_ic)
+                x_ic_1d = torch.linspace(self.domain[0], self.domain[1], n_ic, device=device)
+                y_ic_1d = torch.linspace(self.domain[0], self.domain[1], n_ic, device=device)
                 X_ic_temp, Y_ic_temp = torch.meshgrid(x_ic_1d, y_ic_1d, indexing='ij')
                 x_ic_temp = X_ic_temp.flatten()
                 y_ic_temp = Y_ic_temp.flatten()
@@ -866,7 +926,8 @@ class PINNDeepONet_Wave2D(nn.Module):
                 n_ic_v=n_ic_v,
                 weights=weights,
                 optimizer=optimizer,
-                max_grad_norm=max_grad_norm
+                max_grad_norm=max_grad_norm,
+                device=device
             )
             
             loss_total_avg = weights['PDE'] * loss_pde_avg + weights['IC_u'] * loss_ic_u_avg + weights['IC_v'] * loss_ic_v_avg
@@ -977,8 +1038,8 @@ class PINNDeepONet_Wave2D(nn.Module):
             if epoch % log_interval == 0 or epoch == n_epochs - 1:
                 current_lr = optimizer.param_groups[0]['lr']
                 # Diagnostic: check prediction scale (use first batch for sampling)
-                a_diag = sample_coeffs(n_ic_u, a_range, p=3.0, as_2d=True)
-                b_diag = sample_coeffs(n_ic_v, b_range, as_2d=True)
+                a_diag = sample_coeffs(n_ic_u, a_range, p=3.0, as_2d=True, device=device)
+                b_diag = sample_coeffs(n_ic_v, b_range, as_2d=True, device=device)
                 if center_x_range is not None and center_y_range is not None and source_type == 'gaussian':
                     cx_diag = center_x_range[0] + (center_x_range[1] - center_x_range[0]) * torch.rand(1).item()
                     cy_diag = center_y_range[0] + (center_y_range[1] - center_y_range[0]) * torch.rand(1).item()
@@ -987,8 +1048,8 @@ class PINNDeepONet_Wave2D(nn.Module):
                 u0_diag = self.generate_ic_sine_series(a_diag)
                 v0_diag = self.generate_ic_sine_series(b_diag)
                 src_diag = self.generate_source(source_type, source_amplitude, cx_diag, cy_diag)
-                x_ic_1d_diag = torch.linspace(self.domain[0], self.domain[1], n_ic)
-                y_ic_1d_diag = torch.linspace(self.domain[0], self.domain[1], n_ic)
+                x_ic_1d_diag = torch.linspace(self.domain[0], self.domain[1], n_ic, device=device)
+                y_ic_1d_diag = torch.linspace(self.domain[0], self.domain[1], n_ic, device=device)
                 X_ic_diag, Y_ic_diag = torch.meshgrid(x_ic_1d_diag, y_ic_1d_diag, indexing='ij')
                 xyt_ic_diag = torch.stack([X_ic_diag.flatten(), Y_ic_diag.flatten(), torch.zeros_like(X_ic_diag.flatten())], dim=1)
                 with torch.no_grad():
@@ -1025,16 +1086,16 @@ class PINNDeepONet_Wave2D(nn.Module):
             
             for epoch_lbfgs in range(lbfgs_n_epochs):
                 # Use current weights (fixed strategy used for LBFGS typically)
-                weights_lbfgs = initial_weights if strategy == 'fixed' else adaptive_weights.get_current_weights()
+                weights_lbfgs = initial_weights if strategy == 'fixed' else adaptive_weights.get_weights()
                 
                 # Define closure for LBFGS
                 def closure_lbfgs():
                     optimizer_lbfgs.zero_grad()
                     loss_total_lbfgs = 0.0
                     
-                    # Sample single batch for LBFGS step
-                    a_lbfgs = sample_coeffs(n_ic_u, a_range, p=3.0, as_2d=True)
-                    b_lbfgs = sample_coeffs(n_ic_v, b_range, p=3.0, as_2d=True)
+                    # Sample single batch for LBFGS step (on GPU)
+                    a_lbfgs = sample_coeffs(n_ic_u, a_range, p=3.0, as_2d=True, device=device)
+                    b_lbfgs = sample_coeffs(n_ic_v, b_range, p=3.0, as_2d=True, device=device)
                     
                     if center_x_range is not None and center_y_range is not None and source_type == 'gaussian':
                         cx_lbfgs = center_x_range[0] + (center_x_range[1] - center_x_range[0]) * torch.rand(1).item()
