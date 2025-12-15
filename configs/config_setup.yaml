@@ -30,7 +30,7 @@ training:
   pretrain_ic: True
   train_adam: False
   train_lbfgs: False  
-  n_epochs_pretrain: 2000
+  n_epochs_pretrain: 1000
 
 model:
   n_sensors_ic: 40
@@ -58,7 +58,7 @@ model:
   w_ic_u: 50.0
   w_ic_v: 50.0
   strategy: 'ntk'
-  fusion: 'hc'
+  fusion: 'sum'
 
 data:
   n_colloc: 800

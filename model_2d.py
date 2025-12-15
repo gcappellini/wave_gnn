@@ -1007,12 +1007,16 @@ class PINNDeepONet_Wave2D(nn.Module):
             history, best_model_state, best_test_loss, best_test_losses = self._train_phase2_main(
                 cfg, test_cases, output_fold, device, adaptive_weights, initial_weights
             )
+        else:
+            history, best_test_loss, best_test_losses = None, None, None
         
         # ==== PHASE 3: LBFGS Fine-tuning ====
         if cfg.training.train_lbfgs:
             history_lbfgs, _, best_test_loss_lbfgs = self._train_phase3_lbfgs(
                 cfg, test_cases, output_fold, device, initial_weights, adaptive_weights, cfg.training.n_epochs
             )
+        else:
+            history_lbfgs=None
         
         # Merge histories if LBFGS was run
         if history_lbfgs is not None:
