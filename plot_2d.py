@@ -407,9 +407,14 @@ def plot_ic_reconstruction(model, test_case, n_grid=100, save_path="ic_reconstru
         device = next(model.parameters()).device
         src_eval = model.generate_source('zero')  # Use zero source for IC evaluation
         
-        with torch.no_grad():
+        # Compute predictions: forward pass in eval mode, but enable gradients for velocity computation
+        with torch.enable_grad():
             u0_pred_field = model.forward(u0_sensors, v0_sensors, src_eval, xyt_eval)
             v0_pred_field = model.get_velocity(u0_sensors, v0_sensors, src_eval, xyt_eval)
+        
+        # Detach for plotting (no backward pass needed)
+        u0_pred_field = u0_pred_field.detach()
+        v0_pred_field = v0_pred_field.detach()
 
     # 3. Reshape fields for plotting
     u0_true = u0_true_field.reshape(n_grid, n_grid).cpu().numpy()
