@@ -539,17 +539,17 @@ class PINNDeepONet_Wave2D(nn.Module):
                 # In Phase 1, we focus on learning the IC reconstruction through the network
                 u0_pred = self.forward(u0_sensors_pre, v0_sensors_pre, src_sensors_pre, xyt_ic_grad)
                 
-                # Compute u0 loss
+                # For v0, we use a small time offset to approximate velocity
+                # Or simply skip it for Phase 1 and only learn u0
                 loss_ic_u = torch.mean((u0_pred - u0_true)**2)
+                loss_pre = loss_ic_u
 
-                # Velocity with autograd: compute du/dt at t=0 to get velocity prediction
+                # Velocity with autograd
                 u_t_ic_pred = torch.autograd.grad(u0_pred, xyt_ic_grad,
                                                 torch.ones_like(u0_pred),
-                                                create_graph=False)[0][:, 2]
+                                                create_graph=True)[0][:, 2]
                 loss_ic_v = torch.mean((u_t_ic_pred - v0_true) ** 2)
                 
-                # Total loss: combine u0 and v0
-                loss_pre = loss_ic_u + loss_ic_v
                 loss_pre.backward()
                 loss_ic_u_accum += loss_ic_u.item()
                 loss_ic_v_accum += loss_ic_v.item()
