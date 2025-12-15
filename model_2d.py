@@ -556,7 +556,10 @@ class PINNDeepONet_Wave2D(nn.Module):
             for param in self.trunk.parameters():
                 param.requires_grad = True
                 trainable_params.append(param)
-        
+        if hasattr(self, 'branch_src'):
+                        for param in self.branch_src.parameters():
+                            param.requires_grad = True
+                            trainable_params.append(param)        
         optimizer_pre = torch.optim.Adam(trainable_params, lr=lr)
         best_pretrain_loss = float('inf')
         best_pretrain_model_state = None
