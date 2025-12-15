@@ -58,7 +58,7 @@ model:
   w_ic_u: 50.0
   w_ic_v: 50.0
   strategy: 'ntk'
-  fusion: 'sum'
+  fusion: 'hc'
 
 data:
   n_colloc: 800
