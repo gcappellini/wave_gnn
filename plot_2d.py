@@ -324,11 +324,21 @@ def plot_ic_reconstruction(model, test_case, n_grid=100, save_path="ic_reconstru
             u_gt = gt_data[:, 4]
             v_gt = gt_data[:, 5]
             
-            # Find points at t=0 (or very close to t=0)
-            t_tol = 1e-6
-            mask_t0 = np.abs(t_gt) < t_tol
+            # Get unique time values
+            t_unique = np.unique(t_gt)
             
-            if np.sum(mask_t0) == 0:
+            # Find closest time to t=0
+            t_idx = np.argmin(np.abs(t_unique - 0.0))
+            t_selected = t_unique[t_idx]
+            
+            # Extract data at selected time
+            mask = np.abs(t_gt - t_selected) < 1e-6
+            x_selected = x_gt[mask]
+            y_selected = y_gt[mask]
+            u_selected = u_gt[mask]
+            v_selected = v_gt[mask]
+            
+            if len(x_selected) == 0:
                 log.warning("No ground truth data at t=0, using test case instead")
                 # Fallback to test case
                 a_coeffs = test_case['a_coeffs']
@@ -339,30 +349,28 @@ def plot_ic_reconstruction(model, test_case, n_grid=100, save_path="ic_reconstru
                 v0_true_field = model.generate_ic_sine_series(b_coeffs, X.flatten(), Y.flatten())
                 gt_available = False
             else:
-                # Interpolate MATLAB GT to match evaluation grid
-                from scipy.interpolate import griddata
-                x_gt_t0 = x_gt[mask_t0]
-                y_gt_t0 = y_gt[mask_t0]
-                u_gt_t0 = u_gt[mask_t0]
-                v_gt_t0 = v_gt[mask_t0]
+                # Get spatial grid info from MATLAB data at t=0
+                x_unique = np.unique(x_selected)
+                y_unique = np.unique(y_selected)
                 
-                # Create evaluation points
-                points_gt = np.column_stack([x_gt_t0, y_gt_t0])
+                # Create meshgrid for MATLAB data
+                X_gt, Y_gt = np.meshgrid(x_unique, y_unique, indexing='ij')
+                
+                # Interpolate MATLAB GT to evaluation grid using griddata
+                from scipy.interpolate import griddata
+                points = np.column_stack([x_selected, y_selected])
                 points_eval = np.column_stack([X.flatten().cpu().numpy(), Y.flatten().cpu().numpy()])
                 
-                # Interpolate
                 u0_true_field = torch.tensor(
-                    griddata(points_gt, u_gt_t0, points_eval, method='cubic', fill_value=0.0),
+                    griddata(points, u_selected, points_eval, method='linear', fill_value=0.0),
                     device=device, dtype=torch.float32
                 )
                 v0_true_field = torch.tensor(
-                    griddata(points_gt, v_gt_t0, points_eval, method='cubic', fill_value=0.0),
+                    griddata(points, v_selected, points_eval, method='linear', fill_value=0.0),
                     device=device, dtype=torch.float32
                 )
                 
-                # For sensors, we need to extract from the evaluation grid
-                # Create a dummy sensor setup that matches the MATLAB data
-                # Use a simple approach: extract values at sensor locations from interpolated field
+                # For sensors, extract values at sensor locations from interpolated field
                 u0_sensors = u0_true_field[:model.n_sensors_ic**2].clone()
                 v0_sensors = v0_true_field[:model.n_sensors_ic**2].clone()
                 gt_available = True
