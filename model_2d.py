@@ -235,6 +235,8 @@ class PINNDeepONet_Wave2D(nn.Module):
             u0_pred_rescaled = 16.0 * u0_pred
             v0_pred_rescaled = 16.0 * v0_pred
             
+            # Apply BC factor, squeezing to match prediction shape
+            bc_factor_sq = bc_factor_sq.squeeze(-1)  # Remove last dimension if needed
             u0_pred = bc_factor_sq * u0_pred_rescaled
             v0_pred = bc_factor_sq * v0_pred_rescaled
 
