@@ -475,13 +475,13 @@ class PINNDeepONet_Wave2D(nn.Module):
         Returns pretrain_history dictionary.
         """
         n_epochs_pretrain = cfg.training.n_epochs_pretrain
-        n_batches = cfg.training.n_batches
+        n_batches = cfg.training.n_batches_ph1
         n_ic = cfg.data.n_ic
         n_ic_u = cfg.data.n_ic_u
         n_ic_v = cfg.data.n_ic_v
         val_interval = cfg.training.val_interval
         lr = cfg.training.lr
-        max_grad_norm = cfg.training.max_grad_norm
+        max_grad_norm = cfg.training.max_grad_ph1
         
         a_range = tuple(cfg.data.a_range)
         b_range = tuple(cfg.data.b_range)

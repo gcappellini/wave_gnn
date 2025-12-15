@@ -12,7 +12,7 @@ run:
   load_from: null #['2025-12-13','13-38-38']
 
 training:
-  n_epochs: 40000
+  n_epochs: 2
   lr: 0.001
   lr_scheduler_step: 500
   lr_scheduler_gamma: 0.95
@@ -24,13 +24,15 @@ training:
   val_interval: 20
   es_patience: 5000
   max_grad_norm: 1.0
+  max_grad_ph1: 0.10
   n_batches: 16
+  n_batches_ph1: 16
   n_test_cases: 50
   test_seed: 42
   pretrain_ic: True
-  train_adam: True
+  train_adam: False
   train_lbfgs: False  
-  n_epochs_pretrain: 20000
+  n_epochs_pretrain: 4000
 
 model:
   n_sensors_ic: 100
