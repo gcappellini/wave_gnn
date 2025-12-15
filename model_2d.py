@@ -704,8 +704,8 @@ class PINNDeepONet_Wave2D(nn.Module):
                     v0_sensors_pre = self.generate_ic_sine_series(b_coeffs_pre)
                     
                     # Generate Target Ground Truth Points (IC Grid)
-                    x_ic_1d = torch.linspace(self.domain[0], self.domain[1], n_ic)
-                    y_ic_1d = torch.linspace(self.domain[0], self.domain[1], n_ic)
+                    x_ic_1d = torch.linspace(self.domain[0], self.domain[1], n_ic, device=device)
+                    y_ic_1d = torch.linspace(self.domain[0], self.domain[1], n_ic, device=device)
                     X_ic, Y_ic = torch.meshgrid(x_ic_1d, y_ic_1d, indexing='ij')
                     x_ic = X_ic.flatten()
                     y_ic = Y_ic.flatten()
@@ -749,8 +749,8 @@ class PINNDeepONet_Wave2D(nn.Module):
                         
                         # Evaluate IC reconstruction on test set
                         with torch.no_grad():
-                            x_test_ic_1d = torch.linspace(self.domain[0], self.domain[1], n_ic)
-                            y_test_ic_1d = torch.linspace(self.domain[0], self.domain[1], n_ic)
+                            x_test_ic_1d = torch.linspace(self.domain[0], self.domain[1], n_ic, device=device)
+                            y_test_ic_1d = torch.linspace(self.domain[0], self.domain[1], n_ic, device=device)
                             X_test_ic, Y_test_ic = torch.meshgrid(x_test_ic_1d, y_test_ic_1d, indexing='ij')
                             x_test_ic = X_test_ic.flatten()
                             y_test_ic = Y_test_ic.flatten()
@@ -953,9 +953,9 @@ class PINNDeepONet_Wave2D(nn.Module):
                     src_test = self.generate_source(source_type, source_amplitude, test_case['center_x'], test_case['center_y'])
                     
                     # Sample test collocation and IC points
-                    x_test_colloc = self.domain[0] + (self.domain[1] - self.domain[0]) * torch.rand(n_colloc)
-                    y_test_colloc = self.domain[0] + (self.domain[1] - self.domain[0]) * torch.rand(n_colloc)
-                    t_test_colloc = T_max * torch.rand(n_colloc)
+                    x_test_colloc = self.domain[0] + (self.domain[1] - self.domain[0]) * torch.rand(n_colloc, device=device)
+                    y_test_colloc = self.domain[0] + (self.domain[1] - self.domain[0]) * torch.rand(n_colloc, device=device)
+                    t_test_colloc = T_max * torch.rand(n_colloc, device=device)
                     xyt_test_colloc = torch.stack([x_test_colloc, y_test_colloc, t_test_colloc], dim=1)
                     src_test_colloc = self.source_function(x_test_colloc, y_test_colloc, source_type, source_amplitude, test_case['center_x'], test_case['center_y'])
                     
@@ -965,8 +965,8 @@ class PINNDeepONet_Wave2D(nn.Module):
                     
                     # Test IC losses (no gradients needed for prediction, but needed for velocity)
                     with torch.no_grad():
-                        x_test_ic_1d = torch.linspace(self.domain[0], self.domain[1], n_ic)
-                        y_test_ic_1d = torch.linspace(self.domain[0], self.domain[1], n_ic)
+                        x_test_ic_1d = torch.linspace(self.domain[0], self.domain[1], n_ic, device=device)
+                        y_test_ic_1d = torch.linspace(self.domain[0], self.domain[1], n_ic, device=device)
                         X_test_ic, Y_test_ic = torch.meshgrid(x_test_ic_1d, y_test_ic_1d, indexing='ij')
                         x_test_ic = X_test_ic.flatten()
                         y_test_ic = Y_test_ic.flatten()
