@@ -656,7 +656,7 @@ class PINNDeepONet_Wave2D(nn.Module):
         for param in self.parameters():
             param.requires_grad = True
         
-        return pretrain_history
+        return pretrain_history, best_pretrain_model_state, best_pretrain_loss, {'ic_u': float('inf'), 'ic_v': float('inf'), 'pde': float('inf')}
     
     def _train_phase2_main(self, cfg, test_cases, output_fold, device, adaptive_weights, initial_weights):
         """
@@ -996,8 +996,11 @@ class PINNDeepONet_Wave2D(nn.Module):
         
         # ==== PHASE 1: IC Pre-training ====
         pretrain_history = None
+        best_pretrain_model_state = None
+        best_pretrain_test_loss = None
+        best_pretrain_test_losses = None
         if cfg.training.pretrain_ic:
-            pretrain_history = self._train_phase1_pretraining(cfg, test_cases, output_fold, gt_data, device)
+            pretrain_history, best_pretrain_model_state, best_pretrain_test_loss, best_pretrain_test_losses = self._train_phase1_pretraining(cfg, test_cases, output_fold, gt_data, device)
         
         # ==== PHASE 2: Main Training ====
         if cfg.training.train_adam:
@@ -1008,7 +1011,7 @@ class PINNDeepONet_Wave2D(nn.Module):
                 cfg, test_cases, output_fold, device, adaptive_weights, initial_weights
             )
         else:
-            history, best_test_loss, best_test_losses = None, None, None
+            history, best_test_loss, best_test_losses = pretrain_history, best_pretrain_test_loss, best_pretrain_test_losses
         
         # ==== PHASE 3: LBFGS Fine-tuning ====
         if cfg.training.train_lbfgs:
