@@ -30,12 +30,12 @@ training:
   pretrain_ic: True
   train_adam: False
   train_lbfgs: False  
-  n_epochs_pretrain: 5000
+  n_epochs_pretrain: 4000
 
 model:
   n_sensors_ic: 40
   n_sensors_src: 20
-  branch_width: 300
+  branch_width: 1024
   trunk_width: 300
   branch_act: nn.Tanh()
   trunk_act: nn.Tanh()

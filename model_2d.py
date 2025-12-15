@@ -226,7 +226,7 @@ class PINNDeepONet_Wave2D(nn.Module):
             # 2. Compute BC factor (ensures BCs are built into the solution)
             # BC factor: x(1-x)*y(1-y) - zero at all boundaries, smooth interior
             # NO rescaling: let network learn to work with this naturally
-            bc_factor = x * (1.0 - x) * y * (1.0 - y)
+            bc_factor = 16 * x * (1.0 - x) * y * (1.0 - y)
 
             # 3. Branch Encoding (Common to all methods)
             ic_concat = torch.cat([u0_sensors, v0_sensors], dim=1)
@@ -484,7 +484,8 @@ class PINNDeepONet_Wave2D(nn.Module):
         b_range = tuple(cfg.data.b_range)
         
         log.info(f"=== PHASE 1: Pre-training IC Reconstruction for {n_epochs_pretrain} epochs ===")
-        pretrain_history = {'loss_ic_u': [], 'loss_ic_v': [], 'test_metric': [], 'test_epochs': []}
+        # pretrain_history = {'loss_ic_u': [], 'loss_ic_v': [], 'test_metric': [], 'test_epochs': []}
+        pretrain_history = {'loss_ic_u': [], 'test_metric': [], 'test_epochs': []}
         
         # Freeze all parameters initially
         for param in self.parameters():
@@ -527,7 +528,7 @@ class PINNDeepONet_Wave2D(nn.Module):
                 xyt_ic_grad = xyt_ic.clone().requires_grad_(True)
                 
                 u0_true = self.generate_ic_sine_series(a_coeffs_pre, X_ic.flatten(), Y_ic.flatten())
-                v0_true = self.generate_ic_sine_series(b_coeffs_pre, X_ic.flatten(), Y_ic.flatten())
+                # v0_true = self.generate_ic_sine_series(b_coeffs_pre, X_ic.flatten(), Y_ic.flatten())
                 
                 # Phase 1: Learn u0 and v0 as direct network outputs
                 # The ansatz u = bc_factor * (u0 + t*v0 + ...) means the network learns u0 at t=0
@@ -544,23 +545,23 @@ class PINNDeepONet_Wave2D(nn.Module):
                 loss_ic_u = torch.mean((u0_pred - u0_true)**2)
                 loss_pre = loss_ic_u
 
-                # Velocity with autograd
-                u_t_ic_pred = torch.autograd.grad(u0_pred, xyt_ic_grad,
-                                                torch.ones_like(u0_pred),
-                                                create_graph=True)[0][:, 2]
-                loss_ic_v = torch.mean((u_t_ic_pred - v0_true) ** 2)
+                # # Velocity with autograd
+                # u_t_ic_pred = torch.autograd.grad(u0_pred, xyt_ic_grad,
+                #                                 torch.ones_like(u0_pred),
+                #                                 create_graph=True)[0][:, 2]
+                # loss_ic_v = torch.mean((u_t_ic_pred - v0_true) ** 2)
                 
                 loss_pre.backward()
                 loss_ic_u_accum += loss_ic_u.item()
-                loss_ic_v_accum += loss_ic_v.item()
+                # loss_ic_v_accum += loss_ic_v.item()
             
             optimizer_pre.step()
             optimizer_pre.zero_grad()
             
             loss_ic_u_avg = loss_ic_u_accum / n_batches
-            loss_ic_v_avg = loss_ic_v_accum / n_batches
+            # loss_ic_v_avg = loss_ic_v_accum / n_batches
             pretrain_history['loss_ic_u'].append(loss_ic_u_avg)
-            pretrain_history['loss_ic_v'].append(loss_ic_v_avg)
+            # pretrain_history['loss_ic_v'].append(loss_ic_v_avg)
             
             # Evaluate on test set every val_interval epochs
             if (epoch_pre + 1) % val_interval == 0:
@@ -604,9 +605,11 @@ class PINNDeepONet_Wave2D(nn.Module):
                     }, checkpoint_path)
                 
                 if (epoch_pre + 1) % (val_interval * 5) == 0:
-                    log.info(f"  [Pre-train] Epoch {epoch_pre+1}/{n_epochs_pretrain} | IC_u: {loss_ic_u_avg:.6e} | IC_v: {loss_ic_v_avg:.6e} | Test: {pretrain_test_metric:.6e}")
+                    log.info(f"  [Pre-train] Epoch {epoch_pre+1}/{n_epochs_pretrain} | IC_u: {loss_ic_u_avg:.6e} | Test: {pretrain_test_metric:.6e}")
+                    # log.info(f"  [Pre-train] Epoch {epoch_pre+1}/{n_epochs_pretrain} | IC_u: {loss_ic_u_avg:.6e} | IC_v: {loss_ic_v_avg:.6e} | Test: {pretrain_test_metric:.6e}")
             elif (epoch_pre + 1) % 100 == 0:
-                log.info(f"  [Pre-train] Epoch {epoch_pre+1}/{n_epochs_pretrain} | IC_u: {loss_ic_u_avg:.6e} | IC_v: {loss_ic_v_avg:.6e}")
+                # log.info(f"  [Pre-train] Epoch {epoch_pre+1}/{n_epochs_pretrain} | IC_u: {loss_ic_u_avg:.6e} | IC_v: {loss_ic_v_avg:.6e}")
+                log.info(f"  [Pre-train] Epoch {epoch_pre+1}/{n_epochs_pretrain} | IC_u: {loss_ic_u_avg:.6e}")
         
         log.info("=== PHASE 1 COMPLETE ===")
         
