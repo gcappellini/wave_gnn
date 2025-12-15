@@ -523,6 +523,388 @@ class PINNDeepONet_Wave2D(nn.Module):
         
         return loss_pde, loss_ic_u, loss_ic_v
     
+    def _train_phase1_pretraining(self, cfg, test_cases, output_fold, gt_data, device):
+        """
+        Phase 1: IC Pre-training with frozen dynamic components.
+        Returns pretrain_history dictionary.
+        """
+        n_epochs_pretrain = cfg.training.n_epochs_pretrain
+        n_batches = cfg.training.n_batches
+        n_ic = cfg.data.n_ic
+        n_ic_u = cfg.data.n_ic_u
+        n_ic_v = cfg.data.n_ic_v
+        val_interval = cfg.training.val_interval
+        lr = cfg.training.lr
+        
+        a_range = tuple(cfg.data.a_range)
+        b_range = tuple(cfg.data.b_range)
+        
+        log.info(f"=== PHASE 1: Pre-training IC Reconstruction for {n_epochs_pretrain} epochs ===")
+        pretrain_history = {'loss_ic_u': [], 'loss_ic_v': [], 'test_metric': [], 'test_epochs': []}
+        
+        # Freeze all parameters initially
+        for param in self.parameters():
+            param.requires_grad = False
+        
+        # Unfreeze only branch_ic and trunk
+        trainable_params = []
+        if hasattr(self, 'branch_ic'):
+            for param in self.branch_ic.parameters():
+                param.requires_grad = True
+                trainable_params.append(param)
+        if hasattr(self, 'trunk'):
+            for param in self.trunk.parameters():
+                param.requires_grad = True
+                trainable_params.append(param)
+        
+        optimizer_pre = torch.optim.Adam(trainable_params, lr=lr)
+        best_pretrain_loss = float('inf')
+        best_pretrain_model_state = None
+        best_pretrain_epoch = 0
+        
+        for epoch_pre in range(n_epochs_pretrain):
+            loss_ic_u_accum = 0.0
+            loss_ic_v_accum = 0.0
+            
+            for _ in range(n_batches):
+                a_coeffs_pre = sample_coeffs(n_ic_u, a_range, p=3.0, as_2d=True, device=device)
+                b_coeffs_pre = sample_coeffs(n_ic_v, b_range, as_2d=True, device=device)
+                
+                u0_sensors_pre = self.generate_ic_sine_series(a_coeffs_pre)
+                v0_sensors_pre = self.generate_ic_sine_series(b_coeffs_pre)
+                
+                x_ic_1d = torch.linspace(self.domain[0], self.domain[1], n_ic, device=device)
+                y_ic_1d = torch.linspace(self.domain[0], self.domain[1], n_ic, device=device)
+                X_ic, Y_ic = torch.meshgrid(x_ic_1d, y_ic_1d, indexing='ij')
+                xyt_ic = torch.stack([X_ic.flatten(), Y_ic.flatten(), torch.zeros_like(X_ic.flatten())], dim=1)
+                
+                u0_true = self.generate_ic_sine_series(a_coeffs_pre, X_ic.flatten(), Y_ic.flatten())
+                v0_true = self.generate_ic_sine_series(b_coeffs_pre, X_ic.flatten(), Y_ic.flatten())
+                
+                u0_pred, v0_pred = self.predict_ic(u0_sensors_pre, v0_sensors_pre, xyt_ic)
+                
+                loss_ic_u = torch.mean((u0_pred - u0_true)**2)
+                loss_ic_v = torch.mean((v0_pred - v0_true)**2)
+                loss_pre = loss_ic_u + loss_ic_v
+                
+                loss_pre.backward()
+                loss_ic_u_accum += loss_ic_u.item()
+                loss_ic_v_accum += loss_ic_v.item()
+            
+            optimizer_pre.step()
+            optimizer_pre.zero_grad()
+            
+            loss_ic_u_avg = loss_ic_u_accum / n_batches
+            loss_ic_v_avg = loss_ic_v_accum / n_batches
+            pretrain_history['loss_ic_u'].append(loss_ic_u_avg)
+            pretrain_history['loss_ic_v'].append(loss_ic_v_avg)
+            
+            # Evaluate on test set every val_interval epochs
+            if (epoch_pre + 1) % val_interval == 0:
+                pretrain_test_metric = 0.0
+                for test_case in test_cases:
+                    u0_test_pre = self.generate_ic_sine_series(test_case['a_coeffs'])
+                    v0_test_pre = self.generate_ic_sine_series(test_case['b_coeffs'])
+                    
+                    with torch.no_grad():
+                        x_test_ic_1d = torch.linspace(self.domain[0], self.domain[1], n_ic, device=device)
+                        y_test_ic_1d = torch.linspace(self.domain[0], self.domain[1], n_ic, device=device)
+                        X_test_ic, Y_test_ic = torch.meshgrid(x_test_ic_1d, y_test_ic_1d, indexing='ij')
+                        xyt_test_ic = torch.stack([X_test_ic.flatten(), Y_test_ic.flatten(), torch.zeros_like(X_test_ic.flatten())], dim=1)
+                        
+                        u0_test_pred, v0_test_pred = self.predict_ic(u0_test_pre, v0_test_pre, xyt_test_ic)
+                        u0_test_true = self.generate_ic_sine_series(test_case['a_coeffs'], X_test_ic.flatten(), Y_test_ic.flatten())
+                        v0_test_true = self.generate_ic_sine_series(test_case['b_coeffs'], X_test_ic.flatten(), Y_test_ic.flatten())
+                        
+                        loss_test_ic_u = torch.mean((u0_test_pred - u0_test_true)**2)
+                        loss_test_ic_v = torch.mean((v0_test_pred - v0_test_true)**2)
+                        pretrain_test_metric += (loss_test_ic_u + loss_test_ic_v).item()
+                
+                pretrain_test_metric /= len(test_cases)
+                pretrain_history['test_metric'].append(pretrain_test_metric)
+                pretrain_history['test_epochs'].append(epoch_pre + 1)
+                
+                if pretrain_test_metric < best_pretrain_loss:
+                    best_pretrain_loss = pretrain_test_metric
+                    best_pretrain_model_state = {key: value.cpu().clone() for key, value in self.state_dict().items()}
+                    best_pretrain_epoch = epoch_pre
+                    log.info(f"  ✓ Pretrain test metric improved to {pretrain_test_metric:.6e} at epoch {epoch_pre+1}")
+                    
+                    checkpoint_path = os.path.join(output_fold, 'model_pretrain.pth')
+                    torch.save({
+                        'epoch': epoch_pre,
+                        'model_state_dict': self.state_dict(),
+                        'test_metric': pretrain_test_metric,
+                        'pretrain_history': pretrain_history,
+                        'config': cfg,
+                    }, checkpoint_path)
+                
+                if (epoch_pre + 1) % (val_interval * 5) == 0:
+                    log.info(f"  [Pre-train] Epoch {epoch_pre+1}/{n_epochs_pretrain} | IC_u: {loss_ic_u_avg:.6e} | IC_v: {loss_ic_v_avg:.6e} | Test: {pretrain_test_metric:.6e}")
+            elif (epoch_pre + 1) % 100 == 0:
+                log.info(f"  [Pre-train] Epoch {epoch_pre+1}/{n_epochs_pretrain} | IC_u: {loss_ic_u_avg:.6e} | IC_v: {loss_ic_v_avg:.6e}")
+        
+        log.info("=== PHASE 1 COMPLETE ===")
+        
+        if best_pretrain_model_state is not None:
+            self.load_state_dict(best_pretrain_model_state)
+            log.info(f"Restored best pretraining model from epoch {best_pretrain_epoch+1}")
+        
+        plot_ic_reconstruction(self, test_cases[0], save_path=os.path.join(output_fold, 'ic_pretrain_diagnostic.png'), gt_data=gt_data)
+        
+        # Unfreeze everything for Phase 2
+        for param in self.parameters():
+            param.requires_grad = True
+        
+        return pretrain_history
+    
+    def _train_phase2_main(self, cfg, test_cases, output_fold, device, adaptive_weights, initial_weights):
+        """
+        Phase 2: Main training with adaptive/fixed loss weights.
+        Returns history dict and best model info.
+        """
+        n_epochs = cfg.training.n_epochs
+        if n_epochs == 0:
+            log.info("Phase 2 skipped (n_epochs=0)")
+            return {'total': [], 'pde': [], 'ic_u': [], 'ic_v': [], 'test_metric': [], 'test_epochs': []}, None, float('inf'), {}
+        
+        log.info(f"=== PHASE 2: Main Training for {n_epochs} epochs ===")
+        
+        optimizer = torch.optim.Adam(self.parameters(), lr=cfg.training.lr)
+        scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=cfg.training.lr_scheduler_gamma)
+        
+        history = {'total': [], 'pde': [], 'ic_u': [], 'ic_v': [], 'test_metric': [], 'test_epochs': []}
+        best_test_loss = float('inf')
+        best_model_state = None
+        best_epoch = 0
+        best_test_losses = {'pde': float('inf'), 'ic_u': float('inf'), 'ic_v': float('inf')}
+        epochs_without_improvement = 0
+        
+        if cfg.model.strategy == 'fixed':
+            log.info(f"Initial Weights -> PDE: {initial_weights['PDE']:.2e}, IC_u: {initial_weights['IC_u']:.2e}, IC_v: {initial_weights['IC_v']:.2e}")
+        
+        for epoch in range(n_epochs):
+            # Get weights for this epoch
+            if cfg.model.strategy != 'fixed':
+                weights = self._compute_adaptive_weights(epoch, cfg, adaptive_weights)
+            else:
+                weights = initial_weights
+            
+            # Train one epoch
+            loss_pde_avg, loss_ic_u_avg, loss_ic_v_avg = self._train_epoch_batched(
+                n_batches=cfg.training.n_batches,
+                n_colloc=cfg.data.n_colloc,
+                n_ic=cfg.data.n_ic,
+                T_max=cfg.data.T_max,
+                a_range=tuple(cfg.data.a_range),
+                b_range=tuple(cfg.data.b_range),
+                source_type=cfg.data.source_type,
+                source_amplitude=cfg.data.source_amplitude,
+                center_x=cfg.data.center_x,
+                center_y=cfg.data.center_y,
+                center_x_range=tuple(cfg.data.center_x_range) if cfg.data.center_x_range else None,
+                center_y_range=tuple(cfg.data.center_y_range) if cfg.data.center_y_range else None,
+                n_ic_u=cfg.data.n_ic_u,
+                n_ic_v=cfg.data.n_ic_v,
+                weights=weights,
+                optimizer=optimizer,
+                max_grad_norm=cfg.training.max_grad_norm,
+                device=device
+            )
+            
+            loss_total_avg = weights['PDE'] * loss_pde_avg + weights['IC_u'] * loss_ic_u_avg + weights['IC_v'] * loss_ic_v_avg
+            history['total'].append(loss_total_avg)
+            history['pde'].append(loss_pde_avg)
+            history['ic_u'].append(loss_ic_u_avg)
+            history['ic_v'].append(loss_ic_v_avg)
+            
+            if (epoch + 1) % cfg.training.lr_scheduler_step == 0:
+                scheduler.step()
+            
+            # Evaluate on test set
+            if (epoch + 1) % cfg.training.val_interval == 0:
+                test_metric, test_losses = self._evaluate_test_set(test_cases, cfg, device)
+                history['test_metric'].append(test_metric)
+                history['test_epochs'].append(epoch + 1)
+                
+                if test_metric < best_test_loss:
+                    best_test_loss = test_metric
+                    best_model_state = {key: value.cpu().clone() for key, value in self.state_dict().items()}
+                    best_epoch = epoch
+                    best_test_losses = test_losses
+                    epochs_without_improvement = 0
+                    log.info(f"✓ Test metric improved to {test_metric:.6e} at epoch {epoch}")
+                    
+                    checkpoint_path = os.path.join(output_fold, 'model.pth')
+                    torch.save({
+                        'epoch': epoch,
+                        'model_state_dict': self.state_dict(),
+                        'test_metric': test_metric,
+                        'test_losses': best_test_losses,
+                        'history': history,
+                    }, checkpoint_path)
+                else:
+                    epochs_without_improvement += cfg.training.val_interval
+                    if epochs_without_improvement >= cfg.training.es_patience:
+                        log.info(f"Early stopping at epoch {epoch}")
+                        break
+            
+            if epoch % cfg.training.log_interval == 0 or epoch == n_epochs - 1:
+                log.info(f"Epoch {epoch:5d} | Loss: {loss_total_avg:.6f} | PDE: {loss_pde_avg:.6f} | IC_u: {loss_ic_u_avg:.6f} | IC_v: {loss_ic_v_avg:.6f}")
+        
+        if cfg.model.strategy not in ['fixed', 'equal_init']:
+            adaptive_weights.plot_weights_evolution(output_fold)
+            if cfg.model.strategy == 'ntk':
+                adaptive_weights.plot_ntk_traces(output_fold)
+        
+        if best_model_state is not None:
+            self.load_state_dict(best_model_state)
+            log.info(f"Restored best model from epoch {best_epoch} with test metric {best_test_loss:.6f}")
+        
+        return history, best_model_state, best_test_loss, best_test_losses
+    
+    def _train_phase3_lbfgs(self, cfg, test_cases, output_fold, device, initial_weights, adaptive_weights, n_epochs_main):
+        """
+        Phase 3: LBFGS fine-tuning (optional).
+        Returns updated history and best model info.
+        """
+        if not cfg.training.get('use_lbfgs_finetune', False):
+            return None, None, float('inf')
+        
+        log.info(f"\n{'='*70}")
+        log.info(f"PHASE 3: LBFGS Fine-tuning")
+        log.info(f"{'='*70}")
+        
+        optimizer_lbfgs = torch.optim.LBFGS(self.parameters(), lr=cfg.training.get('lbfgs_lr', cfg.training.lr),
+                                            max_iter=cfg.training.get('lbfgs_max_iter', 20),
+                                            line_search_fn='strong_wolfe')
+        
+        history_lbfgs = {'test_metric': [], 'test_epochs': []}
+        best_test_loss_lbfgs = float('inf')
+        best_model_state_lbfgs = None
+        best_epoch_lbfgs = 0
+        
+        for epoch_lbfgs in range(cfg.training.get('lbfgs_n_epochs', 100)):
+            weights_lbfgs = initial_weights if cfg.model.strategy == 'fixed' else adaptive_weights.get_weights()
+            
+            def closure_lbfgs():
+                optimizer_lbfgs.zero_grad()
+                a_lbfgs = sample_coeffs(cfg.data.n_ic_u, tuple(cfg.data.a_range), p=3.0, as_2d=True, device=device)
+                b_lbfgs = sample_coeffs(cfg.data.n_ic_v, tuple(cfg.data.b_range), p=3.0, as_2d=True, device=device)
+                
+                u0_lbfgs = self.generate_ic_sine_series(a_lbfgs)
+                v0_lbfgs = self.generate_ic_sine_series(b_lbfgs)
+                src_lbfgs = self.generate_source(cfg.data.source_type, cfg.data.source_amplitude, cfg.data.center_x, cfg.data.center_y)
+                
+                loss_pde, loss_ic_u, loss_ic_v = self._compute_batch_losses(
+                    u0_lbfgs, v0_lbfgs, src_lbfgs,
+                    cfg.data.n_colloc, cfg.data.n_ic, cfg.data.T_max,
+                    cfg.data.source_type, cfg.data.source_amplitude,
+                    cfg.data.center_x, cfg.data.center_y,
+                    a_lbfgs, b_lbfgs
+                )
+                
+                loss_total = weights_lbfgs['PDE'] * loss_pde + weights_lbfgs['IC_u'] * loss_ic_u + weights_lbfgs['IC_v'] * loss_ic_v
+                loss_total.backward()
+                return loss_total
+            
+            optimizer_lbfgs.step(closure_lbfgs)
+            
+            if (epoch_lbfgs + 1) % cfg.training.val_interval == 0:
+                test_metric_lbfgs, _ = self._evaluate_test_set(test_cases, cfg, device)
+                history_lbfgs['test_metric'].append(test_metric_lbfgs)
+                history_lbfgs['test_epochs'].append(n_epochs_main + epoch_lbfgs + 1)
+                
+                if test_metric_lbfgs < best_test_loss_lbfgs:
+                    best_test_loss_lbfgs = test_metric_lbfgs
+                    best_model_state_lbfgs = {key: value.cpu().clone() for key, value in self.state_dict().items()}
+                    best_epoch_lbfgs = n_epochs_main + epoch_lbfgs
+                    log.info(f"✓ LBFGS: Test metric improved to {test_metric_lbfgs:.6e}")
+                
+                if (epoch_lbfgs + 1) % (cfg.training.val_interval * 5) == 0:
+                    log.info(f"  LBFGS Epoch {epoch_lbfgs+1} | Test Metric: {test_metric_lbfgs:.6e}")
+        
+        if best_model_state_lbfgs is not None:
+            self.load_state_dict(best_model_state_lbfgs)
+            log.info(f"Restored best LBFGS model from epoch {best_epoch_lbfgs + 1}")
+        
+        return history_lbfgs, best_model_state_lbfgs, best_test_loss_lbfgs
+    
+    def _compute_adaptive_weights(self, epoch, cfg, adaptive_weights):
+        """Compute adaptive weights for the current epoch."""
+        if cfg.model.strategy == 'fixed':
+            return {'PDE': cfg.model.w_pde, 'IC_u': cfg.model.w_ic_u, 'IC_v': cfg.model.w_ic_v}
+        
+        # For adaptive strategies, compute context-based weights
+        device = next(self.parameters()).device
+        a_temp = sample_coeffs(cfg.data.n_ic_u, tuple(cfg.data.a_range), p=3.0, as_2d=True, device=device)
+        b_temp = sample_coeffs(cfg.data.n_ic_v, tuple(cfg.data.b_range), p=3.0, as_2d=True, device=device)
+        
+        u0_temp = self.generate_ic_sine_series(a_temp)
+        v0_temp = self.generate_ic_sine_series(b_temp)
+        src_temp = self.generate_source(cfg.data.source_type, cfg.data.source_amplitude, cfg.data.center_x, cfg.data.center_y)
+        
+        loss_pde, loss_ic_u, loss_ic_v = self._compute_batch_losses(
+            u0_temp, v0_temp, src_temp,
+            cfg.data.n_colloc, cfg.data.n_ic, cfg.data.T_max,
+            cfg.data.source_type, cfg.data.source_amplitude,
+            cfg.data.center_x, cfg.data.center_y,
+            a_temp, b_temp
+        )
+        
+        context = {'loss_values': {'PDE': loss_pde.item(), 'IC_u': loss_ic_u.item(), 'IC_v': loss_ic_v.item()}, 'model': self}
+        return adaptive_weights.update(epoch, context)
+    
+    def _evaluate_test_set(self, test_cases, cfg, device):
+        """Evaluate model on test set. Returns test_metric and individual losses."""
+        test_metric = 0.0
+        test_pde_loss_sum = 0.0
+        test_ic_u_loss_sum = 0.0
+        test_ic_v_loss_sum = 0.0
+        
+        for test_case in test_cases:
+            u0_test = self.generate_ic_sine_series(test_case['a_coeffs'])
+            v0_test = self.generate_ic_sine_series(test_case['b_coeffs'])
+            src_test = self.generate_source(cfg.data.source_type, cfg.data.source_amplitude, test_case['center_x'], test_case['center_y'])
+            
+            x_colloc = self.domain[0] + (self.domain[1] - self.domain[0]) * torch.rand(cfg.data.n_colloc, device=device)
+            y_colloc = self.domain[0] + (self.domain[1] - self.domain[0]) * torch.rand(cfg.data.n_colloc, device=device)
+            t_colloc = cfg.data.T_max * torch.rand(cfg.data.n_colloc, device=device)
+            xyt_colloc = torch.stack([x_colloc, y_colloc, t_colloc], dim=1)
+            src_colloc = self.source_function(x_colloc, y_colloc, cfg.data.source_type, cfg.data.source_amplitude, test_case['center_x'], test_case['center_y'])
+            
+            residual_test = self.compute_pde_residual(u0_test, v0_test, src_test, xyt_colloc, src_colloc)
+            loss_pde_test = torch.mean(residual_test ** 2)
+            
+            with torch.no_grad():
+                x_ic = torch.linspace(self.domain[0], self.domain[1], cfg.data.n_ic, device=device)
+                y_ic = torch.linspace(self.domain[0], self.domain[1], cfg.data.n_ic, device=device)
+                X_ic, Y_ic = torch.meshgrid(x_ic, y_ic, indexing='ij')
+                xyt_ic = torch.stack([X_ic.flatten(), Y_ic.flatten(), torch.zeros_like(X_ic.flatten())], dim=1)
+                
+                u_ic = self.forward(u0_test, v0_test, src_test, xyt_ic)
+                u_ic_true = self.generate_ic_sine_series(test_case['a_coeffs'], X_ic.flatten(), Y_ic.flatten())
+                loss_ic_u_test = torch.mean((u_ic - u_ic_true) ** 2)
+            
+            xyt_ic_grad = xyt_ic.clone().requires_grad_(True)
+            u_ic_grad = self.forward(u0_test, v0_test, src_test, xyt_ic_grad)
+            u_t_ic = torch.autograd.grad(u_ic_grad, xyt_ic_grad, torch.ones_like(u_ic_grad), create_graph=True)[0][:, 2]
+            v_ic_true = self.generate_ic_sine_series(test_case['b_coeffs'], X_ic.flatten(), Y_ic.flatten())
+            loss_ic_v_test = torch.mean((u_t_ic - v_ic_true) ** 2)
+            
+            test_pde_loss_sum += loss_pde_test.item()
+            test_ic_u_loss_sum += loss_ic_u_test.item()
+            test_ic_v_loss_sum += loss_ic_v_test.item()
+            test_metric += np.sqrt(loss_pde_test.item()**2 + 10*loss_ic_u_test.item()**2 + loss_ic_v_test.item()**2)
+        
+        test_metric /= len(test_cases)
+        test_losses = {
+            'pde': test_pde_loss_sum / len(test_cases),
+            'ic_u': test_ic_u_loss_sum / len(test_cases),
+            'ic_v': test_ic_v_loss_sum / len(test_cases)
+        }
+        return test_metric, test_losses
+
     def _train_epoch_batched(self, n_batches, n_colloc, n_ic, T_max, 
                              a_range, b_range, source_type, source_amplitude,
                              center_x, center_y, center_x_range, center_y_range,
@@ -591,617 +973,89 @@ class PINNDeepONet_Wave2D(nn.Module):
     
     def train_pinn(self, cfg, output_fold=os.path.join(SCRIPT_DIR, 'logs_multibranch_wave'), device=None, gt_data=None):
         """
-        Train PINN-DeepONet for 2D wave equation with early stopping based on test loss
+        Train PINN-DeepONet in 3 phases: IC Pre-training, Main Training, LBFGS Fine-tuning.
         
-        Args:
-            cfg: Config object containing all training parameters
-            output_fold: Output directory for checkpoints and logs
-            device: torch.device to train on (cuda or cpu)
+        Phase 1 (Optional): Pre-train IC reconstruction with frozen dynamic components
+        Phase 2 (Main): Train full model with adaptive or fixed loss weights
+        Phase 3 (Optional): Fine-tune with LBFGS optimizer
         """
-        # Set device if provided
+        # Set device
         if device is None:
             device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
-        # Move model to device
         self = self.to(device)
-        # Extract training parameters from config
-        n_epochs = cfg.training.n_epochs
-        n_colloc = cfg.data.n_colloc
-        n_ic = cfg.data.n_ic
-        lr = cfg.training.lr
-        strategy = cfg.model.strategy
-        use_lbfgs_finetune = cfg.training.get('use_lbfgs_finetune', False)
-        lbfgs_n_epochs = cfg.training.get('lbfgs_n_epochs', 100)
-        lbfgs_max_iter = cfg.training.get('lbfgs_max_iter', 20)
-        lbfgs_lr = cfg.training.get('lbfgs_lr', lr)
-        w_pde = cfg.model.w_pde
-        w_ic_u = cfg.model.w_ic_u
-        w_ic_v = cfg.model.w_ic_v
-        val_interval = cfg.training.val_interval
-        early_stopping_patience = cfg.training.es_patience
-        n_test_cases = cfg.training.n_test_cases
-        test_seed = cfg.training.test_seed
-        lr_scheduler_gamma = cfg.training.lr_scheduler_gamma
-        lr_scheduler_step = cfg.training.lr_scheduler_step
-        max_grad_norm = cfg.training.max_grad_norm
-        n_batches = cfg.training.n_batches
-        log_interval = cfg.training.log_interval
         
-        # Extract IC/source parameters from config
+        # Log configuration
+        log.info(f"Epochs (Phase 2): {cfg.training.n_epochs}")
+        log.info(f"Collocation points: {cfg.data.n_colloc}")
+        log.info(f"a range: {tuple(cfg.data.a_range)}, b range: {tuple(cfg.data.b_range)}")
+        log.info(f"Wave speed: {self.c}, Damping: {self.k}")
+        
+        # Generate test set
+        test_cases = self._generate_test_set(cfg, device)
+        
+        # ==== PHASE 1: IC Pre-training ====
+        pretrain_history = None
+        if cfg.training.pretrain_ic:
+            pretrain_history = self._train_phase1_pretraining(cfg, test_cases, output_fold, gt_data, device)
+        
+        # ==== PHASE 2: Main Training ====
+        if cfg.training.train_adam:
+            initial_weights = {'PDE': cfg.model.w_pde, 'IC_u': cfg.model.w_ic_u, 'IC_v': cfg.model.w_ic_v}
+            adaptive_weights = AdaptiveLossWeights(initial_weights=initial_weights, strategy=cfg.model.strategy)
+            
+            history, best_model_state, best_test_loss, best_test_losses = self._train_phase2_main(
+                cfg, test_cases, output_fold, device, adaptive_weights, initial_weights
+            )
+        
+        # ==== PHASE 3: LBFGS Fine-tuning ====
+        if cfg.training.train_lbfgs:
+            history_lbfgs, _, best_test_loss_lbfgs = self._train_phase3_lbfgs(
+                cfg, test_cases, output_fold, device, initial_weights, adaptive_weights, cfg.training.n_epochs
+            )
+        
+        # Merge histories if LBFGS was run
+        if history_lbfgs is not None:
+            history['test_metric'].extend(history_lbfgs['test_metric'])
+            history['test_epochs'].extend(history_lbfgs['test_epochs'])
+            if best_test_loss_lbfgs < best_test_loss:
+                best_test_loss = best_test_loss_lbfgs
+        
+        log.info(f"Training complete!")
+        return history, pretrain_history, {
+            'best_epoch': history['test_epochs'][-1] if history['test_epochs'] else 0,
+            'best_test_metric': best_test_loss,
+            'best_losses': best_test_losses,
+        }
+    
+    def _generate_test_set(self, cfg, device):
+        """Generate deterministic test set."""
+        test_rng = np.random.RandomState(cfg.training.test_seed)
+        test_cases = []
         a_range = tuple(cfg.data.a_range)
         b_range = tuple(cfg.data.b_range)
-        n_ic_u = cfg.data.n_ic_u
-        n_ic_v = cfg.data.n_ic_v
-        T_max = cfg.data.T_max
-        source_type = cfg.data.source_type
-        source_amplitude = cfg.data.source_amplitude
-        center_x = cfg.data.center_x
-        center_y = cfg.data.center_y
-        center_x_range = tuple(cfg.data.center_x_range) if cfg.data.center_x_range else None
-        center_y_range = tuple(cfg.data.center_y_range) if cfg.data.center_y_range else None
-        pretrain_ic = cfg.training.pretrain_ic 
-        n_epochs_pretrain = cfg.training.n_epochs_pretrain
         
-        log.info(f"Epochs: {n_epochs}")
-        log.info(f"Collocation points: {n_colloc}")
-        log.info(f"a range: {a_range}, b range: {b_range}")
-        if center_x_range is not None and center_y_range is not None:
-            log.info(f"Source: {source_type}, amplitude: {source_amplitude}, center x range: {center_x_range}, center y range: {center_y_range}")
-        else:
-            log.info(f"Source: {source_type}, amplitude: {source_amplitude}, center: ({center_x}, {center_y})")
-        log.info(f"Wave speed: {self.c}, Damping: {self.k}")
-        log.info(f"Early stopping: patience={early_stopping_patience}, val_interval={val_interval}, n_test_cases={n_test_cases}")
-        
-        # Generate deterministic test set with fixed seed (on GPU)
-        test_rng = np.random.RandomState(test_seed)
-        test_cases = []
-        for _ in range(n_test_cases):
-            a_test = sample_coeffs(n_ic_u, a_range, p=3.0, as_2d=True, device=device)
-            b_test = sample_coeffs(n_ic_v, b_range, p=3.0, as_2d=True, device=device)
-            if center_x_range is not None and center_y_range is not None and source_type == 'gaussian':
+        for _ in range(cfg.training.n_test_cases):
+            a_test = sample_coeffs(cfg.data.n_ic_u, a_range, p=3.0, as_2d=True, device=device)
+            b_test = sample_coeffs(cfg.data.n_ic_v, b_range, p=3.0, as_2d=True, device=device)
+            
+            center_x_range = tuple(cfg.data.center_x_range) if cfg.data.center_x_range else None
+            center_y_range = tuple(cfg.data.center_y_range) if cfg.data.center_y_range else None
+            
+            if center_x_range is not None and center_y_range is not None and cfg.data.source_type == 'gaussian':
                 cx_test = test_rng.uniform(center_x_range[0], center_x_range[1])
                 cy_test = test_rng.uniform(center_y_range[0], center_y_range[1])
             else:
-                cx_test, cy_test = center_x, center_y
+                cx_test, cy_test = cfg.data.center_x, cfg.data.center_y
+            
             test_cases.append({
                 'a_coeffs': a_test,
                 'b_coeffs': b_test,
                 'center_x': cx_test,
                 'center_y': cy_test
             })
-        # ==============================================================================
-        # PHASE 1: IC Pre-training (The "Freeze" Strategy)
-        # ==============================================================================
-        # Assuming n_epochs_pretrain is set (e.g., 1000)
-        pretrain_history = None  # Will be populated if pretrain_ic is True
-        if pretrain_ic: 
-            log.info(f"=== PHASE 1: Pre-training IC Reconstruction for {n_epochs_pretrain} epochs (Standard DeepONet) ===")
-            pretrain_history = {'loss_ic_u': [], 'loss_ic_v': [], 'test_metric': [], 'test_epochs': []}
-            
-            # 1. Freeze Dynamic Components (All layers initially)
-            for param in self.parameters():
-                param.requires_grad = False
-            
-            # 2. Unfreeze components for Standard DeepONet IC Reconstruction:
-            trainable_params = []
-            
-            # a. Unfreeze Branch IC
-            if hasattr(self, 'branch_ic'):
-                for param in self.branch_ic.parameters():
-                    param.requires_grad = True
-                    trainable_params.append(param)
-                    
-            # b. Unfreeze the MAIN TRUNK (The trunk must learn the basis functions)
-            if hasattr(self, 'trunk'): 
-                for param in self.trunk.parameters():
-                    param.requires_grad = True
-                    trainable_params.append(param)
-            
-            # 3. Optimizer for Phase 1 (Tracks only the unfrozen parameters)
-            optimizer_pre = torch.optim.Adam(trainable_params, lr=lr)
-            
-            # Track best pretraining model
-            best_pretrain_loss = float('inf')
-            best_pretrain_model_state = None
-            best_pretrain_epoch = 0
-            
-            # 4. Pre-training Loop
-            for epoch_pre in range(n_epochs_pretrain):
-                loss_ic_u_accum = 0.0
-                loss_ic_v_accum = 0.0
-                
-                for _ in range(n_batches):
-                    # Sample random IC coefficients (on GPU)
-                    a_coeffs_pre = sample_coeffs(n_ic_u, a_range, p=3.0, as_2d=True, device=device)
-                    b_coeffs_pre = sample_coeffs(n_ic_v, b_range, as_2d=True, device=device)
-                    
-                    # Generate Input Sensors
-                    u0_sensors_pre = self.generate_ic_sine_series(a_coeffs_pre)
-                    v0_sensors_pre = self.generate_ic_sine_series(b_coeffs_pre)
-                    
-                    # Generate Target Ground Truth Points (IC Grid)
-                    x_ic_1d = torch.linspace(self.domain[0], self.domain[1], n_ic, device=device)
-                    y_ic_1d = torch.linspace(self.domain[0], self.domain[1], n_ic, device=device)
-                    X_ic, Y_ic = torch.meshgrid(x_ic_1d, y_ic_1d, indexing='ij')
-                    x_ic = X_ic.flatten()
-                    y_ic = Y_ic.flatten()
-                    t_ic = torch.zeros_like(x_ic)
-                    xyt_ic = torch.stack([x_ic, y_ic, t_ic], dim=1)
-                    
-                    # Compute Ground Truth Field (u0 and v0)
-                    u0_true = self.generate_ic_sine_series(a_coeffs_pre, x_ic, y_ic)
-                    v0_true = self.generate_ic_sine_series(b_coeffs_pre, x_ic, y_ic)
-                    
-                    # Forward Pass: Compute reconstruction (requires custom logic in forward or helper)
-                    # NOTE: Since we reverted to the standard model, you MUST ensure
-                    # your self.predict_ic (or a similar block) now calls self.trunk (not trunk_spatial).
-                    u0_pred, v0_pred = self.predict_ic(u0_sensors_pre, v0_sensors_pre, xyt_ic)
-                    
-                    # Loss: Compute separate losses for Displacement and Velocity reconstruction
-                    loss_ic_u = torch.mean((u0_pred - u0_true)**2)
-                    loss_ic_v = torch.mean((v0_pred - v0_true)**2)
-                    loss_pre = loss_ic_u + loss_ic_v
-                    
-                    loss_pre.backward()
-                    loss_ic_u_accum += loss_ic_u.item()
-                    loss_ic_v_accum += loss_ic_v.item()
-                
-                # Update
-                optimizer_pre.step()
-                optimizer_pre.zero_grad()
-                
-                # Store pretraining history (separate IC_u and IC_v losses)
-                loss_ic_u_avg = loss_ic_u_accum / n_batches
-                loss_ic_v_avg = loss_ic_v_accum / n_batches
-                pretrain_history['loss_ic_u'].append(loss_ic_u_avg)
-                pretrain_history['loss_ic_v'].append(loss_ic_v_avg)
-                
-                # Compute test metric on test set every val_interval epochs (using IC components only)
-                if (epoch_pre + 1) % val_interval == 0:
-                    pretrain_test_metric = 0.0
-                    for test_case in test_cases:
-                        u0_test_pre = self.generate_ic_sine_series(test_case['a_coeffs'])
-                        v0_test_pre = self.generate_ic_sine_series(test_case['b_coeffs'])
-                        
-                        # Evaluate IC reconstruction on test set
-                        with torch.no_grad():
-                            x_test_ic_1d = torch.linspace(self.domain[0], self.domain[1], n_ic, device=device)
-                            y_test_ic_1d = torch.linspace(self.domain[0], self.domain[1], n_ic, device=device)
-                            X_test_ic, Y_test_ic = torch.meshgrid(x_test_ic_1d, y_test_ic_1d, indexing='ij')
-                            x_test_ic = X_test_ic.flatten()
-                            y_test_ic = Y_test_ic.flatten()
-                            t_test_ic = torch.zeros_like(x_test_ic)
-                            xyt_test_ic = torch.stack([x_test_ic, y_test_ic, t_test_ic], dim=1)
-                            
-                            u0_test_pred, v0_test_pred = self.predict_ic(u0_test_pre, v0_test_pre, xyt_test_ic)
-                            u0_test_true = self.generate_ic_sine_series(test_case['a_coeffs'], x_test_ic, y_test_ic)
-                            v0_test_true = self.generate_ic_sine_series(test_case['b_coeffs'], x_test_ic, y_test_ic)
-                            
-                            loss_test_ic_u = torch.mean((u0_test_pred - u0_test_true)**2)
-                            loss_test_ic_v = torch.mean((v0_test_pred - v0_test_true)**2)
-                            pretrain_test_metric += (loss_test_ic_u + loss_test_ic_v).item()
-                    
-                    pretrain_test_metric /= n_test_cases
-                    pretrain_history['test_metric'].append(pretrain_test_metric)
-                    pretrain_history['test_epochs'].append(epoch_pre + 1)
-                    
-                    # Save best pretraining model
-                    if pretrain_test_metric < best_pretrain_loss:
-                        best_pretrain_loss = pretrain_test_metric
-                        best_pretrain_model_state = {key: value.cpu().clone() for key, value in self.state_dict().items()}
-                        best_pretrain_epoch = epoch_pre
-                        log.info(f"  ✓ Pretrain test metric improved to {pretrain_test_metric:.6e} at epoch {epoch_pre+1}")
-                        
-                        # Save checkpoint immediately when new best is achieved (overwrites previous best)
-                        checkpoint_path = os.path.join(output_fold, 'model_pretrain.pth')
-                        torch.save({
-                            'epoch': epoch_pre,
-                            'model_state_dict': self.state_dict(),
-                            'test_metric': pretrain_test_metric,
-                            'pretrain_history': pretrain_history,
-                            'config': cfg,
-                        }, checkpoint_path)
-                    if (epoch_pre + 1) % (val_interval * 5) == 0:
-                        log.info(f"  [Pre-train] Epoch {epoch_pre+1}/{n_epochs_pretrain} | IC_u Loss: {loss_ic_u_avg:.6e} | IC_v Loss: {loss_ic_v_avg:.6e} | Test Metric: {pretrain_test_metric:.6e}")
-                elif (epoch_pre + 1) % 100 == 0:
-                    log.info(f"  [Pre-train] Epoch {epoch_pre+1}/{n_epochs_pretrain} | IC_u Loss: {loss_ic_u_avg:.6e} | IC_v Loss: {loss_ic_v_avg:.6e}")
-            
-            log.info("=== PHASE 1 COMPLETE. ICs learned. Unfreezing for Phase 2. ===")
-            
-            # Restore best pretraining model if one was saved
-            if best_pretrain_model_state is not None:
-                self.load_state_dict(best_pretrain_model_state)
-                log.info(f"Restored best pretraining model from epoch {best_pretrain_epoch+1} with test metric {best_pretrain_loss:.6e}")
-            plot_ic_reconstruction(
-                self, 
-                test_cases[0], 
-                save_path=os.path.join(output_fold, 'ic_pretrain_diagnostic.png'),
-                gt_data=gt_data
-            )
-            # 5. Unfreeze Everything for Phase 2
-            for param in self.parameters():
-                param.requires_grad = True
-
-
-        initial_weights = {'PDE': w_pde, 'IC_u': w_ic_u, 'IC_v': w_ic_v}
-        adaptive_weights = AdaptiveLossWeights(
-            initial_weights=initial_weights,
-            strategy=strategy,  
-        )
-
-        # Initialize Adam optimizer (LBFGS will be applied as optional fine-tuning after)
-        optimizer = torch.optim.Adam(self.parameters(), lr=lr)
-        scheduler = torch.optim.lr_scheduler.ExponentialLR(
-            optimizer, gamma=lr_scheduler_gamma
-        )
-        log.info(f"Using Adam optimizer with lr={lr}")
-        if use_lbfgs_finetune:
-            log.info(f"  LBFGS fine-tuning enabled: {lbfgs_n_epochs} epochs, max_iter={lbfgs_max_iter}, lr={lbfgs_lr}")
         
-        history = {'total': [], 'pde': [], 'ic_u': [], 'ic_v': [], 'test_metric': [], 'test_epochs': []}
-        
-        # Track best model based on TEST loss
-        best_test_loss = float('inf')
-        best_model_state = None
-        best_epoch = 0
-        best_test_losses = {'pde': float('inf'), 'ic_u': float('inf'), 'ic_v': float('inf')}
-        epochs_without_improvement = 0
-        
-        # Print initial weights only for fixed strategy
-        if strategy == 'fixed':
-            log.info(f"Initial Weights -> PDE: {initial_weights['PDE']:.2e}, IC_u: {initial_weights['IC_u']:.2e}, IC_v: {initial_weights['IC_v']:.2e}")
-        
-        for epoch in range(n_epochs):
-            # Get weights for this epoch
-            if strategy != 'fixed':
-                # For adaptive weights, need a single context (use first batch config)
-                a_coeffs_temp = sample_coeffs(n_ic_u, a_range, p=3.0, as_2d=True, device=device)
-                b_coeffs_temp = sample_coeffs(n_ic_v, b_range, as_2d=True, device=device)
-                if center_x_range is not None and center_y_range is not None and source_type == 'gaussian':
-                    cx_temp = center_x_range[0] + (center_x_range[1] - center_x_range[0]) * torch.rand(1).item()
-                    cy_temp = center_y_range[0] + (center_y_range[1] - center_y_range[0]) * torch.rand(1).item()
-                else:
-                    cx_temp, cy_temp = center_x, center_y
-                u0_sensors_temp = self.generate_ic_sine_series(a_coeffs_temp)
-                v0_sensors_temp = self.generate_ic_sine_series(b_coeffs_temp)
-                src_sensors_temp = self.generate_source(source_type, source_amplitude, cx_temp, cy_temp)
-                x_colloc_temp = self.domain[0] + (self.domain[1] - self.domain[0]) * torch.rand(n_colloc, device=device)
-                y_colloc_temp = self.domain[0] + (self.domain[1] - self.domain[0]) * torch.rand(n_colloc, device=device)
-                t_colloc_temp = T_max * torch.rand(n_colloc, device=device)
-                xyt_colloc_temp = torch.stack([x_colloc_temp, y_colloc_temp, t_colloc_temp], dim=1)
-                src_colloc_temp = self.source_function(x_colloc_temp, y_colloc_temp, source_type, source_amplitude, cx_temp, cy_temp)
-                x_ic_1d = torch.linspace(self.domain[0], self.domain[1], n_ic, device=device)
-                y_ic_1d = torch.linspace(self.domain[0], self.domain[1], n_ic, device=device)
-                X_ic_temp, Y_ic_temp = torch.meshgrid(x_ic_1d, y_ic_1d, indexing='ij')
-                x_ic_temp = X_ic_temp.flatten()
-                y_ic_temp = Y_ic_temp.flatten()
-                t_ic_temp = torch.zeros_like(x_ic_temp)
-                xyt_ic_temp = torch.stack([x_ic_temp, y_ic_temp, t_ic_temp], dim=1)
-                
-                # Dummy losses for context
-                residual_temp = self.compute_pde_residual(u0_sensors_temp, v0_sensors_temp, src_sensors_temp, 
-                                                          xyt_colloc_temp, src_colloc_temp)
-                loss_pde_temp = torch.mean(residual_temp ** 2)
-                u_ic_pred_temp = self.forward(u0_sensors_temp, v0_sensors_temp, src_sensors_temp, xyt_ic_temp)
-                u_ic_true_temp = self.generate_ic_sine_series(a_coeffs_temp, x_ic_temp, y_ic_temp)
-                loss_ic_u_temp = torch.mean((u_ic_pred_temp - u_ic_true_temp) ** 2)
-                xyt_ic_grad_temp = xyt_ic_temp.clone().requires_grad_(True)
-                u_ic_grad_temp = self.forward(u0_sensors_temp, v0_sensors_temp, src_sensors_temp, xyt_ic_grad_temp)
-                u_t_ic_pred_temp = torch.autograd.grad(u_ic_grad_temp, xyt_ic_grad_temp,
-                                                       torch.ones_like(u_ic_grad_temp),
-                                                       create_graph=True)[0][:, 2]
-                v_ic_true_temp = self.generate_ic_sine_series(b_coeffs_temp, x_ic_temp, y_ic_temp)
-                loss_ic_v_temp = torch.mean((u_t_ic_pred_temp - v_ic_true_temp) ** 2)
-                
-                context = {
-                    'loss_values': {
-                        'PDE': loss_pde_temp.item(),
-                        'IC_u': loss_ic_u_temp.item(),
-                        'IC_v': loss_ic_v_temp.item(),
-                    },
-                    'model': self,
-                    'xyt_colloc': xyt_colloc_temp,
-                    'xyt_ic': xyt_ic_temp,
-                    'u0_sensors': u0_sensors_temp,
-                    'v0_sensors': v0_sensors_temp,
-                    'src_sensors': src_sensors_temp,
-                    'src_colloc': src_colloc_temp,
-                    'a_coeffs': a_coeffs_temp,
-                    'b_coeffs': b_coeffs_temp,
-                    'output_fold': output_fold
-                }
-                
-                if strategy == 'ntk':
-                    n_pde_subsample = min(100, xyt_colloc_temp.shape[0])
-                    n_ic_subsample = min(200, xyt_ic_temp.shape[0])
-                    idx_pde = torch.randperm(xyt_colloc_temp.shape[0])[:n_pde_subsample]
-                    idx_ic = torch.randperm(xyt_ic_temp.shape[0])[:n_ic_subsample]
-                    context['xyt_colloc'] = xyt_colloc_temp[idx_pde]
-                    context['src_colloc'] = src_colloc_temp[idx_pde]
-                    context['xyt_ic'] = xyt_ic_temp[idx_ic]
-                
-                weights = adaptive_weights.update(epoch, context)
-            else:
-                weights = initial_weights
-            
-            # Train with mini-batches
-            optimizer.zero_grad()
-            loss_pde_avg, loss_ic_u_avg, loss_ic_v_avg = self._train_epoch_batched(
-                n_batches=n_batches,
-                n_colloc=n_colloc,
-                n_ic=n_ic,
-                T_max=T_max,
-                a_range=a_range,
-                b_range=b_range,
-                source_type=source_type,
-                source_amplitude=source_amplitude,
-                center_x=center_x,
-                center_y=center_y,
-                center_x_range=center_x_range,
-                center_y_range=center_y_range,
-                n_ic_u=n_ic_u,
-                n_ic_v=n_ic_v,
-                weights=weights,
-                optimizer=optimizer,
-                max_grad_norm=max_grad_norm,
-                device=device
-            )
-            
-            loss_total_avg = weights['PDE'] * loss_pde_avg + weights['IC_u'] * loss_ic_u_avg + weights['IC_v'] * loss_ic_v_avg
-            
-            history['total'].append(loss_total_avg)
-            history['pde'].append(loss_pde_avg)
-            history['ic_u'].append(loss_ic_u_avg)
-            history['ic_v'].append(loss_ic_v_avg)
-            
-            # Update learning rate scheduler every lr_scheduler_step epochs (only for Adam)
-            if scheduler is not None and (epoch + 1) % lr_scheduler_step == 0:
-                scheduler.step()
-            
-            # Evaluate on test set every val_interval epochs
-            if (epoch + 1) % val_interval == 0:
-                test_metric = 0.0
-                test_pde_loss_sum = 0.0
-                test_ic_u_loss_sum = 0.0
-                test_ic_v_loss_sum = 0.0
-                for test_case in test_cases:
-                    u0_test = self.generate_ic_sine_series(test_case['a_coeffs'])
-                    v0_test = self.generate_ic_sine_series(test_case['b_coeffs'])
-                    src_test = self.generate_source(source_type, source_amplitude, test_case['center_x'], test_case['center_y'])
-                    
-                    # Sample test collocation and IC points
-                    x_test_colloc = self.domain[0] + (self.domain[1] - self.domain[0]) * torch.rand(n_colloc, device=device)
-                    y_test_colloc = self.domain[0] + (self.domain[1] - self.domain[0]) * torch.rand(n_colloc, device=device)
-                    t_test_colloc = T_max * torch.rand(n_colloc, device=device)
-                    xyt_test_colloc = torch.stack([x_test_colloc, y_test_colloc, t_test_colloc], dim=1)
-                    src_test_colloc = self.source_function(x_test_colloc, y_test_colloc, source_type, source_amplitude, test_case['center_x'], test_case['center_y'])
-                    
-                    # Test PDE loss using same method as training
-                    residual_test = self.compute_pde_residual(u0_test, v0_test, src_test, xyt_test_colloc, src_test_colloc)
-                    loss_pde_test = torch.mean(residual_test ** 2)
-                    
-                    # Test IC losses (no gradients needed for prediction, but needed for velocity)
-                    with torch.no_grad():
-                        x_test_ic_1d = torch.linspace(self.domain[0], self.domain[1], n_ic, device=device)
-                        y_test_ic_1d = torch.linspace(self.domain[0], self.domain[1], n_ic, device=device)
-                        X_test_ic, Y_test_ic = torch.meshgrid(x_test_ic_1d, y_test_ic_1d, indexing='ij')
-                        x_test_ic = X_test_ic.flatten()
-                        y_test_ic = Y_test_ic.flatten()
-                        t_test_ic = torch.zeros_like(x_test_ic)
-                        xyt_test_ic = torch.stack([x_test_ic, y_test_ic, t_test_ic], dim=1)
-                        
-                        u_test_ic = self.forward(u0_test, v0_test, src_test, xyt_test_ic)
-                        u_ic_true_test = self.generate_ic_sine_series(test_case['a_coeffs'], x_test_ic, y_test_ic)
-                        loss_ic_u_test = torch.mean((u_test_ic - u_ic_true_test) ** 2)
-                    
-                    xyt_test_ic_grad = xyt_test_ic.clone().requires_grad_(True)
-                    u_test_ic_grad = self.forward(u0_test, v0_test, src_test, xyt_test_ic_grad)
-                    u_t_test_ic = torch.autograd.grad(u_test_ic_grad, xyt_test_ic_grad, torch.ones_like(u_test_ic_grad), create_graph=True)[0][:, 2]
-                    v_ic_true_test = self.generate_ic_sine_series(test_case['b_coeffs'], x_test_ic, y_test_ic)
-                    loss_ic_v_test = torch.mean((u_t_test_ic - v_ic_true_test) ** 2)
-                    
-                    # Accumulate test metric and individual losses
-                    test_pde_loss_sum += loss_pde_test.item()
-                    test_ic_u_loss_sum += loss_ic_u_test.item()
-                    test_ic_v_loss_sum += loss_ic_v_test.item()
-                    test_metric += np.sqrt(loss_pde_test.item()**2 + 10*loss_ic_u_test.item()**2 + loss_ic_v_test.item()**2)
-                
-                
-                # Average test metric and losses over all test cases
-                test_metric /= n_test_cases
-                test_pde_loss_avg = test_pde_loss_sum / n_test_cases
-                test_ic_u_loss_avg = test_ic_u_loss_sum / n_test_cases
-                test_ic_v_loss_avg = test_ic_v_loss_sum / n_test_cases
-                history['test_metric'].append(test_metric)
-                history['test_epochs'].append(epoch + 1)  # Record current epoch
-                
-                # Check for improvement
-                if test_metric < best_test_loss:
-                    best_test_loss = test_metric
-                    best_model_state = {key: value.cpu().clone() for key, value in self.state_dict().items()}
-                    best_epoch = epoch
-                    epochs_without_improvement = 0
-                    # Store best TEST losses at this epoch
-                    best_test_losses = {
-                        'pde': test_pde_loss_avg,
-                        'ic_u': test_ic_u_loss_avg,
-                        'ic_v': test_ic_v_loss_avg
-                    }
-                    log.info(f"✓ Test metric improved to {test_metric:.6e} at epoch {epoch}")
-                    
-                    # Save checkpoint immediately when new best is achieved (overwrites previous best)
-                    checkpoint_path = os.path.join(output_fold, 'model.pth')
-                    torch.save({
-                        'epoch': epoch,
-                        'model_state_dict': self.state_dict(),
-                        'test_metric': test_metric,
-                        'test_losses': best_test_losses,
-                        'history': history,
-                        'config': cfg,
-                    }, checkpoint_path)
-                else:
-                    epochs_without_improvement += val_interval
-                    if epochs_without_improvement % (val_interval * 5) == 0:  # Print every 5 evals
-                        log.info(f"  No improvement for {epochs_without_improvement} epochs (best: {best_test_loss:.6e})")
-                
-                # Early stopping
-                if epochs_without_improvement >= early_stopping_patience:
-                    log.info(f"Early stopping triggered at epoch {epoch} (patience={early_stopping_patience})")
-                    break
-
-            if strategy == 'equal_init' and epoch == 2:
-                log.info(f"Initial Weights -> PDE: {weights['PDE']:.2e}, IC_u: {weights['IC_u']:.2e}, IC_v: {weights['IC_v']:.2e}")
-                
-            if epoch % log_interval == 0 or epoch == n_epochs - 1:
-                current_lr = optimizer.param_groups[0]['lr']
-                # Diagnostic: check prediction scale (use first batch for sampling)
-                a_diag = sample_coeffs(n_ic_u, a_range, p=3.0, as_2d=True, device=device)
-                b_diag = sample_coeffs(n_ic_v, b_range, as_2d=True, device=device)
-                if center_x_range is not None and center_y_range is not None and source_type == 'gaussian':
-                    cx_diag = center_x_range[0] + (center_x_range[1] - center_x_range[0]) * torch.rand(1).item()
-                    cy_diag = center_y_range[0] + (center_y_range[1] - center_y_range[0]) * torch.rand(1).item()
-                else:
-                    cx_diag, cy_diag = center_x, center_y
-                u0_diag = self.generate_ic_sine_series(a_diag)
-                v0_diag = self.generate_ic_sine_series(b_diag)
-                src_diag = self.generate_source(source_type, source_amplitude, cx_diag, cy_diag)
-                x_ic_1d_diag = torch.linspace(self.domain[0], self.domain[1], n_ic, device=device)
-                y_ic_1d_diag = torch.linspace(self.domain[0], self.domain[1], n_ic, device=device)
-                X_ic_diag, Y_ic_diag = torch.meshgrid(x_ic_1d_diag, y_ic_1d_diag, indexing='ij')
-                xyt_ic_diag = torch.stack([X_ic_diag.flatten(), Y_ic_diag.flatten(), torch.zeros_like(X_ic_diag.flatten())], dim=1)
-                with torch.no_grad():
-                    u_sample = self.forward(u0_diag, v0_diag, src_diag, xyt_ic_diag[:100])
-                    u_min, u_max = u_sample.min().item(), u_sample.max().item()
-                log.info(f"Epoch {epoch:5d} | Loss: {loss_total_avg:.6f} | "
-                      f"PDE: {loss_pde_avg:.6f} | IC_u: {loss_ic_u_avg:.6f} | "
-                      f"IC_v: {loss_ic_v_avg:.6f} | LR: {current_lr:.2e} | "
-                      f"u_range: [{u_min:.3f}, {u_max:.3f}]")
-                if strategy not in ['fixed', 'equal_init']:
-                    log.info(f"          Weights -> PDE: {weights['PDE']:.2e}, IC_u: {weights['IC_u']:.2e}, IC_v: {weights['IC_v']:.2e}")
-        
-        if strategy not in ['fixed', 'equal_init']:
-            adaptive_weights.plot_weights_evolution(output_fold)
-            if strategy == 'ntk':
-                adaptive_weights.plot_ntk_traces(output_fold)
-        
-        # Restore best model
-        if best_model_state is not None:
-            self.load_state_dict(best_model_state)
-            log.info(f"Restored best model from epoch {best_epoch} with test metric {best_test_loss:.6f}")
-            log.info(f"  Best model loss components -> PDE: {best_test_losses['pde']:.6e}, IC_u: {best_test_losses['ic_u']:.6e}, IC_v: {best_test_losses['ic_v']:.6e}")
-        
-        # Optional LBFGS fine-tuning phase
-        if use_lbfgs_finetune:
-            log.info(f"\n{'='*70}")
-            log.info(f"PHASE 3: LBFGS Fine-tuning ({lbfgs_n_epochs} epochs)")
-            log.info(f"{'='*70}")
-            
-            # Create LBFGS optimizer for fine-tuning
-            optimizer_lbfgs = torch.optim.LBFGS(self.parameters(), lr=lbfgs_lr, 
-                                                max_iter=lbfgs_max_iter,
-                                                line_search_fn='strong_wolfe')
-            
-            for epoch_lbfgs in range(lbfgs_n_epochs):
-                # Use current weights (fixed strategy used for LBFGS typically)
-                weights_lbfgs = initial_weights if strategy == 'fixed' else adaptive_weights.get_weights()
-                
-                # Define closure for LBFGS
-                def closure_lbfgs():
-                    optimizer_lbfgs.zero_grad()
-                    loss_total_lbfgs = 0.0
-                    
-                    # Sample single batch for LBFGS step (on GPU)
-                    a_lbfgs = sample_coeffs(n_ic_u, a_range, p=3.0, as_2d=True, device=device)
-                    b_lbfgs = sample_coeffs(n_ic_v, b_range, p=3.0, as_2d=True, device=device)
-                    
-                    if center_x_range is not None and center_y_range is not None and source_type == 'gaussian':
-                        cx_lbfgs = center_x_range[0] + (center_x_range[1] - center_x_range[0]) * torch.rand(1).item()
-                        cy_lbfgs = center_y_range[0] + (center_y_range[1] - center_y_range[0]) * torch.rand(1).item()
-                    else:
-                        cx_lbfgs, cy_lbfgs = center_x, center_y
-                    
-                    u0_lbfgs = self.generate_ic_sine_series(a_lbfgs)
-                    v0_lbfgs = self.generate_ic_sine_series(b_lbfgs)
-                    src_lbfgs = self.generate_source(source_type, source_amplitude, cx_lbfgs, cy_lbfgs)
-                    
-                    loss_pde_lbfgs, loss_ic_u_lbfgs, loss_ic_v_lbfgs = self._compute_batch_losses(
-                        u0_lbfgs, v0_lbfgs, src_lbfgs,
-                        n_colloc, n_ic, T_max, source_type, source_amplitude, cx_lbfgs, cy_lbfgs,
-                        a_lbfgs, b_lbfgs
-                    )
-                    
-                    loss_total_lbfgs = (weights_lbfgs['PDE'] * loss_pde_lbfgs + 
-                                       weights_lbfgs['IC_u'] * loss_ic_u_lbfgs + 
-                                       weights_lbfgs['IC_v'] * loss_ic_v_lbfgs)
-                    
-                    loss_total_lbfgs.backward()
-                    return loss_total_lbfgs
-                
-                # LBFGS step
-                optimizer_lbfgs.step(closure_lbfgs)
-                
-                # Evaluate test metric every val_interval epochs during LBFGS
-                if (epoch_lbfgs + 1) % val_interval == 0:
-                    test_metric_lbfgs = 0.0
-                    for test_case in test_cases:
-                        u0_test_lbfgs = self.generate_ic_sine_series(test_case['a_coeffs'])
-                        v0_test_lbfgs = self.generate_ic_sine_series(test_case['b_coeffs'])
-                        src_test_lbfgs = self.generate_source(source_type, source_amplitude, test_case['center_x'], test_case['center_y'])
-                        
-                        x_test_lbfgs = self.domain[0] + (self.domain[1] - self.domain[0]) * torch.rand(n_colloc)
-                        y_test_lbfgs = self.domain[0] + (self.domain[1] - self.domain[0]) * torch.rand(n_colloc)
-                        t_test_lbfgs = T_max * torch.rand(n_colloc)
-                        xyt_test_lbfgs = torch.stack([x_test_lbfgs, y_test_lbfgs, t_test_lbfgs], dim=1)
-                        src_test_lbfgs = self.source_function(x_test_lbfgs, y_test_lbfgs, source_type, source_amplitude, test_case['center_x'], test_case['center_y'])
-                        
-                        residual_test_lbfgs = self.compute_pde_residual(u0_test_lbfgs, v0_test_lbfgs, src_test_lbfgs, xyt_test_lbfgs, src_test_lbfgs)
-                        loss_pde_test_lbfgs = torch.mean(residual_test_lbfgs ** 2)
-                        
-                        with torch.no_grad():
-                            x_ic_lbfgs = torch.linspace(self.domain[0], self.domain[1], n_ic)
-                            y_ic_lbfgs = torch.linspace(self.domain[0], self.domain[1], n_ic)
-                            X_ic_lbfgs, Y_ic_lbfgs = torch.meshgrid(x_ic_lbfgs, y_ic_lbfgs, indexing='ij')
-                            xyt_ic_lbfgs = torch.stack([X_ic_lbfgs.flatten(), Y_ic_lbfgs.flatten(), torch.zeros_like(X_ic_lbfgs.flatten())], dim=1)
-                            
-                            u_ic_lbfgs = self.forward(u0_test_lbfgs, v0_test_lbfgs, src_test_lbfgs, xyt_ic_lbfgs)
-                            u_ic_true_lbfgs = self.generate_ic_sine_series(test_case['a_coeffs'], xyt_ic_lbfgs[:, 0], xyt_ic_lbfgs[:, 1])
-                            loss_ic_u_test_lbfgs = torch.mean((u_ic_lbfgs - u_ic_true_lbfgs) ** 2)
-                        
-                        xyt_ic_grad_lbfgs = xyt_ic_lbfgs.clone().requires_grad_(True)
-                        u_ic_grad_lbfgs = self.forward(u0_test_lbfgs, v0_test_lbfgs, src_test_lbfgs, xyt_ic_grad_lbfgs)
-                        u_t_ic_lbfgs = torch.autograd.grad(u_ic_grad_lbfgs, xyt_ic_grad_lbfgs, torch.ones_like(u_ic_grad_lbfgs), create_graph=True)[0][:, 2]
-                        v_ic_true_lbfgs = self.generate_ic_sine_series(test_case['b_coeffs'], xyt_ic_lbfgs[:, 0], xyt_ic_lbfgs[:, 1])
-                        loss_ic_v_test_lbfgs = torch.mean((u_t_ic_lbfgs - v_ic_true_lbfgs) ** 2)
-                        
-                        test_metric_lbfgs += np.sqrt(loss_pde_test_lbfgs.item()**2 + 10*loss_ic_u_test_lbfgs.item()**2 + loss_ic_v_test_lbfgs.item()**2)
-                    
-                    test_metric_lbfgs /= n_test_cases
-                    
-                    # Track in history
-                    history['test_metric'].append(test_metric_lbfgs)
-                    history['test_epochs'].append(n_epochs + epoch_lbfgs + 1)  # Epoch number includes main training
-                    
-                    # Save checkpoint if improved
-                    if test_metric_lbfgs < best_test_loss:
-                        best_test_loss = test_metric_lbfgs
-                        best_model_state = {key: value.cpu().clone() for key, value in self.state_dict().items()}
-                        best_epoch = n_epochs + epoch_lbfgs
-                        log.info(f"✓ LBFGS: Test metric improved to {test_metric_lbfgs:.6e} at epoch {n_epochs + epoch_lbfgs + 1}")
-                    
-                    if (epoch_lbfgs + 1) % (val_interval * 5) == 0:
-                        log.info(f"  LBFGS Epoch {epoch_lbfgs+1}/{lbfgs_n_epochs} | Test Metric: {test_metric_lbfgs:.6e}")
-            
-            # Restore best model found during LBFGS if better
-            if best_model_state is not None:
-                self.load_state_dict(best_model_state)
-                log.info(f"\nRestored best model from LBFGS phase (epoch {best_epoch + 1}) with test metric {best_test_loss:.6f}")
-        
-        log.info(f"Training complete!")
-        return history, pretrain_history, {
-            'best_epoch': best_epoch, 
-            'best_test_metric': best_test_loss, 
-            'best_losses': best_test_losses,
-        }
+        return test_cases
 
 
 class FourierFeatureTransform(nn.Module):
