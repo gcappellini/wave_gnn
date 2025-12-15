@@ -12,13 +12,13 @@ run:
   load_from: null #['2025-12-13','13-38-38']
 
 training:
-  n_epochs: 2
+  n_epochs: 500
   lr: 0.001
   lr_scheduler_step: 500
   lr_scheduler_gamma: 0.95
   # LBFGS fine-tuning (optional, applied after Adam training)
-  use_lbfgs_finetune: True  # Set to True to apply LBFGS after Adam
-  lbfgs_n_epochs: 1  # Number of LBFGS epochs
+  use_lbfgs_finetune: False  # Set to True to apply LBFGS after Adam
+  lbfgs_n_epochs: 100  # Number of LBFGS epochs
   lbfgs_max_iter: 20  # Max line search iterations per LBFGS step
   lbfgs_lr: 0.001
   log_interval: 200
@@ -29,7 +29,7 @@ training:
   n_test_cases: 50
   test_seed: 42
   pretrain_ic: True
-  n_epochs_pretrain: 2
+  n_epochs_pretrain: 500
 
 model:
   n_sensors_ic: 40
