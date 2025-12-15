@@ -30,7 +30,7 @@ training:
   pretrain_ic: True
   train_adam: False
   train_lbfgs: False  
-  n_epochs_pretrain: 1000
+  n_epochs_pretrain: 5000
 
 model:
   n_sensors_ic: 40

@@ -251,16 +251,16 @@ class PINNDeepONet_Wave2D(nn.Module):
                 
                 # B. Dynamic Correction Part using spatiotemporal trunk
                 b_concat = torch.cat([b_u, b_v, b_src], dim=1)
-                b_correction = self.fusion_mlp(b_concat)
-                b_dynamic = b_u + b_v + b_src + b_correction
+                # b_correction = self.fusion_mlp(b_concat)
+                b_dynamic = b_u + b_v + b_src #+ b_correction
                 
                 tau = self.trunk(xyt)  # Shape: (n_points, p)
-                u_dynamic = torch.matmul(b_dynamic, tau.T) + self.bias  # (batch, n_points)
+                u_dynamic_raw = torch.matmul(b_dynamic, tau.T) + self.bias  # (batch, n_points)
                 
                 # C. The Ansatz Combination with BC factor
                 # u = bc_factor * (u0 + t*v0 + (1 - exp(-t)) * u_dynamic)
-                time_factor = 1.0 - torch.exp(-t)
-                u_net_raw = u0_net + (t * v0_net) + (time_factor * u_dynamic)
+                time_smooth_factor = 1.0 - torch.exp(-50*t)
+                u_net_raw = u0_net + (t * v0_net) + (time_smooth_factor * u_dynamic_raw)
                 u = bc_factor * u_net_raw
 
             else:
@@ -500,10 +500,10 @@ class PINNDeepONet_Wave2D(nn.Module):
             for param in self.trunk.parameters():
                 param.requires_grad = True
                 trainable_params.append(param)
-        if hasattr(self, 'branch_src'):
-                        for param in self.branch_src.parameters():
-                            param.requires_grad = True
-                            trainable_params.append(param)        
+        # if hasattr(self, 'branch_src'):
+        #                 for param in self.branch_src.parameters():
+        #                     param.requires_grad = True
+        #                     trainable_params.append(param)        
         optimizer_pre = torch.optim.Adam(trainable_params, lr=lr)
         best_pretrain_loss = float('inf')
         best_pretrain_model_state = None
