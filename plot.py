@@ -190,10 +190,13 @@ def plot_ic_reconstruction(model, test_case, n_grid=100, save_path="ic_reconstru
     """
     model.eval() # Set model to evaluation mode
     
+    # Determine device from model parameters
+    device = next(model.parameters()).device
+    
     # 1. Generate Evaluation Grid (100x100 points)
     domain = model.domain # Assuming domain is [0, 1]
-    x_1d = torch.linspace(domain[0], domain[1], n_grid)
-    y_1d = torch.linspace(domain[0], domain[1], n_grid)
+    x_1d = torch.linspace(domain[0], domain[1], n_grid, device=device)
+    y_1d = torch.linspace(domain[0], domain[1], n_grid, device=device)
     X, Y = torch.meshgrid(x_1d, y_1d, indexing='ij')
     
     # Collocation grid at t=0
