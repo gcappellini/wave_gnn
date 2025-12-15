@@ -12,7 +12,7 @@ run:
   load_from: null #['2025-12-13','13-38-38']
 
 training:
-  n_epochs: 5000
+  n_epochs: 40000
   lr: 0.001
   lr_scheduler_step: 500
   lr_scheduler_gamma: 0.95
@@ -28,12 +28,12 @@ training:
   n_test_cases: 50
   test_seed: 42
   pretrain_ic: True
-  train_adam: False
+  train_adam: True
   train_lbfgs: False  
-  n_epochs_pretrain: 4000
+  n_epochs_pretrain: 20000
 
 model:
-  n_sensors_ic: 40
+  n_sensors_ic: 100
   n_sensors_src: 20
   branch_width: 1024
   trunk_width: 300
@@ -41,7 +41,7 @@ model:
   trunk_act: nn.Tanh()
   branch_depth: 4
   trunk_depth: 8
-  p: 512
+  p: 1024
   wave_speed: 1.0
   damping_coeff: 1.0
   use_fft_trunk: true

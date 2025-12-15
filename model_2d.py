@@ -481,6 +481,7 @@ class PINNDeepONet_Wave2D(nn.Module):
         n_ic_v = cfg.data.n_ic_v
         val_interval = cfg.training.val_interval
         lr = cfg.training.lr
+        max_grad_norm = cfg.training.max_grad_norm
         
         a_range = tuple(cfg.data.a_range)
         b_range = tuple(cfg.data.b_range)
@@ -549,6 +550,7 @@ class PINNDeepONet_Wave2D(nn.Module):
                 loss_ic_u_accum += loss_ic_u.item()
             
             # 7. Single optimizer step after all batches (PHASE 2 CONSISTENT)
+            torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=max_grad_norm)
             optimizer_pre.step()
             optimizer_pre.zero_grad()
             
