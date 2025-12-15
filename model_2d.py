@@ -192,58 +192,17 @@ class PINNDeepONet_Wave2D(nn.Module):
         self.register_buffer('sensor_x_src', X_grid_src.flatten())
         self.register_buffer('sensor_y_src', Y_grid_src.flatten())
     
-    def predict_ic(self, u0_sensors, v0_sensors, xyt):
-            """
-            Pre-training helper for Standard DeepONet (Sum/MLP Mixing).
-            Predicts u0 and v0 using the MAIN Trunk at t=0.
-            BC factor is applied to enforce zero displacement and velocity at boundaries.
-            """
-            # 1. Branch Encoding
-            # Same as before: encode inputs to get latent vectors
-            if u0_sensors.dim() == 1: u0_sensors = u0_sensors.unsqueeze(0)
-            if v0_sensors.dim() == 1: v0_sensors = v0_sensors.unsqueeze(0)
-                
-            ic_concat = torch.cat([u0_sensors, v0_sensors], dim=1)
-            ic_encoded = self.branch_ic(ic_concat)
-            b_u = ic_encoded[:, :self.p]
-            b_v = ic_encoded[:, self.p:]
 
-            # 2. Trunk Evaluation at t=0
-            # We must enforce t=0 for the IC prediction context
-            # Check if input xyt already has t=0, or force it.
-            # Ideally, pass xyt where t is explicitly 0.0
-            
-            if xyt.dim() == 2:
-                tau = self.trunk(xyt) # Shape: (n_points, p)
-                # Reconstruct: (batch, p) @ (p, n_points)
-                u0_pred = torch.matmul(b_u, tau.T)
-                v0_pred = torch.matmul(b_v, tau.T)
-                
-            elif xyt.dim() == 3:
-                tau = self.trunk(xyt) # Shape: (batch, n_points, p)
-                # Reconstruct: Element-wise sum
-                u0_pred = torch.sum(b_u.unsqueeze(1) * tau, dim=-1)
-                v0_pred = torch.sum(b_v.unsqueeze(1) * tau, dim=-1)
-
-            # 3. Apply BC factor for hard constraint enforcement
-            # Extract spatial coordinates and apply boundary condition factor
-            x = xyt[..., 0:1]  # Shape: (..., 1)
-            y = xyt[..., 1:2]  # Shape: (..., 1)
-            
-            # BC factor: (x(1-x)y(1-y))^2, rescaled by 16.0
-            bc_factor_sq = (x * (1.0 - x) * y * (1.0 - y)) ** 2
-            u0_pred_rescaled = 16.0 * u0_pred
-            v0_pred_rescaled = 16.0 * v0_pred
-            
-            # Apply BC factor, squeezing to match prediction shape
-            bc_factor_sq = bc_factor_sq.squeeze(-1)  # Remove last dimension if needed
-            u0_pred = bc_factor_sq * u0_pred_rescaled
-            v0_pred = bc_factor_sq * v0_pred_rescaled
-
-            return u0_pred, v0_pred
-    
     def forward(self, u0_sensors, v0_sensors, src_sensors, xyt):
             """
+            Full unified forward pass using hard constraint ansatz with BC factor integrated.
+            
+            For IC prediction (Phase 1): Pass xyt with t=0
+            For PDE evaluation (Phase 2+): Pass xyt with arbitrary t
+            
+            BC factor is built into the ansatz: u = bc_factor * u_network
+            This ensures boundary conditions are satisfied at all times.
+            
             Args:
                 u0_sensors: (n_sensors²,) - displacement IC on 2D grid (flattened)
                 v0_sensors: (n_sensors²,) - velocity IC on 2D grid (flattened)
@@ -251,7 +210,7 @@ class PINNDeepONet_Wave2D(nn.Module):
                 xyt: (n_points, 3) spatiotemporal coordinates [x, y, t]
             
             Returns:
-                u: (n_points,) - displacement
+                u: (n_points,) - displacement with BCs naturally satisfied
             """
             single_sample = u0_sensors.dim() == 1
             if single_sample:
@@ -259,12 +218,17 @@ class PINNDeepONet_Wave2D(nn.Module):
                 v0_sensors = v0_sensors.unsqueeze(0)
                 src_sensors = src_sensors.unsqueeze(0)
             
-            # 1. Coordinate Extraction (Needed for HC and BCs)
+            # 1. Coordinate Extraction
             x = xyt[:, 0]
             y = xyt[:, 1]
             t = xyt[:, 2]
+            
+            # 2. Compute BC factor (ensures BCs are built into the solution)
+            # BC factor: x(1-x)*y(1-y) - zero at all boundaries, smooth interior
+            # NO rescaling: let network learn to work with this naturally
+            bc_factor = x * (1.0 - x) * y * (1.0 - y)
 
-            # 2. Branch Encoding (Common to all methods)
+            # 3. Branch Encoding (Common to all methods)
             ic_concat = torch.cat([u0_sensors, v0_sensors], dim=1)
             ic_encoded = self.branch_ic(ic_concat)
             
@@ -272,45 +236,41 @@ class PINNDeepONet_Wave2D(nn.Module):
             b_v = ic_encoded[:, self.p:]
             b_src = self.branch_source(src_sensors)
             
-            # 3. Fusion Strategy Switch
+            # 4. Fusion Strategy Switch
             if self.fusion == 'hc':
-                # --- HARD CONSTRAINT ANSATZ (Neural Ansatz) ---
+                # --- HARD CONSTRAINT ANSATZ ---
+                # Form: u = bc_factor * (u0 + t*v0 + (1-exp(-t))*u_dynamic)
+                # This ensures boundary conditions are satisfied at all times
                 
-                # A. Static Reconstruction (u0, v0)
-                # Use separate Spatial Trunk (inputs: x,y)
+                # A. Static Reconstruction (u0, v0) using spatial trunk
                 xy = xyt[:, :2]
                 tau_x = self.trunk_spatial(xy)  # Shape: (n_points, p)
                 
-                # Reconstruct ICs: (batch, p) @ (p, n_points) -> (batch, n_points)
-                u0_pred = torch.matmul(b_u, tau_x.T)
-                v0_pred = torch.matmul(b_v, tau_x.T)
+                u0_net = torch.matmul(b_u, tau_x.T)  # (batch, n_points)
+                v0_net = torch.matmul(b_v, tau_x.T)  # (batch, n_points)
                 
-                # B. Dynamic Correction Part
-                # We use the Residual MLP mixing for the dynamic coefficients
+                # B. Dynamic Correction Part using spatiotemporal trunk
                 b_concat = torch.cat([b_u, b_v, b_src], dim=1)
                 b_correction = self.fusion_mlp(b_concat)
                 b_dynamic = b_u + b_v + b_src + b_correction
                 
-                # Spatiotemporal Trunk (inputs: x,y,t)
                 tau = self.trunk(xyt)  # Shape: (n_points, p)
+                u_dynamic = torch.matmul(b_dynamic, tau.T) + self.bias  # (batch, n_points)
                 
-                # Compute dynamic term
-                u_dynamic = torch.matmul(b_dynamic, tau.T) + self.bias
-                
-                # C. The Ansatz Combination
-                # u = u0 + t*v0 + (1 - exp(-t)) * u_dynamic
+                # C. The Ansatz Combination with BC factor
+                # u = bc_factor * (u0 + t*v0 + (1 - exp(-t)) * u_dynamic)
                 time_factor = 1.0 - torch.exp(-t)
-                
-                u_net = u0_pred + (t * v0_pred) + (time_factor * u_dynamic)
+                u_net_raw = u0_net + (t * v0_net) + (time_factor * u_dynamic)
+                u = bc_factor * u_net_raw
 
             else:
-                # --- STANDARD DEEPONET (Soft Constraints) ---
+                # --- STANDARD DEEPONET with BC factor ---
                 
                 if self.fusion == 'comb_mlp':
                     b_concat = torch.cat([b_u, b_v, b_src], dim=1)
                     b_correction = self.fusion_mlp(b_concat)
                     b_combined = b_u + b_v + b_src + b_correction
-                if self.fusion == 'pure_mlp':
+                elif self.fusion == 'pure_mlp':
                     b_concat = torch.cat([b_u, b_v, b_src], dim=1)
                     b_combined = self.fusion_mlp(b_concat)
                 elif self.fusion == 'sum':
@@ -318,27 +278,10 @@ class PINNDeepONet_Wave2D(nn.Module):
                 
                 # Encode spatiotemporal locations
                 tau = self.trunk(xyt)
+                u_net_raw = torch.matmul(b_combined, tau.T) + self.bias
                 
-                # Standard DeepONet operation
-                u_net = torch.matmul(b_combined, tau.T) + self.bias
-            
-            # 4. Global Boundary Condition Enforcement (Sharp polynomial BC)
-            # Uses polynomial: x(1-x)*y(1-y) which ensures:
-            #   - u = 0 at all four boundaries (x=0, x=1, y=0, y=1)
-            #   - du/dx = 0 and du/dy = 0 at boundaries (zero normal derivative)
-            # This is sharper than sin(πx)*sin(πy) and provides stronger constraints
-
-            # 1. New BC factor with zero derivative at boundaries
-            bc_factor_sq = (x * (1.0 - x))**2 * (y * (1.0 - y))**2
-
-            # 2. Rescale u_net by 16.0 to compensate for the smaller bc_factor_sq peak (0.0625)
-            u_net_rescaled = 16.0 * u_net
-            
-            # Ensure dimensionality matches for broadcasting
-            if single_sample:
-                u = bc_factor_sq * u_net_rescaled
-            else:
-                u = bc_factor_sq.unsqueeze(0) * u_net_rescaled
+                # Apply BC factor to enforce boundary conditions
+                u = bc_factor * u_net_raw
             
             return u.squeeze(0) if single_sample else u
     
@@ -584,7 +527,10 @@ class PINNDeepONet_Wave2D(nn.Module):
                 u0_true = self.generate_ic_sine_series(a_coeffs_pre, X_ic.flatten(), Y_ic.flatten())
                 v0_true = self.generate_ic_sine_series(b_coeffs_pre, X_ic.flatten(), Y_ic.flatten())
                 
-                u0_pred, v0_pred = self.predict_ic(u0_sensors_pre, v0_sensors_pre, xyt_ic)
+                # Use forward() with t=0 to predict IC (unified approach)
+                src_sensors_pre = self.generate_source(cfg.data.source_type, cfg.data.source_amplitude, cfg.data.center_x, cfg.data.center_y)
+                u0_pred = self.forward(u0_sensors_pre, v0_sensors_pre, src_sensors_pre, xyt_ic)
+                v0_pred = self.get_velocity(u0_sensors_pre, v0_sensors_pre, src_sensors_pre, xyt_ic)
                 
                 loss_ic_u = torch.mean((u0_pred - u0_true)**2)
                 loss_ic_v = torch.mean((v0_pred - v0_true)**2)
@@ -615,7 +561,10 @@ class PINNDeepONet_Wave2D(nn.Module):
                         X_test_ic, Y_test_ic = torch.meshgrid(x_test_ic_1d, y_test_ic_1d, indexing='ij')
                         xyt_test_ic = torch.stack([X_test_ic.flatten(), Y_test_ic.flatten(), torch.zeros_like(X_test_ic.flatten())], dim=1)
                         
-                        u0_test_pred, v0_test_pred = self.predict_ic(u0_test_pre, v0_test_pre, xyt_test_ic)
+                        # Use forward() with t=0 to predict IC (unified approach)
+                        src_test = self.generate_source(cfg.data.source_type, cfg.data.source_amplitude, test_case['center_x'], test_case['center_y'])
+                        u0_test_pred = self.forward(u0_test_pre, v0_test_pre, src_test, xyt_test_ic)
+                        v0_test_pred = self.get_velocity(u0_test_pre, v0_test_pre, src_test, xyt_test_ic)
                         u0_test_true = self.generate_ic_sine_series(test_case['a_coeffs'], X_test_ic.flatten(), Y_test_ic.flatten())
                         v0_test_true = self.generate_ic_sine_series(test_case['b_coeffs'], X_test_ic.flatten(), Y_test_ic.flatten())
                         

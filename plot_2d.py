@@ -403,8 +403,11 @@ def plot_ic_reconstruction(model, test_case, n_grid=100, save_path="ic_reconstru
             v0_true_field = model.generate_ic_sine_series(b_coeffs, X.flatten(), Y.flatten())
             gt_available = False
         
-        # Model Output (Reconstruction)
-        u0_pred_field, v0_pred_field = model.predict_ic(u0_sensors, v0_sensors, xyt_eval)
+        # Model Output (Reconstruction) - use forward() with t=0 (unified approach)
+        device = next(model.parameters()).device
+        src_eval = model.generate_source('zero')  # Use zero source for IC evaluation
+        u0_pred_field = model.forward(u0_sensors, v0_sensors, src_eval, xyt_eval)
+        v0_pred_field = model.get_velocity(u0_sensors, v0_sensors, src_eval, xyt_eval)
 
     # 3. Reshape fields for plotting
     u0_true = u0_true_field.reshape(n_grid, n_grid).cpu().numpy()
