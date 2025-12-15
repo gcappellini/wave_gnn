@@ -1,6 +1,9 @@
 import matplotlib.pyplot as plt
 import torch
 import numpy as np
+import logging
+
+log = logging.getLogger(__name__)
 
 def plot_solution_2d(model, a_test=0.5, b_test=0.0, source_type='zero', 
                      source_amplitude=7.5, center_x=0.5, center_y=0.5, T_max=2.0, gt_data=None):
@@ -290,3 +293,155 @@ def plot_training_with_pretraining(history, pretrain_history, val_interval=100):
     plt.tight_layout()
     return fig
 
+def plot_ic_reconstruction(model, test_case, n_grid=100, save_path="ic_reconstruction.png", gt_data=None):
+    """
+    Visualizes IC reconstruction against MATLAB ground truth at t=0.
+    If gt_data is available, extracts u0 and v0 from MATLAB solution at t=0.
+    Falls back to generated test case if gt_data is not available.
+    Compact layout: 3 columns for displacement and velocity rows.
+    """
+    model.eval() # Set model to evaluation mode
+    
+    # Determine device from model parameters
+    device = next(model.parameters()).device
+    
+    # 1. Generate Evaluation Grid (100x100 points)
+    domain = model.domain # Assuming domain is [0, 1]
+    x_1d = torch.linspace(domain[0], domain[1], n_grid, device=device)
+    y_1d = torch.linspace(domain[0], domain[1], n_grid, device=device)
+    X, Y = torch.meshgrid(x_1d, y_1d, indexing='ij')
+    
+    # Collocation grid at t=0
+    xyt_eval = torch.stack([X.flatten(), Y.flatten(), torch.zeros_like(X.flatten())], dim=1)
+    
+    # 2. Generate Input Sensors and Get Ground Truth or Test Case
+    with torch.no_grad():
+        if gt_data is not None:
+            # Extract IC from MATLAB ground truth at t=0
+            x_gt = gt_data[:, 0]
+            y_gt = gt_data[:, 1]
+            t_gt = gt_data[:, 2]
+            u_gt = gt_data[:, 4]
+            v_gt = gt_data[:, 5]
+            
+            # Find points at t=0 (or very close to t=0)
+            t_tol = 1e-6
+            mask_t0 = np.abs(t_gt) < t_tol
+            
+            if np.sum(mask_t0) == 0:
+                log.warning("No ground truth data at t=0, using test case instead")
+                # Fallback to test case
+                a_coeffs = test_case['a_coeffs']
+                b_coeffs = test_case['b_coeffs']
+                u0_sensors = model.generate_ic_sine_series(a_coeffs)
+                v0_sensors = model.generate_ic_sine_series(b_coeffs)
+                u0_true_field = model.generate_ic_sine_series(a_coeffs, X.flatten(), Y.flatten())
+                v0_true_field = model.generate_ic_sine_series(b_coeffs, X.flatten(), Y.flatten())
+                gt_available = False
+            else:
+                # Interpolate MATLAB GT to match evaluation grid
+                from scipy.interpolate import griddata
+                x_gt_t0 = x_gt[mask_t0]
+                y_gt_t0 = y_gt[mask_t0]
+                u_gt_t0 = u_gt[mask_t0]
+                v_gt_t0 = v_gt[mask_t0]
+                
+                # Create evaluation points
+                points_gt = np.column_stack([x_gt_t0, y_gt_t0])
+                points_eval = np.column_stack([X.flatten().cpu().numpy(), Y.flatten().cpu().numpy()])
+                
+                # Interpolate
+                u0_true_field = torch.tensor(
+                    griddata(points_gt, u_gt_t0, points_eval, method='cubic', fill_value=0.0),
+                    device=device, dtype=torch.float32
+                )
+                v0_true_field = torch.tensor(
+                    griddata(points_gt, v_gt_t0, points_eval, method='cubic', fill_value=0.0),
+                    device=device, dtype=torch.float32
+                )
+                
+                # For sensors, we need to extract from the evaluation grid
+                # Create a dummy sensor setup that matches the MATLAB data
+                # Use a simple approach: extract values at sensor locations from interpolated field
+                u0_sensors = u0_true_field[:model.n_sensors_ic**2].clone()
+                v0_sensors = v0_true_field[:model.n_sensors_ic**2].clone()
+                gt_available = True
+        else:
+            # Use test case
+            a_coeffs = test_case['a_coeffs']
+            b_coeffs = test_case['b_coeffs']
+            u0_sensors = model.generate_ic_sine_series(a_coeffs)
+            v0_sensors = model.generate_ic_sine_series(b_coeffs)
+            u0_true_field = model.generate_ic_sine_series(a_coeffs, X.flatten(), Y.flatten())
+            v0_true_field = model.generate_ic_sine_series(b_coeffs, X.flatten(), Y.flatten())
+            gt_available = False
+        
+        # Model Output (Reconstruction)
+        u0_pred_field, v0_pred_field = model.predict_ic(u0_sensors, v0_sensors, xyt_eval)
+
+    # 3. Reshape fields for plotting
+    u0_true = u0_true_field.reshape(n_grid, n_grid).cpu().numpy()
+    u0_pred = u0_pred_field.reshape(n_grid, n_grid).cpu().numpy()
+    v0_true = v0_true_field.reshape(n_grid, n_grid).cpu().numpy()
+    v0_pred = v0_pred_field.reshape(n_grid, n_grid).cpu().numpy()
+    
+    # Compute signed errors
+    u0_error = u0_pred - u0_true
+    v0_error = v0_pred - v0_true
+    
+    # Color scaling (95th percentile for better contrast)
+    vmax_u = max(np.percentile(np.abs(u0_true), 95), np.percentile(np.abs(u0_pred), 95))
+    vmax_v = max(np.percentile(np.abs(v0_true), 95), np.percentile(np.abs(v0_pred), 95))
+    err_vmax_u = np.percentile(np.abs(u0_error), 95)
+    err_vmax_v = np.percentile(np.abs(v0_error), 95)
+
+    # 4. Compact 2x3 layout: displacement row, velocity row
+    fig, axes = plt.subplots(2, 3, figsize=(13, 9))
+    
+    source_label = "MATLAB GT" if gt_available else "Generated"
+    
+    # ===== DISPLACEMENT ROW =====
+    # PINN Displacement
+    c00 = axes[0, 0].contourf(X.cpu().numpy(), Y.cpu().numpy(), u0_pred, levels=50, cmap='RdBu_r', vmax=vmax_u, vmin=-vmax_u)
+    axes[0, 0].set_ylabel('y', fontsize=11)
+    axes[0, 0].set_title(r'$u_0$ PINN', fontsize=11, fontweight='bold')
+    fig.colorbar(c00, ax=axes[0, 0], fraction=0.046, pad=0.04)
+    
+    # Ground Truth Displacement
+    c01 = axes[0, 1].contourf(X.cpu().numpy(), Y.cpu().numpy(), u0_true, levels=50, cmap='RdBu_r', vmax=vmax_u, vmin=-vmax_u)
+    axes[0, 1].set_title(f'$u_0$ {source_label}', fontsize=11, fontweight='bold')
+    fig.colorbar(c01, ax=axes[0, 1], fraction=0.046, pad=0.04)
+    
+    # Displacement Error (signed)
+    c02 = axes[0, 2].contourf(X.cpu().numpy(), Y.cpu().numpy(), u0_error, levels=50, cmap='RdBu_r', vmax=err_vmax_u, vmin=-err_vmax_u)
+    axes[0, 2].set_title(f'Error $u_0$ (MAE={np.mean(np.abs(u0_error)):.2e})', fontsize=11, fontweight='bold')
+    fig.colorbar(c02, ax=axes[0, 2], fraction=0.046, pad=0.04)
+
+    # ===== VELOCITY ROW =====
+    # PINN Velocity
+    c10 = axes[1, 0].contourf(X.cpu().numpy(), Y.cpu().numpy(), v0_pred, levels=50, cmap='viridis', vmax=vmax_v, vmin=-vmax_v)
+    axes[1, 0].set_xlabel('x', fontsize=11)
+    axes[1, 0].set_ylabel('y', fontsize=11)
+    axes[1, 0].set_title(r'$v_0$ PINN', fontsize=11, fontweight='bold')
+    fig.colorbar(c10, ax=axes[1, 0], fraction=0.046, pad=0.04)
+    
+    # Ground Truth Velocity
+    c11 = axes[1, 1].contourf(X.cpu().numpy(), Y.cpu().numpy(), v0_true, levels=50, cmap='viridis', vmax=vmax_v, vmin=-vmax_v)
+    axes[1, 1].set_xlabel('x', fontsize=11)
+    axes[1, 1].set_title(f'$v_0$ {source_label}', fontsize=11, fontweight='bold')
+    fig.colorbar(c11, ax=axes[1, 1], fraction=0.046, pad=0.04)
+    
+    # Velocity Error (signed)
+    c12 = axes[1, 2].contourf(X.cpu().numpy(), Y.cpu().numpy(), v0_error, levels=50, cmap='RdBu_r', vmax=err_vmax_v, vmin=-err_vmax_v)
+    axes[1, 2].set_xlabel('x', fontsize=11)
+    axes[1, 2].set_title(f'Error $v_0$ (MAE={np.mean(np.abs(v0_error)):.2e})', fontsize=11, fontweight='bold')
+    fig.colorbar(c12, ax=axes[1, 2], fraction=0.046, pad=0.04)
+
+    plt.subplots_adjust(left=0.08, right=0.98, top=0.96, bottom=0.08, wspace=0.4, hspace=0.3)
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    log.info(f"IC Reconstruction plot saved to {save_path}")
+    log.info(f"Ground truth source: {'MATLAB' if gt_available else 'Generated test case'}")
+    log.info(f"Displacement error - MAE: {np.mean(np.abs(u0_error)):.6e}, Max: {np.max(np.abs(u0_error)):.6e}")
+    log.info(f"Velocity error     - MAE: {np.mean(np.abs(v0_error)):.6e}, Max: {np.max(np.abs(v0_error)):.6e}")
+    model.train() # Restore training mode

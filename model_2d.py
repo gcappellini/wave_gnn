@@ -5,7 +5,7 @@ import warnings
 import logging
 from adaptive_weights import AdaptiveLossWeights
 import os
-from plot import plot_ic_reconstruction
+from plot_2d import plot_ic_reconstruction
 warnings.filterwarnings('ignore')
 
 log = logging.getLogger(__name__)
@@ -196,6 +196,7 @@ class PINNDeepONet_Wave2D(nn.Module):
             """
             Pre-training helper for Standard DeepONet (Sum/MLP Mixing).
             Predicts u0 and v0 using the MAIN Trunk at t=0.
+            BC factor is applied to enforce zero displacement and velocity at boundaries.
             """
             # 1. Branch Encoding
             # Same as before: encode inputs to get latent vectors
@@ -223,6 +224,19 @@ class PINNDeepONet_Wave2D(nn.Module):
                 # Reconstruct: Element-wise sum
                 u0_pred = torch.sum(b_u.unsqueeze(1) * tau, dim=-1)
                 v0_pred = torch.sum(b_v.unsqueeze(1) * tau, dim=-1)
+
+            # 3. Apply BC factor for hard constraint enforcement
+            # Extract spatial coordinates and apply boundary condition factor
+            x = xyt[..., 0:1]  # Shape: (..., 1)
+            y = xyt[..., 1:2]  # Shape: (..., 1)
+            
+            # BC factor: (x(1-x)y(1-y))^2, rescaled by 16.0
+            bc_factor_sq = (x * (1.0 - x) * y * (1.0 - y)) ** 2
+            u0_pred_rescaled = 16.0 * u0_pred
+            v0_pred_rescaled = 16.0 * v0_pred
+            
+            u0_pred = bc_factor_sq * u0_pred_rescaled
+            v0_pred = bc_factor_sq * v0_pred_rescaled
 
             return u0_pred, v0_pred
     
@@ -573,7 +587,7 @@ class PINNDeepONet_Wave2D(nn.Module):
                 loss_ic_u_accum / n_batches, 
                 loss_ic_v_accum / n_batches)
     
-    def train_pinn(self, cfg, output_fold=os.path.join(SCRIPT_DIR, 'logs_multibranch_wave'), device=None):
+    def train_pinn(self, cfg, output_fold=os.path.join(SCRIPT_DIR, 'logs_multibranch_wave'), device=None, gt_data=None):
         """
         Train PINN-DeepONet for 2D wave equation with early stopping based on test loss
         
@@ -799,7 +813,8 @@ class PINNDeepONet_Wave2D(nn.Module):
             plot_ic_reconstruction(
                 self, 
                 test_cases[0], 
-                save_path=os.path.join(output_fold, 'ic_pretrain_diagnostic.png')
+                save_path=os.path.join(output_fold, 'ic_pretrain_diagnostic.png'),
+                gt_data=gt_data
             )
             # 5. Unfreeze Everything for Phase 2
             for param in self.parameters():

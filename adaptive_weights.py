@@ -433,7 +433,9 @@ class AdaptiveLossWeights:
         n_steps = len(self.ntk_eigvals_log)
         idxs = [0]
         if n_steps > 1:
+            idxs.append(n_steps // 4)
             idxs.append(n_steps // 2)
+            idxs.append(3* n_steps // 4)
         if n_steps > 2:
             idxs.append(n_steps - 1)
         labels = [f'step={i}' for i in idxs]

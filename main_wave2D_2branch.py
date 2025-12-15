@@ -162,7 +162,8 @@ def main(cfg: DictConfig):
         history, pretrain_history, best_model_info = model.train_pinn(
             cfg,
             output_fold=output_fold,
-            device=DEVICE
+            device=DEVICE,
+            gt_data=gt_data
         )
         
         if torch.cuda.is_available():
