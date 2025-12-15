@@ -469,7 +469,9 @@ class PINNDeepONet_Wave2D(nn.Module):
     
     def _train_phase1_pretraining(self, cfg, test_cases, output_fold, gt_data, device):
         """
-        Phase 1: IC Pre-training with frozen dynamic components.
+        Phase 1: IC Pre-training with frozen dynamic components using gradient accumulation.
+        Consistent batching logic with Phase 2: sample one config per batch, accumulate gradients,
+        single optimizer step per epoch.
         Returns pretrain_history dictionary.
         """
         n_epochs_pretrain = cfg.training.n_epochs_pretrain
@@ -484,7 +486,6 @@ class PINNDeepONet_Wave2D(nn.Module):
         b_range = tuple(cfg.data.b_range)
         
         log.info(f"=== PHASE 1: Pre-training IC Reconstruction for {n_epochs_pretrain} epochs ===")
-        # pretrain_history = {'loss_ic_u': [], 'loss_ic_v': [], 'test_metric': [], 'test_epochs': []}
         pretrain_history = {'loss_ic_u': [], 'test_metric': [], 'test_epochs': []}
         
         # Freeze all parameters initially
@@ -501,67 +502,56 @@ class PINNDeepONet_Wave2D(nn.Module):
             for param in self.trunk.parameters():
                 param.requires_grad = True
                 trainable_params.append(param)
-        # if hasattr(self, 'branch_src'):
-        #                 for param in self.branch_src.parameters():
-        #                     param.requires_grad = True
-        #                     trainable_params.append(param)        
+        
         optimizer_pre = torch.optim.Adam(trainable_params, lr=lr)
         best_pretrain_loss = float('inf')
         best_pretrain_model_state = None
         best_pretrain_epoch = 0
         
+        # Setup IC grid (shared across batches within epoch)
+        x_ic_1d = torch.linspace(self.domain[0], self.domain[1], n_ic, device=device)
+        y_ic_1d = torch.linspace(self.domain[0], self.domain[1], n_ic, device=device)
+        X_ic, Y_ic = torch.meshgrid(x_ic_1d, y_ic_1d, indexing='ij')
+        x_ic = X_ic.flatten()
+        y_ic = Y_ic.flatten()
+        
         for epoch_pre in range(n_epochs_pretrain):
             loss_ic_u_accum = 0.0
-            loss_ic_v_accum = 0.0
             
-            for _ in range(n_batches):
+            # Process n_batches with gradient accumulation (Phase 2 consistent)
+            for batch_idx in range(n_batches):
+                # 1. Sample one IC config per batch (PHASE 2 CONSISTENT)
                 a_coeffs_pre = sample_coeffs(n_ic_u, a_range, p=3.0, as_2d=True, device=device)
                 b_coeffs_pre = sample_coeffs(n_ic_v, b_range, as_2d=True, device=device)
                 
+                # 2. Generate sensors for this batch
                 u0_sensors_pre = self.generate_ic_sine_series(a_coeffs_pre)
                 v0_sensors_pre = self.generate_ic_sine_series(b_coeffs_pre)
+                src_sensors_pre = self.generate_source(cfg.data.source_type, cfg.data.source_amplitude, 
+                                                       cfg.data.center_x, cfg.data.center_y)
                 
-                x_ic_1d = torch.linspace(self.domain[0], self.domain[1], n_ic, device=device)
-                y_ic_1d = torch.linspace(self.domain[0], self.domain[1], n_ic, device=device)
-                X_ic, Y_ic = torch.meshgrid(x_ic_1d, y_ic_1d, indexing='ij')
-                xyt_ic = torch.stack([X_ic.flatten(), Y_ic.flatten(), torch.zeros_like(X_ic.flatten())], dim=1)
-                xyt_ic_grad = xyt_ic.clone().requires_grad_(True)
+                # 3. Setup IC evaluation points for this batch
+                t_ic = torch.zeros_like(x_ic)
+                xyt_ic = torch.stack([x_ic, y_ic, t_ic], dim=1)
                 
-                u0_true = self.generate_ic_sine_series(a_coeffs_pre, X_ic.flatten(), Y_ic.flatten())
-                # v0_true = self.generate_ic_sine_series(b_coeffs_pre, X_ic.flatten(), Y_ic.flatten())
+                # 4. Generate ground truth
+                u0_true = self.generate_ic_sine_series(a_coeffs_pre, x_ic, y_ic)
                 
-                # Phase 1: Learn u0 and v0 as direct network outputs
-                # The ansatz u = bc_factor * (u0 + t*v0 + ...) means the network learns u0 at t=0
-                # But v0 is NOT du/dt - it's learned directly from the network structure
-                src_sensors_pre = self.generate_source(cfg.data.source_type, cfg.data.source_amplitude, cfg.data.center_x, cfg.data.center_y)
-                
-                # For HardConstraint ansatz: u0 and v0 come from branch_ic @ trunk_spatial
-                # For other fusions: we only have one output (u)
-                # In Phase 1, we focus on learning the IC reconstruction through the network
-                u0_pred = self.forward(u0_sensors_pre, v0_sensors_pre, src_sensors_pre, xyt_ic_grad)
-                
-                # For v0, we use a small time offset to approximate velocity
-                # Or simply skip it for Phase 1 and only learn u0
+                # 5. Compute IC loss (Phase 1 only evaluates IC, no PDE)
+                u0_pred = self.forward(u0_sensors_pre, v0_sensors_pre, src_sensors_pre, xyt_ic)
                 loss_ic_u = torch.mean((u0_pred - u0_true)**2)
-                loss_pre = loss_ic_u
-
-                # # Velocity with autograd
-                # u_t_ic_pred = torch.autograd.grad(u0_pred, xyt_ic_grad,
-                #                                 torch.ones_like(u0_pred),
-                #                                 create_graph=True)[0][:, 2]
-                # loss_ic_v = torch.mean((u_t_ic_pred - v0_true) ** 2)
                 
-                loss_pre.backward()
+                # 6. Backward (accumulates gradients across batches)
+                loss_ic_u.backward()
                 loss_ic_u_accum += loss_ic_u.item()
-                # loss_ic_v_accum += loss_ic_v.item()
             
+            # 7. Single optimizer step after all batches (PHASE 2 CONSISTENT)
             optimizer_pre.step()
             optimizer_pre.zero_grad()
             
+            # 8. Log average loss
             loss_ic_u_avg = loss_ic_u_accum / n_batches
-            # loss_ic_v_avg = loss_ic_v_accum / n_batches
             pretrain_history['loss_ic_u'].append(loss_ic_u_avg)
-            # pretrain_history['loss_ic_v'].append(loss_ic_v_avg)
             
             # Evaluate on test set every val_interval epochs
             if (epoch_pre + 1) % val_interval == 0:
@@ -606,9 +596,7 @@ class PINNDeepONet_Wave2D(nn.Module):
                 
                 if (epoch_pre + 1) % (val_interval * 5) == 0:
                     log.info(f"  [Pre-train] Epoch {epoch_pre+1}/{n_epochs_pretrain} | IC_u: {loss_ic_u_avg:.6e} | Test: {pretrain_test_metric:.6e}")
-                    # log.info(f"  [Pre-train] Epoch {epoch_pre+1}/{n_epochs_pretrain} | IC_u: {loss_ic_u_avg:.6e} | IC_v: {loss_ic_v_avg:.6e} | Test: {pretrain_test_metric:.6e}")
             elif (epoch_pre + 1) % 100 == 0:
-                # log.info(f"  [Pre-train] Epoch {epoch_pre+1}/{n_epochs_pretrain} | IC_u: {loss_ic_u_avg:.6e} | IC_v: {loss_ic_v_avg:.6e}")
                 log.info(f"  [Pre-train] Epoch {epoch_pre+1}/{n_epochs_pretrain} | IC_u: {loss_ic_u_avg:.6e}")
         
         log.info("=== PHASE 1 COMPLETE ===")
