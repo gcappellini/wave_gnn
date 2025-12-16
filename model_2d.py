@@ -472,6 +472,11 @@ class PINNDeepONet_Wave2D(nn.Module):
         Phase 1: IC Pre-training with frozen dynamic components using gradient accumulation.
         Consistent batching logic with Phase 2: sample one config per batch, accumulate gradients,
         single optimizer step per epoch.
+        
+        Includes:
+        - Step Learning Rate Scheduler: reduces LR by gamma every N epochs
+        - LBFGS Fine-tuning: after Adam plateaus, use second-order optimizer for final refinement
+        
         Returns pretrain_history dictionary.
         """
         n_epochs_pretrain = cfg.training.n_epochs_pretrain
@@ -483,10 +488,18 @@ class PINNDeepONet_Wave2D(nn.Module):
         lr = cfg.training.lr
         max_grad_norm = cfg.training.max_grad_ph1
         
+        # Step scheduler parameters
+        lr_scheduler_step = cfg.training.get('lr_scheduler_step_ph1', 500)
+        lr_scheduler_gamma = cfg.training.get('lr_scheduler_gamma_ph1', 0.5)
+        
+        # LBFGS fine-tuning parameters
+        use_lbfgs_finetune = cfg.training.get('use_lbfgs_finetune_ph1', False)
+        
         a_range = tuple(cfg.data.a_range)
         b_range = tuple(cfg.data.b_range)
         
         log.info(f"=== PHASE 1: Pre-training IC Reconstruction for {n_epochs_pretrain} epochs ===")
+        log.info(f"LR Scheduler: Step every {lr_scheduler_step} epochs with gamma={lr_scheduler_gamma}")
         pretrain_history = {'loss_ic_u': [], 'test_metric': [], 'test_epochs': []}
         
         # Freeze all parameters initially
@@ -504,10 +517,13 @@ class PINNDeepONet_Wave2D(nn.Module):
                 param.requires_grad = True
                 trainable_params.append(param)
         if hasattr(self, 'branch_src'):
-                        for param in self.branch_src.parameters():
-                            param.requires_grad = True
-                            trainable_params.append(param)           
+            for param in self.branch_src.parameters():
+                param.requires_grad = True
+                trainable_params.append(param)
+        
         optimizer_pre = torch.optim.Adam(trainable_params, lr=lr)
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer_pre, step_size=lr_scheduler_step, gamma=lr_scheduler_gamma)
+        
         best_pretrain_loss = float('inf')
         best_pretrain_model_state = None
         best_pretrain_epoch = 0
@@ -519,6 +535,7 @@ class PINNDeepONet_Wave2D(nn.Module):
         x_ic = X_ic.flatten()
         y_ic = Y_ic.flatten()
         
+        # ========== ADAM PHASE ==========
         for epoch_pre in range(n_epochs_pretrain):
             loss_ic_u_accum = 0.0
             
@@ -554,7 +571,10 @@ class PINNDeepONet_Wave2D(nn.Module):
             optimizer_pre.step()
             optimizer_pre.zero_grad()
             
-            # 8. Log average loss
+            # 8. Step the learning rate scheduler
+            scheduler.step()
+            
+            # 9. Log average loss
             loss_ic_u_avg = loss_ic_u_accum / n_batches
             pretrain_history['loss_ic_u'].append(loss_ic_u_avg)
             
@@ -600,17 +620,124 @@ class PINNDeepONet_Wave2D(nn.Module):
                     }, checkpoint_path)
                 
                 if (epoch_pre + 1) % (val_interval * 5) == 0:
-                    log.info(f"  [Pre-train] Epoch {epoch_pre+1}/{n_epochs_pretrain} | IC_u: {loss_ic_u_avg:.6e} | Test: {pretrain_test_metric:.6e}")
+                    current_lr = optimizer_pre.param_groups[0]['lr']
+                    log.info(f"  [Pre-train] Epoch {epoch_pre+1}/{n_epochs_pretrain} | IC_u: {loss_ic_u_avg:.6e} | Test: {pretrain_test_metric:.6e} | LR: {current_lr:.2e}")
             elif (epoch_pre + 1) % 100 == 0:
-                log.info(f"  [Pre-train] Epoch {epoch_pre+1}/{n_epochs_pretrain} | IC_u: {loss_ic_u_avg:.6e}")
+                current_lr = optimizer_pre.param_groups[0]['lr']
+                log.info(f"  [Pre-train] Epoch {epoch_pre+1}/{n_epochs_pretrain} | IC_u: {loss_ic_u_avg:.6e} | LR: {current_lr:.2e}")
         
-        log.info("=== PHASE 1 COMPLETE ===")
+        log.info("=== PHASE 1 ADAM COMPLETE ===")
         
         if best_pretrain_model_state is not None:
             self.load_state_dict(best_pretrain_model_state)
             log.info(f"Restored best pretraining model from epoch {best_pretrain_epoch+1}")
         
         plot_ic_reconstruction(self, test_cases[0], save_path=os.path.join(output_fold, 'ic_pretrain_diagnostic.png'), gt_data=gt_data)
+        
+        # ========== LBFGS FINE-TUNING PHASE ==========
+        if use_lbfgs_finetune:
+            log.info(f"\n{'='*70}")
+            log.info(f"PHASE 1: LBFGS Fine-tuning (second-order optimization)")
+            log.info(f"{'='*70}")
+            
+            lbfgs_n_epochs = cfg.training.get('lbfgs_n_epochs_ph1', 100)
+            lbfgs_lr = cfg.training.get('lbfgs_lr_ph1', cfg.training.lr)
+            lbfgs_max_iter = cfg.training.get('lbfgs_max_iter_ph1', 20)
+            
+            # Refreeze parameters that were frozen during Adam phase
+            for param in self.parameters():
+                param.requires_grad = False
+            
+            # Unfreeze only trainable components again
+            if hasattr(self, 'branch_ic'):
+                for param in self.branch_ic.parameters():
+                    param.requires_grad = True
+            if hasattr(self, 'trunk'):
+                for param in self.trunk.parameters():
+                    param.requires_grad = True
+            if hasattr(self, 'branch_src'):
+                for param in self.branch_src.parameters():
+                    param.requires_grad = True
+            
+            optimizer_lbfgs = torch.optim.LBFGS(self.parameters(), lr=lbfgs_lr, 
+                                                max_iter=lbfgs_max_iter,
+                                                line_search_fn='strong_wolfe')
+            
+            best_lbfgs_loss = best_pretrain_loss
+            best_lbfgs_model_state = best_pretrain_model_state
+            
+            for epoch_lbfgs in range(lbfgs_n_epochs):
+                # Sample full batch for LBFGS (no mini-batches)
+                a_coeffs_lbfgs = sample_coeffs(n_ic_u, a_range, p=3.0, as_2d=True, device=device)
+                b_coeffs_lbfgs = sample_coeffs(n_ic_v, b_range, as_2d=True, device=device)
+                
+                u0_sensors_lbfgs = self.generate_ic_sine_series(a_coeffs_lbfgs)
+                v0_sensors_lbfgs = self.generate_ic_sine_series(b_coeffs_lbfgs)
+                src_sensors_lbfgs = self.generate_source(cfg.data.source_type, cfg.data.source_amplitude,
+                                                         cfg.data.center_x, cfg.data.center_y)
+                
+                t_ic_lbfgs = torch.zeros_like(x_ic)
+                xyt_ic_lbfgs = torch.stack([x_ic, y_ic, t_ic_lbfgs], dim=1)
+                u0_true_lbfgs = self.generate_ic_sine_series(a_coeffs_lbfgs, x_ic, y_ic)
+                
+                def closure_lbfgs():
+                    optimizer_lbfgs.zero_grad()
+                    u0_pred_lbfgs = self.forward(u0_sensors_lbfgs, v0_sensors_lbfgs, src_sensors_lbfgs, xyt_ic_lbfgs)
+                    loss_lbfgs = torch.mean((u0_pred_lbfgs - u0_true_lbfgs)**2)
+                    loss_lbfgs.backward()
+                    return loss_lbfgs
+                
+                loss_lbfgs_val = optimizer_lbfgs.step(closure_lbfgs)
+                
+                # Evaluate on test set
+                if (epoch_lbfgs + 1) % val_interval == 0:
+                    lbfgs_test_metric = 0.0
+                    for test_case in test_cases:
+                        u0_test_lbfgs = self.generate_ic_sine_series(test_case['a_coeffs'])
+                        v0_test_lbfgs = self.generate_ic_sine_series(test_case['b_coeffs'])
+                        
+                        x_test_1d = torch.linspace(self.domain[0], self.domain[1], n_ic, device=device)
+                        y_test_1d = torch.linspace(self.domain[0], self.domain[1], n_ic, device=device)
+                        X_test_l, Y_test_l = torch.meshgrid(x_test_1d, y_test_1d, indexing='ij')
+                        xyt_test_l = torch.stack([X_test_l.flatten(), Y_test_l.flatten(), torch.zeros_like(X_test_l.flatten())], dim=1)
+                        
+                        src_test_l = self.generate_source(cfg.data.source_type, cfg.data.source_amplitude, 
+                                                          test_case['center_x'], test_case['center_y'])
+                        u0_test_true_l = self.generate_ic_sine_series(test_case['a_coeffs'], X_test_l.flatten(), Y_test_l.flatten())
+                        
+                        with torch.no_grad():
+                            u0_test_pred_l = self.forward(u0_test_lbfgs, v0_test_lbfgs, src_test_l, xyt_test_l)
+                            loss_test_l = torch.mean((u0_test_pred_l - u0_test_true_l)**2)
+                        
+                        lbfgs_test_metric += loss_test_l.item()
+                    
+                    lbfgs_test_metric /= len(test_cases)
+                    pretrain_history['test_metric'].append(lbfgs_test_metric)
+                    pretrain_history['test_epochs'].append(n_epochs_pretrain + epoch_lbfgs + 1)
+                    
+                    if lbfgs_test_metric < best_lbfgs_loss:
+                        best_lbfgs_loss = lbfgs_test_metric
+                        best_lbfgs_model_state = {key: value.cpu().clone() for key, value in self.state_dict().items()}
+                        log.info(f"  ✓ LBFGS: Test metric improved to {lbfgs_test_metric:.6e}")
+                        
+                        checkpoint_path = os.path.join(output_fold, 'model_pretrain_lbfgs.pth')
+                        torch.save({
+                            'epoch': n_epochs_pretrain + epoch_lbfgs,
+                            'model_state_dict': self.state_dict(),
+                            'test_metric': lbfgs_test_metric,
+                            'pretrain_history': pretrain_history,
+                            'config': cfg,
+                        }, checkpoint_path)
+                    
+                    if (epoch_lbfgs + 1) % (val_interval * 5) == 0:
+                        log.info(f"  [LBFGS] Epoch {epoch_lbfgs+1}/{lbfgs_n_epochs} | Loss: {loss_lbfgs_val:.6e} | Test: {lbfgs_test_metric:.6e}")
+            
+            log.info("=== PHASE 1 LBFGS COMPLETE ===")
+            
+            if best_lbfgs_model_state is not None:
+                self.load_state_dict(best_lbfgs_model_state)
+                log.info(f"Restored best LBFGS model with test metric {best_lbfgs_loss:.6e}")
+                best_pretrain_loss = best_lbfgs_loss
         
         # Unfreeze everything for Phase 2
         for param in self.parameters():
