@@ -24,9 +24,9 @@ training:
   val_interval: 20
   es_patience: 5000
   max_grad_norm: 1.0
-  max_grad_ph1: 0.10
+  max_grad_ph1: 0.50
   n_batches: 16
-  n_batches_ph1: 16
+  n_batches_ph1: 128
   n_test_cases: 50
   test_seed: 42
   pretrain_ic: True
