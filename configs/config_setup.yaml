@@ -13,7 +13,7 @@ run:
   
   # Phase 1 Model Loading (Pretrained IC reconstruction)
   load_pretrain: true
-  load_pretrain_from: ['2025-12-16','23-22-53']
+  load_pretrain_from: ['2025-12-17','10-00-41']
   continue_phase1_lbfgs: true  # Continue Phase 1 training with LBFGS only (requires load_pretrain=true)
   
   # Resume Training (continue from checkpoint)
@@ -35,13 +35,13 @@ training:
   max_grad_norm: 1.0
   max_grad_ph1: 1.0
   n_batches: 16
-  n_batches_ph1: 128
+  n_batches_ph1: 16
   n_test_cases: 50
   test_seed: 42
   pretrain_ic: True
   train_adam: False
   train_lbfgs: False  
-  n_epochs_pretrain: 40000
+  n_epochs_pretrain: 4000
   
   # Phase 1 (IC Pretraining) specific settings
   lr_scheduler_step_ph1: 500        # Epochs before reducing LR in Phase 1
