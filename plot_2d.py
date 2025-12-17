@@ -119,7 +119,7 @@ def plot_solution_2d_comparison(model, a_test=0.5, b_test=0.0, source_type='zero
         
         with torch.no_grad():
             u_pred = model.forward(u0_sensors, v0_sensors, src_sensors, xyt_grid)
-            u_pred_grid = u_pred.reshape(nx_gt, ny_gt).numpy()
+            u_pred_grid = u_pred.reshape(nx_gt, ny_gt).cpu().numpy()
         
         # Update global min/max
         global_vmin = min(global_vmin, np.nanmin(u_gt_grid), np.nanmin(u_pred_grid))
