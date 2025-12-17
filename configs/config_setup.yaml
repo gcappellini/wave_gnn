@@ -12,8 +12,8 @@ run:
   load_from: null #['2025-12-13','13-38-38']
   
   # Phase 1 Model Loading (Pretrained IC reconstruction)
-  load_pretrain: false
-  load_pretrain_from: null #['2025-12-13','13-38-38']
+  load_pretrain: true
+  load_pretrain_from: ['2025-12-16','23-22-53']
   
   # Resume Training (continue from checkpoint)
   resume_training: false
