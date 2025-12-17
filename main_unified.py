@@ -23,6 +23,13 @@ if torch.cuda.is_available():
     torch.backends.cudnn.benchmark = True
     torch.backends.cudnn.deterministic = False
 
+def _build_checkpoint_path(date, time, model_file='model.pth', load_fold_type='outputs'):
+    """Helper function to construct checkpoint path"""
+    if '/' in time:
+        load_fold = 'multirun'
+    else:
+        load_fold = load_fold_type
+    return f'{load_fold}/{date}/{time}/{model_file}'
 
 @hydra_main(version_base=None, config_path="configs", config_name="config")
 def main(cfg: DictConfig):
@@ -49,19 +56,7 @@ def main(cfg: DictConfig):
     # Create Model
     # ============================================================
     log.info("Creating model...")
-    model = PINNDeepONet_Wave2D(
-        n_sensors_ic=cfg.model.n_sensors_ic,
-        n_sensors_src=cfg.model.n_sensors_src,
-        branch_width=cfg.model.branch_width,
-        trunk_width=cfg.model.trunk_width,
-        branch_depth=cfg.model.branch_depth,
-        trunk_depth=cfg.model.trunk_depth,
-        p=cfg.model.p,
-        wave_speed=cfg.model.wave_speed,
-        damping_coeff=cfg.model.damping_coeff,
-        use_fft_trunk=cfg.model.use_fft_trunk,
-        fft_trunk_args=cfg.model.fft_trunk_args
-    )
+    model = PINNDeepONet_Wave2D(cfg)
     model = model.to(DEVICE)
     log.info(f"✓ Model created with {sum(p.numel() for p in model.parameters())} parameters\n")
     
@@ -71,7 +66,8 @@ def main(cfg: DictConfig):
     if cfg.run.get('load_pretrain', False):
         load_pretrain_from = cfg.run.get('load_pretrain_from', None)
         if load_pretrain_from:
-            pretrain_path = f"outputs/{load_pretrain_from[0]}/{load_pretrain_from[1]}/model_pretrain.pth"
+            pretrain_path = _build_checkpoint_path(load_pretrain_from[0], load_pretrain_from[1], 
+                                                    model_file='model_pretrain.pth')
             if os.path.exists(pretrain_path):
                 checkpoint = torch.load(pretrain_path, map_location=DEVICE)
                 model.load_state_dict(checkpoint['model_state_dict'])
