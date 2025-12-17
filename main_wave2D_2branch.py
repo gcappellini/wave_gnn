@@ -126,6 +126,7 @@ def main(cfg: DictConfig):
     load_model = cfg.run.load_model
     load_pretrain = cfg.run.get('load_pretrain', False)
     resume_training = cfg.run.get('resume_training', False)
+    continue_phase1_lbfgs = cfg.run.get('continue_phase1_lbfgs', False)
     load_from = cfg.run.get('load_from', None)
     load_pretrain_from = cfg.run.get('load_pretrain_from', None)
     resume_from = cfg.run.get('resume_from', None)
@@ -133,7 +134,7 @@ def main(cfg: DictConfig):
     # ============================================================
     # Case 1: Load Pretrained Phase 1 Model (without training)
     # ============================================================
-    if load_pretrain and not load_model and not resume_training:
+    if load_pretrain and not continue_phase1_lbfgs and not load_model and not resume_training:
         if load_pretrain_from is None:
             log.error("load_pretrain_from must be specified when load_pretrain=True")
             return
@@ -161,6 +162,57 @@ def main(cfg: DictConfig):
             log.info("Generating IC reconstruction diagnostic plot for loaded pretrained model...")
             plot_ic_reconstruction(model, test_case, save_path=os.path.join(output_fold, 'ic_pretrain_diagnostic.png'), gt_data=gt_data)
             log.info(f"IC reconstruction plot saved to {output_fold}/ic_pretrain_diagnostic.png")
+        else:
+            log.error(f"Pretrain checkpoint file {checkpoint_path} not found!")
+            return
+    
+    # ============================================================
+    # Case 1b: Load Pretrained Phase 1 and Continue with LBFGS Only
+    # ============================================================
+    elif load_pretrain and continue_phase1_lbfgs and not load_model and not resume_training:
+        if load_pretrain_from is None:
+            log.error("load_pretrain_from must be specified when load_pretrain=True and continue_phase1_lbfgs=True")
+            return
+        
+        checkpoint_path = _build_checkpoint_path(load_pretrain_from[0], load_pretrain_from[1], 
+                                                  model_file='model_pretrain.pth')
+        if os.path.exists(checkpoint_path):
+            checkpoint = torch.load(checkpoint_path, map_location=DEVICE)
+            model.load_state_dict(checkpoint['model_state_dict'])
+            log.info(f"✓ Pretrained Phase 1 model loaded from {checkpoint_path}")
+            log.info(f"  Continuing with Phase 1 LBFGS fine-tuning...")
+            
+            # Configure for Phase 1 LBFGS continuation
+            cfg.training.pretrain_ic = False  # Don't re-run Adam phase
+            cfg.training.train_adam = False   # Skip Phase 2
+            cfg.training.train_lbfgs = False  # Skip Phase 3
+            cfg.training.use_lbfgs_finetune_ph1 = True  # Enable LBFGS in Phase 1
+            
+            # Run only LBFGS fine-tuning for Phase 1
+            start_time = datetime.now()
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            
+            # Call a special method for Phase 1 LBFGS continuation
+            history, pretrain_history, best_model_info = model.train_phase1_lbfgs_continuation(
+                cfg,
+                output_fold=output_fold,
+                device=DEVICE,
+                gt_data=gt_data
+            )
+            
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            end_time = datetime.now()
+            training_time = end_time - start_time
+            
+            # Save model
+            model_filename = os.path.join(output_fold, 'model_pretrain_continued.pth')
+            torch.save({
+                'model_state_dict': model.state_dict(),
+                'history': history,
+            }, model_filename)
+            log.info(f"Continued Phase 1 model saved to {model_filename}")
         else:
             log.error(f"Pretrain checkpoint file {checkpoint_path} not found!")
             return

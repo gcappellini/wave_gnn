@@ -14,6 +14,7 @@ run:
   # Phase 1 Model Loading (Pretrained IC reconstruction)
   load_pretrain: false
   load_pretrain_from: null #['2025-12-13','13-38-38']
+  continue_phase1_lbfgs: false  # Continue Phase 1 training with LBFGS only (requires load_pretrain=true)
   
   # Resume Training (continue from checkpoint)
   resume_training: false

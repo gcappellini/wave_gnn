@@ -1095,6 +1095,147 @@ class PINNDeepONet_Wave2D(nn.Module):
                 loss_ic_u_accum / n_batches, 
                 loss_ic_v_accum / n_batches)
     
+    def train_phase1_lbfgs_continuation(self, cfg, output_fold, device, gt_data):
+        """
+        Continue Phase 1 training with LBFGS fine-tuning only (loaded from pretrained checkpoint).
+        Used when load_pretrain=True and continue_phase1_lbfgs=True.
+        
+        Returns: history, pretrain_history, best_model_info
+        """
+        log.info(f"\n{'='*70}")
+        log.info(f"PHASE 1 LBFGS CONTINUATION (from pretrained checkpoint)")
+        log.info(f"{'='*70}")
+        
+        n_ic = cfg.data.n_ic
+        n_ic_u = cfg.data.n_ic_u
+        n_ic_v = cfg.data.n_ic_v
+        val_interval = cfg.training.val_interval
+        device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        
+        a_range = tuple(cfg.data.a_range)
+        b_range = tuple(cfg.data.b_range)
+        
+        # Generate test set
+        test_cases = self._generate_test_set(cfg, device)
+        
+        # Setup IC grid
+        x_ic_1d = torch.linspace(self.domain[0], self.domain[1], n_ic, device=device)
+        y_ic_1d = torch.linspace(self.domain[0], self.domain[1], n_ic, device=device)
+        X_ic, Y_ic = torch.meshgrid(x_ic_1d, y_ic_1d, indexing='ij')
+        x_ic = X_ic.flatten()
+        y_ic = Y_ic.flatten()
+        
+        # LBFGS fine-tuning
+        lbfgs_n_epochs = cfg.training.get('lbfgs_n_epochs_ph1', 100)
+        lbfgs_lr = cfg.training.get('lbfgs_lr_ph1', cfg.training.lr)
+        lbfgs_max_iter = cfg.training.get('lbfgs_max_iter_ph1', 20)
+        
+        # Ensure trainable components
+        for param in self.parameters():
+            param.requires_grad = False
+        
+        if hasattr(self, 'branch_ic'):
+            for param in self.branch_ic.parameters():
+                param.requires_grad = True
+        if hasattr(self, 'trunk'):
+            for param in self.trunk.parameters():
+                param.requires_grad = True
+        if hasattr(self, 'branch_src'):
+            for param in self.branch_src.parameters():
+                param.requires_grad = True
+        
+        optimizer_lbfgs = torch.optim.LBFGS(self.parameters(), lr=lbfgs_lr, 
+                                            max_iter=lbfgs_max_iter,
+                                            line_search_fn='strong_wolfe')
+        
+        pretrain_history = {'loss_ic_u': [], 'test_metric': [], 'test_epochs': []}
+        best_lbfgs_loss = float('inf')
+        best_lbfgs_model_state = None
+        
+        for epoch_lbfgs in range(lbfgs_n_epochs):
+            # Sample full batch for LBFGS (no mini-batches)
+            a_coeffs_lbfgs = sample_coeffs(n_ic_u, a_range, p=3.0, as_2d=True, device=device)
+            b_coeffs_lbfgs = sample_coeffs(n_ic_v, b_range, as_2d=True, device=device)
+            
+            u0_sensors_lbfgs = self.generate_ic_sine_series(a_coeffs_lbfgs)
+            v0_sensors_lbfgs = self.generate_ic_sine_series(b_coeffs_lbfgs)
+            src_sensors_lbfgs = self.generate_source(cfg.data.source_type, cfg.data.source_amplitude,
+                                                     cfg.data.center_x, cfg.data.center_y)
+            
+            t_ic_lbfgs = torch.zeros_like(x_ic)
+            xyt_ic_lbfgs = torch.stack([x_ic, y_ic, t_ic_lbfgs], dim=1)
+            u0_true_lbfgs = self.generate_ic_sine_series(a_coeffs_lbfgs, x_ic, y_ic)
+            
+            def closure_lbfgs():
+                optimizer_lbfgs.zero_grad()
+                u0_pred_lbfgs = self.forward(u0_sensors_lbfgs, v0_sensors_lbfgs, src_sensors_lbfgs, xyt_ic_lbfgs)
+                loss_lbfgs = torch.mean((u0_pred_lbfgs - u0_true_lbfgs)**2)
+                loss_lbfgs.backward()
+                return loss_lbfgs
+            
+            loss_lbfgs_val = optimizer_lbfgs.step(closure_lbfgs)
+            pretrain_history['loss_ic_u'].append(loss_lbfgs_val)
+            
+            # Evaluate on test set
+            if (epoch_lbfgs + 1) % val_interval == 0:
+                lbfgs_test_metric = 0.0
+                for test_case in test_cases:
+                    u0_test_lbfgs = self.generate_ic_sine_series(test_case['a_coeffs'])
+                    v0_test_lbfgs = self.generate_ic_sine_series(test_case['b_coeffs'])
+                    
+                    x_test_1d = torch.linspace(self.domain[0], self.domain[1], n_ic, device=device)
+                    y_test_1d = torch.linspace(self.domain[0], self.domain[1], n_ic, device=device)
+                    X_test_l, Y_test_l = torch.meshgrid(x_test_1d, y_test_1d, indexing='ij')
+                    xyt_test_l = torch.stack([X_test_l.flatten(), Y_test_l.flatten(), torch.zeros_like(X_test_l.flatten())], dim=1)
+                    
+                    src_test_l = self.generate_source(cfg.data.source_type, cfg.data.source_amplitude, 
+                                                      test_case['center_x'], test_case['center_y'])
+                    u0_test_true_l = self.generate_ic_sine_series(test_case['a_coeffs'], X_test_l.flatten(), Y_test_l.flatten())
+                    
+                    with torch.no_grad():
+                        u0_test_pred_l = self.forward(u0_test_lbfgs, v0_test_lbfgs, src_test_l, xyt_test_l)
+                        loss_test_l = torch.mean((u0_test_pred_l - u0_test_true_l)**2)
+                    
+                    lbfgs_test_metric += loss_test_l.item()
+                
+                lbfgs_test_metric /= len(test_cases)
+                pretrain_history['test_metric'].append(lbfgs_test_metric)
+                pretrain_history['test_epochs'].append(epoch_lbfgs + 1)
+                
+                if lbfgs_test_metric < best_lbfgs_loss:
+                    best_lbfgs_loss = lbfgs_test_metric
+                    best_lbfgs_model_state = {key: value.cpu().clone() for key, value in self.state_dict().items()}
+                    log.info(f"✓ LBFGS: Test metric improved to {lbfgs_test_metric:.6e}")
+                    
+                    checkpoint_path = os.path.join(output_fold, 'model_pretrain_continued.pth')
+                    torch.save({
+                        'epoch': epoch_lbfgs,
+                        'model_state_dict': self.state_dict(),
+                        'test_metric': lbfgs_test_metric,
+                        'pretrain_history': pretrain_history,
+                        'config': cfg,
+                    }, checkpoint_path)
+                
+                if (epoch_lbfgs + 1) % (val_interval * 5) == 0:
+                    log.info(f"  [LBFGS Continue] Epoch {epoch_lbfgs+1}/{lbfgs_n_epochs} | Loss: {loss_lbfgs_val:.6e} | Test: {lbfgs_test_metric:.6e}")
+        
+        log.info("=== PHASE 1 LBFGS CONTINUATION COMPLETE ===")
+        
+        if best_lbfgs_model_state is not None:
+            self.load_state_dict(best_lbfgs_model_state)
+            log.info(f"Restored best LBFGS model with test metric {best_lbfgs_loss:.6e}")
+        
+        # Unfreeze everything for potential Phase 2
+        for param in self.parameters():
+            param.requires_grad = True
+        
+        return pretrain_history, pretrain_history, {
+            'best_epoch': pretrain_history['test_epochs'][-1] if pretrain_history['test_epochs'] else 0,
+            'best_test_metric': best_lbfgs_loss,
+            'best_losses': {'ic_u': best_lbfgs_loss, 'ic_v': float('inf'), 'pde': float('inf')},
+            'phase_times': {'phase1_lbfgs_continuation': 'captured_in_main'},
+        }
+    
     def train_pinn(self, cfg, output_fold=os.path.join(SCRIPT_DIR, 'logs_multibranch_wave'), device=None, gt_data=None):
         """
         Train PINN-DeepONet in 3 phases: IC Pre-training, Main Training, LBFGS Fine-tuning.
