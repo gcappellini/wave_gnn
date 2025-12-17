@@ -975,13 +975,11 @@ class PINNDeepONet_Wave2D(nn.Module):
         t_colloc = torch.rand(n_ntk_colloc, device=device) * cfg.data.T_max
         xyt_colloc = torch.stack([x_colloc, y_colloc, t_colloc], dim=1)
         
-        # Generate IC points for context (use subset for NTK efficiency)
+        # Generate IC points for context (use subset for NTK efficiency) - random sampling
         n_ntk_ic = min(cfg.data.n_ic, cfg.model.get('ntk_ic_sample_size', 64))
-        n_grid_ic = int(np.sqrt(n_ntk_ic))
-        x_ic = torch.linspace(self.domain[0], self.domain[1], n_grid_ic, device=device)
-        y_ic = torch.linspace(self.domain[0], self.domain[1], n_grid_ic, device=device)
-        X_ic, Y_ic = torch.meshgrid(x_ic, y_ic, indexing='ij')
-        xyt_ic = torch.stack([X_ic.flatten()[:n_ntk_ic], Y_ic.flatten()[:n_ntk_ic], torch.zeros(n_ntk_ic, device=device)], dim=1)
+        x_ic_sample = self.domain[0] + (self.domain[1] - self.domain[0]) * torch.rand(n_ntk_ic, device=device)
+        y_ic_sample = self.domain[0] + (self.domain[1] - self.domain[0]) * torch.rand(n_ntk_ic, device=device)
+        xyt_ic = torch.stack([x_ic_sample, y_ic_sample, torch.zeros(n_ntk_ic, device=device)], dim=1)
         
         # Generate source collocation points
         src_colloc = self.generate_source(cfg.data.source_type, cfg.data.source_amplitude, cfg.data.center_x, cfg.data.center_y)
