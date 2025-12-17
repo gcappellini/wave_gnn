@@ -144,6 +144,7 @@ def main(cfg: DictConfig):
         if os.path.exists(checkpoint_path):
             checkpoint = torch.load(checkpoint_path, map_location=DEVICE)
             model.load_state_dict(checkpoint['model_state_dict'])
+            model = model.to(DEVICE)  # Ensure model is on correct device after loading
             log.info(f"✓ Pretrained Phase 1 model loaded from {checkpoint_path}")
             log.info(f"  Test Metric: {checkpoint.get('test_metric', 'N/A')}")
             history = None
@@ -179,6 +180,7 @@ def main(cfg: DictConfig):
         if os.path.exists(checkpoint_path):
             checkpoint = torch.load(checkpoint_path, map_location=DEVICE)
             model.load_state_dict(checkpoint['model_state_dict'])
+            model = model.to(DEVICE)  # Ensure model is on correct device after loading
             log.info(f"✓ Pretrained Phase 1 model loaded from {checkpoint_path}")
             log.info(f"  Continuing with Phase 1 LBFGS fine-tuning...")
             
@@ -229,6 +231,7 @@ def main(cfg: DictConfig):
         if os.path.exists(checkpoint_path):
             checkpoint = torch.load(checkpoint_path, map_location=DEVICE)
             model.load_state_dict(checkpoint['model_state_dict'])
+            model = model.to(DEVICE)  # Ensure model is on correct device after loading
             log.info(f"✓ Full model loaded from {checkpoint_path}")
             history = None
             training_time = None
@@ -252,6 +255,7 @@ def main(cfg: DictConfig):
         
         checkpoint = torch.load(checkpoint_path, map_location=DEVICE)
         model.load_state_dict(checkpoint['model_state_dict'])
+        model = model.to(DEVICE)  # Ensure model is on correct device after loading
         log.info(f"✓ Model loaded for resume training: {checkpoint_path}")
         
         # Continue with training below

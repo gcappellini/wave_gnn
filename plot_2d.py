@@ -110,8 +110,9 @@ def plot_solution_2d_comparison(model, a_test=0.5, b_test=0.0, source_type='zero
         u_gt_grid = griddata(points, u_selected, (X_gt, Y_gt), method='linear')
         
         # PINN prediction at same grid
-        x_plot = torch.tensor(x_unique, dtype=torch.float32)
-        y_plot = torch.tensor(y_unique, dtype=torch.float32)
+        device = next(model.parameters()).device  # Get device from model parameters
+        x_plot = torch.tensor(x_unique, dtype=torch.float32, device=device)
+        y_plot = torch.tensor(y_unique, dtype=torch.float32, device=device)
         X_pred, Y_pred = torch.meshgrid(x_plot, y_plot, indexing='ij')
         T_pred = torch.full_like(X_pred, t_selected)
         xyt_grid = torch.stack([X_pred.flatten(), Y_pred.flatten(), T_pred.flatten()], dim=1)
