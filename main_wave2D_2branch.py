@@ -132,7 +132,7 @@ def main(cfg: DictConfig):
     resume_from = cfg.run.get('resume_from', None)
     
     # ============================================================
-    # Case 1: Load Pretrained Phase 1 Model (without training)
+    # Case 1a: Load Pretrained Phase 1 and Continue to Phase 2 (if train_adam=True)
     # ============================================================
     if load_pretrain and not continue_phase1_lbfgs and not load_model and not resume_training:
         if load_pretrain_from is None:
@@ -147,8 +147,6 @@ def main(cfg: DictConfig):
             model = model.to(DEVICE)  # Ensure model is on correct device after loading
             log.info(f"✓ Pretrained Phase 1 model loaded from {checkpoint_path}")
             log.info(f"  Test Metric: {checkpoint.get('test_metric', 'N/A')}")
-            history = None
-            training_time = None
             
             # Plot IC reconstruction for loaded pretrained model
             from plot_2d import plot_ic_reconstruction
@@ -163,6 +161,13 @@ def main(cfg: DictConfig):
             log.info("Generating IC reconstruction diagnostic plot for loaded pretrained model...")
             plot_ic_reconstruction(model, test_case, save_path=os.path.join(output_fold, 'ic_pretrain_diagnostic.png'), gt_data=gt_data)
             log.info(f"IC reconstruction plot saved to {output_fold}/ic_pretrain_diagnostic.png")
+            
+            # Continue to Phase 2 training if enabled
+            if not cfg.training.get('train_adam', False):
+                log.info("Phase 2 (train_adam) is disabled. Skipping to validation only.")
+                history = None
+                training_time = None
+            # else: Fall through to Phase 2 training logic below
         else:
             log.error(f"Pretrain checkpoint file {checkpoint_path} not found!")
             return
@@ -261,13 +266,75 @@ def main(cfg: DictConfig):
         # Continue with training below
     
     # ============================================================
-    # Case 4: Train from Scratch (optionally with Phase 1 pretraining)
+    # Phase 2: Train PDE Loss (Adam) - Triggered by train_adam flag
     # ============================================================
-    if not load_model and not load_pretrain:
+    if cfg.training.get('train_adam', False):
         if TRAINING_CASE == 'with_source':
             source_type = 'gaussian'
         else:
             source_type = 'zero'
+        
+        log.info("=" * 70)
+        log.info("PHASE 2: Training PDE Loss with Adam Optimizer")
+        log.info("=" * 70)
+        
+        start_time = datetime.now()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        
+        history, pretrain_history, best_model_info = model.train_pinn(
+            cfg,
+            output_fold=output_fold,
+            device=DEVICE,
+            gt_data=gt_data
+        )
+        
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        end_time = datetime.now()
+        training_time = end_time - start_time
+        
+        model_filename = os.path.join(output_fold, 'model.pth')
+        # Save model
+        torch.save({
+            'model_state_dict': model.state_dict(),
+            'history': history,
+            'pretrain_history': pretrain_history,
+            'best_model_info': best_model_info
+        }, model_filename)
+        
+        log.info(f"Model saved to {model_filename}")
+        log.info(f"Best Model Info:")
+        log.info(f"  Epoch: {best_model_info['best_epoch']}")
+        log.info(f"  L2 Metric: {best_model_info['best_test_metric']:.6e}")
+        log.info(f"  Loss Components:")
+        log.info(f"    - PDE: {best_model_info['best_losses']['pde']:.6e}")
+        log.info(f"    - IC_u: {best_model_info['best_losses']['ic_u']:.6e}")
+        log.info(f"    - IC_v: {best_model_info['best_losses']['ic_v']:.6e}")
+        
+        # ============================================================
+        # PLOT TRAINING HISTORY
+        # ============================================================
+        
+        # Plot with pretraining history if available
+        from plot_2d import plot_training_with_pretraining
+        fig_history = plot_training_with_pretraining(history, pretrain_history, val_interval=val_interval)
+        training_plot_filename = os.path.join(output_fold, f'pinn_wave_training_{TRAINING_CASE}.png')
+        fig_history.savefig(training_plot_filename, dpi=150, bbox_inches='tight')
+        log.info(f"Training history (with pretraining) saved to {training_plot_filename}")
+    
+    # ============================================================
+    # Case 4: Train from Scratch (optionally with Phase 1 pretraining)
+    # ============================================================
+    elif not load_model and not load_pretrain:
+        if TRAINING_CASE == 'with_source':
+            source_type = 'gaussian'
+        else:
+            source_type = 'zero'
+        
+        log.info("=" * 70)
+        log.info("Training from Scratch (Case 4)")
+        log.info("=" * 70)
         
         start_time = datetime.now()
         if torch.cuda.is_available():
