@@ -52,6 +52,36 @@ training:
   lbfgs_max_iter_ph1: 10           # Max line search iterations for LBFGS (reduced internally to save memory)
   lbfgs_history_size_ph1: 15        # History size for LBFGS (lower = less memory, default=100)
 
+  # ============================================================
+  # Loss Weight Scheduling (Unified Training Approach)
+  # ============================================================
+  loss_schedule:
+    enabled: true
+    stages:
+      - name: "IC_u_pretraining"
+        epochs: 500
+        weights:
+          w_ic_u: 1.0
+          w_ic_v: 0.0
+          w_pde: 0.0
+        lr: 1.0e-3
+        
+      - name: "IC_v_training"
+        epochs: 300
+        weights:
+          w_ic_u: 1.0
+          w_ic_v: 1.0
+          w_pde: 0.0
+        lr: 5.0e-4
+        
+      - name: "PDE_training"
+        epochs: 500
+        weights:
+          w_ic_u: 1.0
+          w_ic_v: 1.0
+          w_pde: 1.0
+        lr: 1.0e-4
+
 model:
   n_sensors_ic: 100
   n_sensors_src: 20

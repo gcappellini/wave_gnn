@@ -7,6 +7,7 @@ from hydra import main as hydra_main
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf
 from model_2d import PINNDeepONet_Wave2D
+from train_unified import UnifiedTrainer
 from plot_2d import plot_solution_2d_comparison
 import torch.cuda
 
