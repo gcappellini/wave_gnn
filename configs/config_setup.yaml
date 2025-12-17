@@ -65,6 +65,8 @@ model:
   wave_speed: 1.0
   damping_coeff: 1.0
   use_fft_trunk: true
+  ntk_colloc_sample_size: 256   # Subset of collocation points for NTK computation (reduces memory)
+  ntk_ic_sample_size: 64        # Subset of IC points for NTK computation (reduces memory)
   fft_trunk_args:
     input_dim: 3
     m_spatial_x: 64 

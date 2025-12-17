@@ -968,18 +968,20 @@ class PINNDeepONet_Wave2D(nn.Module):
         v0_temp = self.generate_ic_sine_series(b_temp)
         src_temp = self.generate_source(cfg.data.source_type, cfg.data.source_amplitude, cfg.data.center_x, cfg.data.center_y)
         
-        # Generate collocation points for context
-        x_colloc = self.domain[0] + (self.domain[1] - self.domain[0]) * torch.rand(cfg.data.n_colloc, device=device)
-        y_colloc = self.domain[0] + (self.domain[1] - self.domain[0]) * torch.rand(cfg.data.n_colloc, device=device)
-        t_colloc = torch.rand(cfg.data.n_colloc, device=device) * cfg.data.T_max
+        # Generate collocation points for context (use subset for NTK efficiency)
+        n_ntk_colloc = min(cfg.data.n_colloc, cfg.model.get('ntk_colloc_sample_size', 256))
+        x_colloc = self.domain[0] + (self.domain[1] - self.domain[0]) * torch.rand(n_ntk_colloc, device=device)
+        y_colloc = self.domain[0] + (self.domain[1] - self.domain[0]) * torch.rand(n_ntk_colloc, device=device)
+        t_colloc = torch.rand(n_ntk_colloc, device=device) * cfg.data.T_max
         xyt_colloc = torch.stack([x_colloc, y_colloc, t_colloc], dim=1)
         
-        # Generate IC points for context
-        n_grid_ic = int(np.sqrt(cfg.data.n_ic))
+        # Generate IC points for context (use subset for NTK efficiency)
+        n_ntk_ic = min(cfg.data.n_ic, cfg.model.get('ntk_ic_sample_size', 64))
+        n_grid_ic = int(np.sqrt(n_ntk_ic))
         x_ic = torch.linspace(self.domain[0], self.domain[1], n_grid_ic, device=device)
         y_ic = torch.linspace(self.domain[0], self.domain[1], n_grid_ic, device=device)
         X_ic, Y_ic = torch.meshgrid(x_ic, y_ic, indexing='ij')
-        xyt_ic = torch.stack([X_ic.flatten(), Y_ic.flatten(), torch.zeros_like(X_ic.flatten())], dim=1)
+        xyt_ic = torch.stack([X_ic.flatten()[:n_ntk_ic], Y_ic.flatten()[:n_ntk_ic], torch.zeros(n_ntk_ic, device=device)], dim=1)
         
         # Generate source collocation points
         src_colloc = self.generate_source(cfg.data.source_type, cfg.data.source_amplitude, cfg.data.center_x, cfg.data.center_y)
