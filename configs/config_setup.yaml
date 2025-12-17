@@ -38,8 +38,8 @@ training:
   n_batches_ph1: 16
   n_test_cases: 50
   test_seed: 42
-  pretrain_ic: True
-  train_adam: False
+  pretrain_ic: False
+  train_adam: True
   train_lbfgs: False  
   n_epochs_pretrain: 4000
   

@@ -22,6 +22,9 @@ outputs/
 !outputs/2025-12-13/13-38-38/
 !outputs/2025-12-14/
 !outputs/2025-12-14/17-53-42
+!multirun/2025-12-16/
+!multirun/2025-12-16/12-27-31
+!multirun/2025-12-16/12-27-31/1
 pi-operator/
 multirun/
 .hydra/
