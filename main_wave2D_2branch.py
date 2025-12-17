@@ -113,43 +113,87 @@ def main(cfg: DictConfig):
     # ============================================================
     # TRAINING OR LOADING
     # ============================================================
-
     
-    if load_model:
-        load_date = load_from[0]
-        load_time = load_from[1]
-        if '/' in load_time:
+    def _build_checkpoint_path(date, time, model_file='model.pth', load_fold_type='outputs'):
+        """Helper function to construct checkpoint path"""
+        if '/' in time:
             load_fold = 'multirun'
         else:
-            load_fold = 'outputs'
-        checkpoint_path = f'{load_fold}/{load_date}/{load_time}/model.pth'
+            load_fold = load_fold_type
+        return f'{load_fold}/{date}/{time}/{model_file}'
+    
+    # Extract configuration values
+    load_model = cfg.run.load_model
+    load_pretrain = cfg.run.get('load_pretrain', False)
+    resume_training = cfg.run.get('resume_training', False)
+    load_from = cfg.run.get('load_from', None)
+    load_pretrain_from = cfg.run.get('load_pretrain_from', None)
+    resume_from = cfg.run.get('resume_from', None)
+    
+    # ============================================================
+    # Case 1: Load Pretrained Phase 1 Model (without training)
+    # ============================================================
+    if load_pretrain and not load_model and not resume_training:
+        if load_pretrain_from is None:
+            log.error("load_pretrain_from must be specified when load_pretrain=True")
+            return
         
+        checkpoint_path = _build_checkpoint_path(load_pretrain_from[0], load_pretrain_from[1], 
+                                                  model_file='model_pretrain.pth')
         if os.path.exists(checkpoint_path):
             checkpoint = torch.load(checkpoint_path, map_location=DEVICE)
             model.load_state_dict(checkpoint['model_state_dict'])
-            log.info(f"Model loaded from {checkpoint_path}")
+            log.info(f"✓ Pretrained Phase 1 model loaded from {checkpoint_path}")
+            log.info(f"  Test Metric: {checkpoint.get('test_metric', 'N/A')}")
+            history = None
+            training_time = None
+        else:
+            log.error(f"Pretrain checkpoint file {checkpoint_path} not found!")
+            return
+    
+    # ============================================================
+    # Case 2: Load Full Model (Phase 1 + Phase 2)
+    # ============================================================
+    elif load_model:
+        if load_from is None:
+            log.error("load_from must be specified when load_model=True")
+            return
+        
+        checkpoint_path = _build_checkpoint_path(load_from[0], load_from[1], model_file='model.pth')
+        if os.path.exists(checkpoint_path):
+            checkpoint = torch.load(checkpoint_path, map_location=DEVICE)
+            model.load_state_dict(checkpoint['model_state_dict'])
+            log.info(f"✓ Full model loaded from {checkpoint_path}")
             history = None
             training_time = None
         else:
             log.error(f"Checkpoint file {checkpoint_path} not found!")
             log.error(f"Set load_model=False to train a new model.")
             return
-    else:
-        if resume_training:
-            load_date = load_from[0]
-            load_time = load_from[1]
-            if '/' in load_time:
-                load_fold = 'multirun'
-            else:
-                load_fold = 'outputs'
-            checkpoint_path = f'{load_fold}/{load_date}/{load_time}/model.pth'
-            if not os.path.exists(checkpoint_path):
-                log.error(f"Pretrained model not found: {checkpoint_path}")
-                exit(1)
-            checkpoint = torch.load(checkpoint_path, map_location=DEVICE)
-            model.load_state_dict(checkpoint['model_state_dict'])
-            log.info(f"✓ Pretrained model loaded for curriculum learning: {checkpoint_path}")
+    
+    # ============================================================
+    # Case 3: Resume Training from Checkpoint
+    # ============================================================
+    elif resume_training:
+        if resume_from is None:
+            log.error("resume_from must be specified when resume_training=True")
+            return
         
+        checkpoint_path = _build_checkpoint_path(resume_from[0], resume_from[1], model_file='model.pth')
+        if not os.path.exists(checkpoint_path):
+            log.error(f"Checkpoint not found: {checkpoint_path}")
+            exit(1)
+        
+        checkpoint = torch.load(checkpoint_path, map_location=DEVICE)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        log.info(f"✓ Model loaded for resume training: {checkpoint_path}")
+        
+        # Continue with training below
+    
+    # ============================================================
+    # Case 4: Train from Scratch (optionally with Phase 1 pretraining)
+    # ============================================================
+    if not load_model and not load_pretrain:
         if TRAINING_CASE == 'with_source':
             source_type = 'gaussian'
         else:
@@ -229,6 +273,10 @@ def main(cfg: DictConfig):
         metrics['best_pde_loss'] = best_model_info['best_losses']['pde']
         metrics['best_ic_u_loss'] = best_model_info['best_losses']['ic_u']
         metrics['best_ic_v_loss'] = best_model_info['best_losses']['ic_v']
+        # Add phase timing information if available
+        if 'phase_times' in best_model_info:
+            for phase_name, phase_time in best_model_info['phase_times'].items():
+                metrics[f'training_time_{phase_name}'] = phase_time
         # metrics['selection_method'] = best_model_info['selection_method']
         # metrics['test_n_cases'] = best_model_info['n_test_cases']
         # metrics['test_val_interval'] = best_model_info['val_interval']

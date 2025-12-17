@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 import warnings
 import logging
+from datetime import datetime
 from adaptive_weights import AdaptiveLossWeights
 import os
 from plot_2d import plot_ic_reconstruction
@@ -477,8 +478,11 @@ class PINNDeepONet_Wave2D(nn.Module):
         - Step Learning Rate Scheduler: reduces LR by gamma every N epochs
         - LBFGS Fine-tuning: after Adam plateaus, use second-order optimizer for final refinement
         
-        Returns pretrain_history dictionary.
+        Returns pretrain_history dictionary, timing dict with phase1_adam and phase1_lbfgs times.
         """
+        phase1_start_time = datetime.now()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         n_epochs_pretrain = cfg.training.n_epochs_pretrain
         n_batches = cfg.training.n_batches_ph1
         n_ic = cfg.data.n_ic
@@ -628,6 +632,12 @@ class PINNDeepONet_Wave2D(nn.Module):
         
         log.info("=== PHASE 1 ADAM COMPLETE ===")
         
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        phase1_adam_end_time = datetime.now()
+        phase1_adam_time = phase1_adam_end_time - phase1_start_time
+        log.info(f"Phase 1 Adam Time: {phase1_adam_time}")
+        
         if best_pretrain_model_state is not None:
             self.load_state_dict(best_pretrain_model_state)
             log.info(f"Restored best pretraining model from epoch {best_pretrain_epoch+1}")
@@ -635,7 +645,12 @@ class PINNDeepONet_Wave2D(nn.Module):
         plot_ic_reconstruction(self, test_cases[0], save_path=os.path.join(output_fold, 'ic_pretrain_diagnostic.png'), gt_data=gt_data)
         
         # ========== LBFGS FINE-TUNING PHASE ==========
+        phase1_lbfgs_time = None
         if use_lbfgs_finetune:
+            phase1_lbfgs_start_time = datetime.now()
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            
             log.info(f"\n{'='*70}")
             log.info(f"PHASE 1: LBFGS Fine-tuning (second-order optimization)")
             log.info(f"{'='*70}")
@@ -738,12 +753,23 @@ class PINNDeepONet_Wave2D(nn.Module):
                 self.load_state_dict(best_lbfgs_model_state)
                 log.info(f"Restored best LBFGS model with test metric {best_lbfgs_loss:.6e}")
                 best_pretrain_loss = best_lbfgs_loss
+            
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            phase1_lbfgs_end_time = datetime.now()
+            phase1_lbfgs_time = phase1_lbfgs_end_time - phase1_lbfgs_start_time
+            log.info(f"Phase 1 LBFGS Time: {phase1_lbfgs_time}")
         
         # Unfreeze everything for Phase 2
         for param in self.parameters():
             param.requires_grad = True
         
-        return pretrain_history, best_pretrain_model_state, best_pretrain_loss, {'ic_u': float('inf'), 'ic_v': float('inf'), 'pde': float('inf')}
+        phase1_times = {
+            'phase1_adam': str(phase1_adam_time),
+            'phase1_lbfgs': str(phase1_lbfgs_time) if phase1_lbfgs_time is not None else 'N/A'
+        }
+        
+        return pretrain_history, best_pretrain_model_state, best_pretrain_loss, {'ic_u': float('inf'), 'ic_v': float('inf'), 'pde': float('inf')}, phase1_times
     
     def _train_phase2_main(self, cfg, test_cases, output_fold, device, adaptive_weights, initial_weights):
         """
@@ -853,10 +879,14 @@ class PINNDeepONet_Wave2D(nn.Module):
     def _train_phase3_lbfgs(self, cfg, test_cases, output_fold, device, initial_weights, adaptive_weights, n_epochs_main):
         """
         Phase 3: LBFGS fine-tuning (optional).
-        Returns updated history and best model info.
+        Returns updated history, best model info, and timing dict.
         """
         if not cfg.training.get('use_lbfgs_finetune', False):
-            return None, None, float('inf')
+            return None, None, float('inf'), None
+        
+        phase3_start_time = datetime.now()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         
         log.info(f"\n{'='*70}")
         log.info(f"PHASE 3: LBFGS Fine-tuning")
@@ -915,7 +945,14 @@ class PINNDeepONet_Wave2D(nn.Module):
             self.load_state_dict(best_model_state_lbfgs)
             log.info(f"Restored best LBFGS model from epoch {best_epoch_lbfgs + 1}")
         
-        return history_lbfgs, best_model_state_lbfgs, best_test_loss_lbfgs
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        phase3_end_time = datetime.now()
+        phase3_time = phase3_end_time - phase3_start_time
+        log.info(f"Phase 3 LBFGS Time: {phase3_time}")
+        phase3_times = {'phase3_lbfgs': str(phase3_time)}
+        
+        return history_lbfgs, best_model_state_lbfgs, best_test_loss_lbfgs, phase3_times
     
     def _compute_adaptive_weights(self, epoch, cfg, adaptive_weights):
         """Compute adaptive weights for the current epoch."""
@@ -1065,6 +1102,8 @@ class PINNDeepONet_Wave2D(nn.Module):
         Phase 1 (Optional): Pre-train IC reconstruction with frozen dynamic components
         Phase 2 (Main): Train full model with adaptive or fixed loss weights
         Phase 3 (Optional): Fine-tune with LBFGS optimizer
+        
+        Returns: history, pretrain_history, best_model_info (with phase timing info)
         """
         # Set device
         if device is None:
@@ -1086,10 +1125,15 @@ class PINNDeepONet_Wave2D(nn.Module):
         best_pretrain_model_state = None
         best_pretrain_test_loss = None
         best_pretrain_test_losses = None
+        phase1_times = None
         if cfg.training.pretrain_ic:
-            pretrain_history, best_pretrain_model_state, best_pretrain_test_loss, best_pretrain_test_losses = self._train_phase1_pretraining(cfg, test_cases, output_fold, gt_data, device)
+            pretrain_history, best_pretrain_model_state, best_pretrain_test_loss, best_pretrain_test_losses, phase1_times = self._train_phase1_pretraining(cfg, test_cases, output_fold, gt_data, device)
         
         # ==== PHASE 2: Main Training ====
+        phase2_start_time = datetime.now()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        
         if cfg.training.train_adam:
             initial_weights = {'PDE': cfg.model.w_pde, 'IC_u': cfg.model.w_ic_u, 'IC_v': cfg.model.w_ic_v}
             adaptive_weights = AdaptiveLossWeights(initial_weights=initial_weights, strategy=cfg.model.strategy)
@@ -1100,9 +1144,17 @@ class PINNDeepONet_Wave2D(nn.Module):
         else:
             history, best_test_loss, best_test_losses = pretrain_history, best_pretrain_test_loss, best_pretrain_test_losses
         
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        phase2_end_time = datetime.now()
+        phase2_time = phase2_end_time - phase2_start_time
+        log.info(f"Phase 2 Training Time: {phase2_time}")
+        phase2_times = {'phase2_adam': str(phase2_time)}
+        
         # ==== PHASE 3: LBFGS Fine-tuning ====
+        phase3_times = None
         if cfg.training.train_lbfgs:
-            history_lbfgs, _, best_test_loss_lbfgs = self._train_phase3_lbfgs(
+            history_lbfgs, _, best_test_loss_lbfgs, phase3_times = self._train_phase3_lbfgs(
                 cfg, test_cases, output_fold, device, initial_weights, adaptive_weights, cfg.training.n_epochs
             )
         else:
@@ -1116,10 +1168,20 @@ class PINNDeepONet_Wave2D(nn.Module):
                 best_test_loss = best_test_loss_lbfgs
         
         log.info(f"Training complete!")
+        
+        # Collect all timing information
+        phase_times = {}
+        if phase1_times is not None:
+            phase_times.update(phase1_times)
+        phase_times.update(phase2_times)
+        if phase3_times is not None:
+            phase_times.update(phase3_times)
+        
         return history, pretrain_history, {
             'best_epoch': history['test_epochs'][-1] if history['test_epochs'] else 0,
             'best_test_metric': best_test_loss,
             'best_losses': best_test_losses,
+            'phase_times': phase_times,
         }
     
     def _generate_test_set(self, cfg, device):

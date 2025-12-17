@@ -7,9 +7,17 @@ hydra:
 
 # Run settings
 run:
+  # Phase 2 Model Loading (Full trained model)
   load_model: false
-  resume_training: false
   load_from: null #['2025-12-13','13-38-38']
+  
+  # Phase 1 Model Loading (Pretrained IC reconstruction)
+  load_pretrain: false
+  load_pretrain_from: null #['2025-12-13','13-38-38']
+  
+  # Resume Training (continue from checkpoint)
+  resume_training: false
+  resume_from: null #['2025-12-13','13-38-38']
 
 training:
   n_epochs: 2
