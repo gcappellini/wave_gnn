@@ -49,6 +49,8 @@ training:
   use_lbfgs_finetune_ph1: true      # Enable LBFGS fine-tuning after Adam Phase 1
   lbfgs_n_epochs_ph1: 100           # Number of LBFGS epochs in Phase 1
   lbfgs_lr_ph1: 0.001               # Learning rate for LBFGS in Phase 1
+  lbfgs_max_iter_ph1: 20            # Max line search iterations for LBFGS (reduced internally to save memory)
+  lbfgs_lr_ph1: 0.001               # Learning rate for LBFGS in Phase 1
   lbfgs_max_iter_ph1: 20            # Max line search iterations per LBFGS step in Phase 1
 
 model:

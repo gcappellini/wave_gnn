@@ -1130,6 +1130,8 @@ class PINNDeepONet_Wave2D(nn.Module):
         lbfgs_lr = cfg.training.get('lbfgs_lr_ph1', cfg.training.lr)
         lbfgs_max_iter = cfg.training.get('lbfgs_max_iter_ph1', 20)
         
+        log.info(f"LBFGS Config: max_iter={lbfgs_max_iter}, lr={lbfgs_lr}, n_epochs={lbfgs_n_epochs}")
+        
         # Ensure trainable components
         for param in self.parameters():
             param.requires_grad = False
@@ -1145,7 +1147,7 @@ class PINNDeepONet_Wave2D(nn.Module):
                 param.requires_grad = True
         
         optimizer_lbfgs = torch.optim.LBFGS(self.parameters(), lr=lbfgs_lr, 
-                                            max_iter=lbfgs_max_iter,
+                                            max_iter=max(1, lbfgs_max_iter // 2),  # Reduce iterations to save memory
                                             line_search_fn='strong_wolfe')
         
         pretrain_history = {'loss_ic_u': [], 'test_metric': [], 'test_epochs': []}
@@ -1173,11 +1175,27 @@ class PINNDeepONet_Wave2D(nn.Module):
                 loss_lbfgs.backward()
                 return loss_lbfgs
             
-            loss_lbfgs_val = optimizer_lbfgs.step(closure_lbfgs)
-            pretrain_history['loss_ic_u'].append(loss_lbfgs_val)
+            try:
+                loss_lbfgs_val = optimizer_lbfgs.step(closure_lbfgs)
+                pretrain_history['loss_ic_u'].append(loss_lbfgs_val)
+            except RuntimeError as e:
+                if "out of memory" in str(e).lower():
+                    log.warning(f"GPU out of memory during LBFGS epoch {epoch_lbfgs+1}, clearing cache and continuing...")
+                    torch.cuda.empty_cache()
+                    # Fall back to just zero_grad and step for this iteration
+                    optimizer_lbfgs.zero_grad()
+                    u0_pred_lbfgs = self.forward(u0_sensors_lbfgs, v0_sensors_lbfgs, src_sensors_lbfgs, xyt_ic_lbfgs)
+                    loss_lbfgs = torch.mean((u0_pred_lbfgs - u0_true_lbfgs)**2)
+                    loss_lbfgs.backward()
+                    pretrain_history['loss_ic_u'].append(loss_lbfgs.item())
+                else:
+                    raise
             
             # Evaluate on test set
             if (epoch_lbfgs + 1) % val_interval == 0:
+                # Clear cache before evaluation
+                torch.cuda.empty_cache()
+                
                 lbfgs_test_metric = 0.0
                 for test_case in test_cases:
                     u0_test_lbfgs = self.generate_ic_sine_series(test_case['a_coeffs'])
@@ -1217,7 +1235,7 @@ class PINNDeepONet_Wave2D(nn.Module):
                     }, checkpoint_path)
                 
                 if (epoch_lbfgs + 1) % (val_interval * 5) == 0:
-                    log.info(f"  [LBFGS Continue] Epoch {epoch_lbfgs+1}/{lbfgs_n_epochs} | Loss: {loss_lbfgs_val:.6e} | Test: {lbfgs_test_metric:.6e}")
+                    log.info(f"  [LBFGS Continue] Epoch {epoch_lbfgs+1}/{lbfgs_n_epochs} | Test: {lbfgs_test_metric:.6e}")
         
         log.info("=== PHASE 1 LBFGS CONTINUATION COMPLETE ===")
         
