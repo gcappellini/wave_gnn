@@ -1243,6 +1243,12 @@ class PINNDeepONet_Wave2D(nn.Module):
             self.load_state_dict(best_lbfgs_model_state)
             log.info(f"Restored best LBFGS model with test metric {best_lbfgs_loss:.6e}")
         
+        # Visualize the final LBFGS-optimized model
+        log.info("Generating IC reconstruction diagnostic plot for LBFGS-continued model...")
+        test_case = test_cases[0] if test_cases else {'a_coeffs': torch.ones(3, 3), 'b_coeffs': torch.ones(3, 3)}
+        plot_ic_reconstruction(self, test_case, save_path=os.path.join(output_fold, 'ic_pretrain_lbfgs_diagnostic.png'), gt_data=gt_data)
+        log.info(f"LBFGS IC reconstruction plot saved to {output_fold}/ic_pretrain_lbfgs_diagnostic.png")
+        
         # Unfreeze everything for potential Phase 2
         for param in self.parameters():
             param.requires_grad = True
