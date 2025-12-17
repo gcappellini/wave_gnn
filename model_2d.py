@@ -1129,8 +1129,9 @@ class PINNDeepONet_Wave2D(nn.Module):
         lbfgs_n_epochs = cfg.training.get('lbfgs_n_epochs_ph1', 100)
         lbfgs_lr = cfg.training.get('lbfgs_lr_ph1', cfg.training.lr)
         lbfgs_max_iter = cfg.training.get('lbfgs_max_iter_ph1', 20)
+        lbfgs_history_size = cfg.training.get('lbfgs_history_size_ph1', 10)
         
-        log.info(f"LBFGS Config: max_iter={lbfgs_max_iter}, lr={lbfgs_lr}, n_epochs={lbfgs_n_epochs}")
+        log.info(f"LBFGS Config: max_iter={lbfgs_max_iter}, lr={lbfgs_lr}, n_epochs={lbfgs_n_epochs}, history_size={lbfgs_history_size}")
         
         # Ensure trainable components
         for param in self.parameters():
@@ -1148,6 +1149,7 @@ class PINNDeepONet_Wave2D(nn.Module):
         
         optimizer_lbfgs = torch.optim.LBFGS(self.parameters(), lr=lbfgs_lr, 
                                             max_iter=max(1, lbfgs_max_iter // 2),  # Reduce iterations to save memory
+                                            history_size=lbfgs_history_size,  # Limit gradient history to save memory
                                             line_search_fn='strong_wolfe')
         
         pretrain_history = {'loss_ic_u': [], 'test_metric': [], 'test_epochs': []}
