@@ -21,7 +21,7 @@ run:
   resume_from: null #['2025-12-13','13-38-38']
 
 training:
-  n_epochs: 2
+  n_epochs: 40000
   lr: 0.001
   lr_scheduler_step: 500
   lr_scheduler_gamma: 0.95
