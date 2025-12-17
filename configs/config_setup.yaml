@@ -59,7 +59,7 @@ training:
     enabled: true
     stages:
       - name: "IC_u_pretraining"
-        epochs: 500
+        epochs: 1 #4000
         weights:
           w_ic_u: 1.0
           w_ic_v: 0.0
@@ -67,7 +67,7 @@ training:
         lr: 1.0e-3
         
       - name: "IC_v_training"
-        epochs: 300
+        epochs: 1 #4000
         weights:
           w_ic_u: 1.0
           w_ic_v: 1.0
@@ -75,7 +75,7 @@ training:
         lr: 5.0e-4
         
       - name: "PDE_training"
-        epochs: 500
+        epochs: 1 #4000
         weights:
           w_ic_u: 1.0
           w_ic_v: 1.0
@@ -106,7 +106,7 @@ model:
     sigma_spatial_y: 0.10
     sigma_temporal_list: [0.10]
     seed: 42
-  strategy: 'ntk'
+  strategy: 'fixed'
   fusion: 'hc'
 
 data:
