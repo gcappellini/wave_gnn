@@ -29,7 +29,7 @@ def plot_solution_2d(model, a_test=0.5, b_test=0.0, source_type='zero',
             xyt_grid = torch.stack([X.flatten(), Y.flatten(), T.flatten()], dim=1)
             
             u_pred = model.forward(u0_sensors, v0_sensors, src_sensors, xyt_grid)
-            u_pred_grid = u_pred.reshape(nx, ny).numpy()
+            u_pred_grid = u_pred.reshape(nx, ny).cpu().numpy()
             u_pred_snapshots.append(u_pred_grid)
     
     # Plot snapshots
@@ -37,7 +37,7 @@ def plot_solution_2d(model, a_test=0.5, b_test=0.0, source_type='zero',
     
     for i, (u_snap, t_val) in enumerate(zip(u_pred_snapshots, t_plot)):
         ax = plt.subplot(1, nt, i+1)
-        im = ax.contourf(x_plot.numpy(), y_plot.numpy(), u_snap, levels=20, cmap='RdBu_r')
+        im = ax.contourf(x_plot.cpu().numpy(), y_plot.cpu().numpy(), u_snap, levels=20, cmap='RdBu_r')
         ax.set_xlabel('x')
         ax.set_ylabel('y')
         ax.set_title(f't = {t_val:.2f}s')
@@ -163,7 +163,7 @@ def plot_solution_2d_comparison(model, a_test=0.5, b_test=0.0, source_type='zero
         
         # Column 2: PINN Prediction
         ax2 = plt.subplot(n_times, 3, row_idx*3 + 2)
-        im2 = ax2.contourf(X_pred.numpy(), Y_pred.numpy(), u_pred_grid, levels=20, cmap='RdBu_r', vmin=global_vmin, vmax=global_vmax)
+        im2 = ax2.contourf(X_pred.cpu().numpy(), Y_pred.cpu().numpy(), u_pred_grid, levels=20, cmap='RdBu_r', vmin=global_vmin, vmax=global_vmax)
         ax2.set_xlabel('x')
         ax2.set_ylabel('y')
         ax2.set_title(f'PINN Prediction (t={t_selected:.2f}s)')
@@ -172,7 +172,7 @@ def plot_solution_2d_comparison(model, a_test=0.5, b_test=0.0, source_type='zero
         
         # Column 3: Error
         ax3 = plt.subplot(n_times, 3, row_idx*3 + 3)
-        im3 = ax3.contourf(X_pred.numpy(), Y_pred.numpy(), error, levels=20, cmap='hot')
+        im3 = ax3.contourf(X_pred.cpu().numpy(), Y_pred.cpu().numpy(), error, levels=20, cmap='hot')
         ax3.set_xlabel('x')
         ax3.set_ylabel('y')
         ax3.set_title(f'Error (Rel L2: {rel_l2:.2e})')
