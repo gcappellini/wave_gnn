@@ -12,9 +12,9 @@ run:
   load_from: null #['2025-12-13','13-38-38']
   
   # Phase 1 Model Loading (Pretrained IC reconstruction)
-  load_pretrain: false
-  load_pretrain_from: null #['2025-12-13','13-38-38']
-  continue_phase1_lbfgs: false  # Continue Phase 1 training with LBFGS only (requires load_pretrain=true)
+  load_pretrain: true
+  load_pretrain_from: ['2025-12-16','23-22-53']
+  continue_phase1_lbfgs: true  # Continue Phase 1 training with LBFGS only (requires load_pretrain=true)
   
   # Resume Training (continue from checkpoint)
   resume_training: false
@@ -46,7 +46,7 @@ training:
   # Phase 1 (IC Pretraining) specific settings
   lr_scheduler_step_ph1: 500        # Epochs before reducing LR in Phase 1
   lr_scheduler_gamma_ph1: 0.5       # LR reduction factor in Phase 1 (0.5 = divide by 2)
-  use_lbfgs_finetune_ph1: False      # Enable LBFGS fine-tuning after Adam Phase 1
+  use_lbfgs_finetune_ph1: true      # Enable LBFGS fine-tuning after Adam Phase 1
   lbfgs_n_epochs_ph1: 100           # Number of LBFGS epochs in Phase 1
   lbfgs_lr_ph1: 0.001               # Learning rate for LBFGS in Phase 1
   lbfgs_max_iter_ph1: 20            # Max line search iterations per LBFGS step in Phase 1
