@@ -147,6 +147,20 @@ def main(cfg: DictConfig):
             log.info(f"  Test Metric: {checkpoint.get('test_metric', 'N/A')}")
             history = None
             training_time = None
+            
+            # Plot IC reconstruction for loaded pretrained model
+            from plot_2d import plot_ic_reconstruction
+            test_a = torch.tensor([[0.5, 0.3], [0.2, 0.1]]) if TRAINING_CASE == 'no_source' else torch.tensor([[0.0, 0.0], [0.0, 0.0]])
+            test_b = torch.tensor([[0.2, 0.1], [0.05, 0.025]]) if TRAINING_CASE == 'no_source' else torch.tensor([[0.0, 0.0], [0.0, 0.0]])
+            test_case = {
+                'a_coeffs': test_a,
+                'b_coeffs': test_b,
+                'center_x': 0.35,
+                'center_y': 0.65
+            }
+            log.info("Generating IC reconstruction diagnostic plot for loaded pretrained model...")
+            plot_ic_reconstruction(model, test_case, save_path=os.path.join(output_fold, 'ic_pretrain_diagnostic.png'), gt_data=gt_data)
+            log.info(f"IC reconstruction plot saved to {output_fold}/ic_pretrain_diagnostic.png")
         else:
             log.error(f"Pretrain checkpoint file {checkpoint_path} not found!")
             return
