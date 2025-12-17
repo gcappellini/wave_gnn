@@ -968,6 +968,22 @@ class PINNDeepONet_Wave2D(nn.Module):
         v0_temp = self.generate_ic_sine_series(b_temp)
         src_temp = self.generate_source(cfg.data.source_type, cfg.data.source_amplitude, cfg.data.center_x, cfg.data.center_y)
         
+        # Generate collocation points for context
+        x_colloc = self.domain[0] + (self.domain[1] - self.domain[0]) * torch.rand(cfg.data.n_colloc, device=device)
+        y_colloc = self.domain[0] + (self.domain[1] - self.domain[0]) * torch.rand(cfg.data.n_colloc, device=device)
+        t_colloc = torch.rand(cfg.data.n_colloc, device=device) * cfg.data.T_max
+        xyt_colloc = torch.stack([x_colloc, y_colloc, t_colloc], dim=1)
+        
+        # Generate IC points for context
+        n_grid_ic = int(np.sqrt(cfg.data.n_ic))
+        x_ic = torch.linspace(self.domain[0], self.domain[1], n_grid_ic, device=device)
+        y_ic = torch.linspace(self.domain[0], self.domain[1], n_grid_ic, device=device)
+        X_ic, Y_ic = torch.meshgrid(x_ic, y_ic, indexing='ij')
+        xyt_ic = torch.stack([X_ic.flatten(), Y_ic.flatten(), torch.zeros_like(X_ic.flatten())], dim=1)
+        
+        # Generate source collocation points
+        src_colloc = self.generate_source(cfg.data.source_type, cfg.data.source_amplitude, cfg.data.center_x, cfg.data.center_y)
+        
         loss_pde, loss_ic_u, loss_ic_v = self._compute_batch_losses(
             u0_temp, v0_temp, src_temp,
             cfg.data.n_colloc, cfg.data.n_ic, cfg.data.T_max,
@@ -976,7 +992,19 @@ class PINNDeepONet_Wave2D(nn.Module):
             a_temp, b_temp
         )
         
-        context = {'loss_values': {'PDE': loss_pde.item(), 'IC_u': loss_ic_u.item(), 'IC_v': loss_ic_v.item()}, 'model': self}
+        # Build full context with all required data
+        context = {
+            'loss_values': {'PDE': loss_pde.item(), 'IC_u': loss_ic_u.item(), 'IC_v': loss_ic_v.item()},
+            'model': self,
+            'xyt_colloc': xyt_colloc,
+            'xyt_ic': xyt_ic,
+            'u0_sensors': u0_temp,
+            'v0_sensors': v0_temp,
+            'src_sensors': src_temp,
+            'src_colloc': src_colloc,
+            'a_coeffs': a_temp,
+            'b_coeffs': b_temp
+        }
         return adaptive_weights.update(epoch, context)
     
     def _evaluate_test_set(self, test_cases, cfg, device):
