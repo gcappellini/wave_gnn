@@ -483,3 +483,178 @@ def plot_ic_reconstruction(model, test_case, n_grid=100, save_path="ic_reconstru
     log.info(f"Displacement error - MAE: {np.mean(np.abs(u0_error)):.6e}, Max: {np.max(np.abs(u0_error)):.6e}")
     # log.info(f"Velocity error     - MAE: {np.mean(np.abs(v0_error)):.6e}, Max: {np.max(np.abs(v0_error)):.6e}")
     model.train() # Restore training mode
+
+
+def plot_ic_v_reconstruction(model, test_case, n_grid=100, save_path="ic_v_reconstruction.png", gt_data=None):
+    """
+    Visualizes IC velocity (v0) reconstruction against ground truth.
+    Uses same style as plot_ic_reconstruction for consistency.
+    """
+    model.eval()  # Set model to evaluation mode
+    device = next(model.parameters()).device
+    
+    # 1. Generate Evaluation Grid
+    domain = model.domain
+    x_1d = torch.linspace(domain[0], domain[1], n_grid, device=device)
+    y_1d = torch.linspace(domain[0], domain[1], n_grid, device=device)
+    X, Y = torch.meshgrid(x_1d, y_1d, indexing='ij')
+    
+    # Collocation grid at t=0
+    xyt_eval = torch.stack([X.flatten(), Y.flatten(), torch.zeros_like(X.flatten())], dim=1)
+    
+    # 2. Get velocity from test case
+    with torch.no_grad():
+        if gt_data is not None:
+            # Extract velocity IC from MATLAB ground truth at t=0
+            x_gt = gt_data[:, 0]
+            y_gt = gt_data[:, 1]
+            t_gt = gt_data[:, 2]
+            v_gt = gt_data[:, 5]
+            
+            # Get unique time values
+            t_unique = np.unique(t_gt)
+            
+            # Find closest time to t=0
+            t_idx = np.argmin(np.abs(t_unique - 0.0))
+            t_selected = t_unique[t_idx]
+            
+            # Extract data at selected time
+            mask = np.abs(t_gt - t_selected) < 1e-6
+            x_selected = x_gt[mask]
+            y_selected = y_gt[mask]
+            v_selected = v_gt[mask]
+            
+            if len(x_selected) == 0:
+                log.warning("No ground truth velocity data at t=0, using test case instead")
+                a_coeffs = test_case['a_coeffs']
+                b_coeffs = test_case['b_coeffs']
+                u0_sensors = model.generate_ic_sine_series(a_coeffs)
+                v0_sensors = model.generate_ic_sine_series(b_coeffs)
+                v0_true_field = model.generate_ic_sine_series(b_coeffs, X.flatten(), Y.flatten())
+                gt_available = False
+            else:
+                from scipy.interpolate import griddata
+                x_unique = np.unique(x_selected)
+                y_unique = np.unique(y_selected)
+                X_gt, Y_gt = np.meshgrid(x_unique, y_unique, indexing='ij')
+                
+                # Interpolate ground truth to evaluation grid
+                points = np.column_stack([x_selected, y_selected])
+                v0_true_field = griddata(points, v_selected, (X.cpu().numpy(), Y.cpu().numpy()), method='linear')
+                v0_true_field = torch.tensor(v0_true_field, dtype=torch.float32, device=device)
+                
+                # Extract coefficients from ground truth if possible
+                a_coeffs = test_case['a_coeffs']
+                b_coeffs = test_case['b_coeffs']
+                u0_sensors = model.generate_ic_sine_series(a_coeffs)
+                v0_sensors = model.generate_ic_sine_series(b_coeffs)
+                gt_available = True
+        else:
+            a_coeffs = test_case['a_coeffs']
+            b_coeffs = test_case['b_coeffs']
+            u0_sensors = model.generate_ic_sine_series(a_coeffs)
+            v0_sensors = model.generate_ic_sine_series(b_coeffs)
+            v0_true_field = model.generate_ic_sine_series(b_coeffs, X.flatten(), Y.flatten())
+            gt_available = False
+        
+        # Get model velocity prediction at t=0 (get_velocity handles gradients internally)
+        src_sensors = model.generate_source('zero')
+        v0_pred_field = model.get_velocity(u0_sensors, v0_sensors, src_sensors, xyt_eval).detach()
+        v0_true_field_tensor = v0_true_field if isinstance(v0_true_field, torch.Tensor) else torch.tensor(v0_true_field, dtype=torch.float32, device=device)
+        
+        # Reshape to grid
+        v0_pred_grid = v0_pred_field.reshape(n_grid, n_grid).cpu().numpy()
+        v0_true_grid = v0_true_field_tensor.reshape(n_grid, n_grid).cpu().numpy()
+        
+        # Compute error
+        v0_error = v0_pred_grid - v0_true_grid
+    
+    # Color scaling (95th percentile for better contrast)
+    vmax_v = max(np.percentile(np.abs(v0_true_grid), 95), np.percentile(np.abs(v0_pred_grid), 95))
+    err_vmax_v = np.percentile(np.abs(v0_error), 95)
+    
+    # Create figure: 1 row x 3 columns (same style as IC_U)
+    fig, axes = plt.subplots(1, 3, figsize=(13, 6))
+    
+    source_label = "MATLAB GT" if gt_available else "Generated"
+    
+    # PINN Velocity
+    c0 = axes[0].contourf(X.cpu().numpy(), Y.cpu().numpy(), v0_pred_grid, levels=50, cmap='RdBu_r', vmax=vmax_v, vmin=-vmax_v)
+    axes[0].set_ylabel('y', fontsize=11)
+    axes[0].set_title(r'$v_0$ PINN', fontsize=11, fontweight='bold')
+    fig.colorbar(c0, ax=axes[0], fraction=0.046, pad=0.04)
+    
+    # Ground Truth Velocity
+    c1 = axes[1].contourf(X.cpu().numpy(), Y.cpu().numpy(), v0_true_grid, levels=50, cmap='RdBu_r', vmax=vmax_v, vmin=-vmax_v)
+    axes[1].set_title(f'$v_0$ {source_label}', fontsize=11, fontweight='bold')
+    fig.colorbar(c1, ax=axes[1], fraction=0.046, pad=0.04)
+    
+    # Velocity Error (signed)
+    c2 = axes[2].contourf(X.cpu().numpy(), Y.cpu().numpy(), v0_error, levels=50, cmap='RdBu_r', vmax=err_vmax_v, vmin=-err_vmax_v)
+    axes[2].set_title(f'Error $v_0$ (MAE={np.mean(np.abs(v0_error)):.2e})', fontsize=11, fontweight='bold')
+    fig.colorbar(c2, ax=axes[2], fraction=0.046, pad=0.04)
+    
+    plt.subplots_adjust(left=0.08, right=0.98, top=0.96, bottom=0.08, wspace=0.4, hspace=0.3)
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    log.info(f"IC Velocity Reconstruction plot saved to {save_path}")
+    log.info(f"Velocity error - MAE: {np.mean(np.abs(v0_error)):.6e}, Max: {np.max(np.abs(v0_error)):.6e}")
+    model.train()  # Restore training mode
+
+
+def plot_loss_history(history, save_path="loss_history.png"):
+    """
+    Plot the entire training loss history across all stages.
+    
+    Args:
+        history: Dictionary with keys like 'epoch', 'loss_ic_u', 'loss_ic_v', 'loss_pde', etc.
+        save_path: Path to save the plot
+    """
+    if not history or len(history.get('epoch', [])) == 0:
+        log.warning("No training history available to plot")
+        return
+    
+    epochs = history.get('epoch', [])
+    
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    
+    # Plot 1: IC_U Loss
+    if 'loss_ic_u' in history:
+        axes[0, 0].semilogy(epochs, history['loss_ic_u'], 'b-', linewidth=2, label='IC_U Loss')
+        axes[0, 0].set_xlabel('Epoch')
+        axes[0, 0].set_ylabel('Loss')
+        axes[0, 0].set_title('Initial Condition (Displacement)', fontsize=12, fontweight='bold')
+        axes[0, 0].grid(True, alpha=0.3)
+        axes[0, 0].legend()
+    
+    # Plot 2: IC_V Loss
+    if 'loss_ic_v' in history:
+        axes[0, 1].semilogy(epochs, history['loss_ic_v'], 'g-', linewidth=2, label='IC_V Loss')
+        axes[0, 1].set_xlabel('Epoch')
+        axes[0, 1].set_ylabel('Loss')
+        axes[0, 1].set_title('Initial Condition (Velocity)', fontsize=12, fontweight='bold')
+        axes[0, 1].grid(True, alpha=0.3)
+        axes[0, 1].legend()
+    
+    # Plot 3: PDE Loss
+    if 'loss_pde' in history:
+        axes[1, 0].semilogy(epochs, history['loss_pde'], 'r-', linewidth=2, label='PDE Loss')
+        axes[1, 0].set_xlabel('Epoch')
+        axes[1, 0].set_ylabel('Loss')
+        axes[1, 0].set_title('PDE Residual', fontsize=12, fontweight='bold')
+        axes[1, 0].grid(True, alpha=0.3)
+        axes[1, 0].legend()
+    
+    # Plot 4: Total Loss
+    if 'loss_total' in history:
+        axes[1, 1].semilogy(epochs, history['loss_total'], 'k-', linewidth=2, label='Total Loss')
+        axes[1, 1].set_xlabel('Epoch')
+        axes[1, 1].set_ylabel('Loss')
+        axes[1, 1].set_title('Total Loss (All Components)', fontsize=12, fontweight='bold')
+        axes[1, 1].grid(True, alpha=0.3)
+        axes[1, 1].legend()
+    
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    log.info(f"Loss history plot saved to {save_path}")

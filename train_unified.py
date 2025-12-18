@@ -109,12 +109,12 @@ class UnifiedTrainer:
             log.info(f"Weights -> IC_u: {stage.weights.w_ic_u:.2f}, IC_v: {stage.weights.w_ic_v:.2f}, PDE: {stage.weights.w_pde:.2f}")
             log.info(f"{'='*70}\n")
             
-            # Setup optimizer for this stage
+            # Setup optimizer for this stage with exponential LR decay
             optimizer = torch.optim.Adam(self.model.parameters(), lr=stage.lr)
-            lr_scheduler = torch.optim.lr_scheduler.StepLR(
+            # ExponentialLR: LR decays every epoch as: lr = initial_lr * gamma^epoch
+            lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(
                 optimizer,
-                step_size=self.cfg.training.get('lr_scheduler_step', 50),
-                gamma=self.cfg.training.get('lr_scheduler_gamma', 0.5)
+                gamma=self.cfg.training.get('lr_scheduler_gamma', 0.995)
             )
             
             # ===== EPOCH LOOP =====
@@ -124,18 +124,27 @@ class UnifiedTrainer:
                 loss_ic_v_accum = 0.0
                 loss_pde_accum = 0.0
                 
+                batch_size = self.cfg.training.get('batch_size', 8)
+                
                 # ===== BATCH LOOP =====
                 for batch_idx in range(n_batches):
                     # Sample IC coefficients
-                    a_batch = torch.stack([
-                        sample_coeffs(n_ic_u, a_range, p=3.0, as_2d=True, device=self.device)
-                        for _ in range(batch_size)
-                    ])  # (batch_size, 2)
+                    a_coeffs_list = []
+                    b_coeffs_list = []
                     
-                    b_batch = torch.stack([
-                        sample_coeffs(n_ic_v, b_range, p=3.0, as_2d=True, device=self.device)
-                        for _ in range(batch_size)
-                    ])  # (batch_size, 2)
+                    for _ in range(batch_size):
+                        # Sample scalar or 1D coefficients, NOT 2D
+                        a_coeff = torch.randn(self.cfg.data.get('n_ic_u', 2), device=self.device)
+                        b_coeff = torch.randn(self.cfg.data.get('n_ic_v', 2), device=self.device)
+                        a_coeffs_list.append(a_coeff)
+                        b_coeffs_list.append(b_coeff)
+                    
+                    a_batch = torch.stack(a_coeffs_list)  # (batch_size, n_ic_u)
+                    b_batch = torch.stack(b_coeffs_list)  # (batch_size, n_ic_v)
+                    
+                    # Clamp to valid ranges
+                    a_batch = torch.clamp(a_batch, self.cfg.data.a_range[0], self.cfg.data.a_range[1])
+                    b_batch = torch.clamp(b_batch, self.cfg.data.b_range[0], self.cfg.data.b_range[1])
                     
                     # Generate IC fields (sensors)
                     u0_sensors = self.model.generate_ic_sine_series(a_batch)
@@ -154,6 +163,7 @@ class UnifiedTrainer:
                     
                     # Forward pass at IC
                     u0_pred = self.model.forward(u0_sensors, v0_sensors, src_sensors, xyt_ic)
+                    v0_pred = self.model.get_velocity(u0_sensors, v0_sensors, src_sensors, xyt_ic)
                     
                     # Compute true IC values
                     u0_true = self.model.generate_ic_sine_series(a_batch, x_ic_flat, y_ic_flat)
@@ -173,17 +183,21 @@ class UnifiedTrainer:
                         t_colloc = torch.rand(n_colloc, device=self.device) * self.cfg.data.T_max
                         xyt_colloc = torch.stack([x_colloc, y_colloc, t_colloc], dim=-1)
                         
-                        src_colloc = self.model.generate_source(
-                            self.cfg.data.source_type,
-                            self.cfg.data.source_amplitude,
-                            self.cfg.data.center_x,
-                            self.cfg.data.center_y
-                        )
+                        # Compute source values AT COLLOCATION POINTS (not at sensor grid)
+                        if self.cfg.data.source_type == 'gaussian':
+                            # Gaussian source centered at (center_x, center_y)
+                            cx, cy = self.cfg.data.center_x, self.cfg.data.center_y
+                            sigma = 0.1
+                            src_values_colloc = (self.cfg.data.source_amplitude * 
+                                               torch.exp(-((x_colloc - cx)**2 + (y_colloc - cy)**2) / (2 * sigma**2)))
+                        else:
+                            # Zero source
+                            src_values_colloc = torch.zeros(n_colloc, device=self.device)
                         
                         # Compute PDE residual (using existing method)
                         loss_pde = self.model.compute_pde_residual(
                             u0_sensors, v0_sensors, src_sensors,
-                            xyt_colloc, src_colloc
+                            xyt_colloc, src_values_colloc
                         ).mean()
                     
                     # Weighted loss
@@ -288,10 +302,15 @@ class UnifiedTrainer:
                 X_ic, Y_ic = torch.meshgrid(x_ic, y_ic, indexing='ij')
                 xyt_ic = torch.stack([X_ic.flatten(), Y_ic.flatten(), torch.zeros_like(X_ic.flatten())], dim=-1)
                 
+                # Predict IC and compute time derivatives
                 u0_pred = self.model.forward(u0_sensors, v0_sensors, src_sensors, xyt_ic)
+                v0_pred = self.model.compute_time_derivative(u0_sensors, v0_sensors, src_sensors, xyt_ic)
+                
+                # True IC values
                 u0_true = self.model.generate_ic_sine_series(test_case['a_coeffs'], X_ic.flatten(), Y_ic.flatten())
                 v0_true = self.model.generate_ic_sine_series(test_case['b_coeffs'], X_ic.flatten(), Y_ic.flatten())
                 
+                # IC losses
                 val_ic_u += torch.mean((u0_pred - u0_true) ** 2).item()
                 val_ic_v += torch.mean((v0_pred - v0_true) ** 2).item()
                 
@@ -301,13 +320,17 @@ class UnifiedTrainer:
                     y_colloc = self.model.domain[0] + (self.model.domain[1] - self.model.domain[0]) * torch.rand(256, device=self.device)
                     t_colloc = torch.rand(256, device=self.device) * self.cfg.data.T_max
                     xyt_colloc = torch.stack([x_colloc, y_colloc, t_colloc], dim=-1)
-                    src_colloc = self.model.generate_source(
-                        self.cfg.data.source_type,
-                        self.cfg.data.source_amplitude,
-                        test_case['center_x'],
-                        test_case['center_y']
-                    )
-                    val_pde += self.model.compute_pde_residual(u0_sensors, v0_sensors, src_sensors, xyt_colloc, src_colloc).mean().item()
+                    
+                    # Compute source values AT COLLOCATION POINTS
+                    if self.cfg.data.source_type == 'gaussian':
+                        cx, cy = test_case['center_x'], test_case['center_y']
+                        sigma = 0.1
+                        src_values_colloc = (self.cfg.data.source_amplitude * 
+                                           torch.exp(-((x_colloc - cx)**2 + (y_colloc - cy)**2) / (2 * sigma**2)))
+                    else:
+                        src_values_colloc = torch.zeros(256, device=self.device)
+                    
+                    val_pde += self.model.compute_pde_residual(u0_sensors, v0_sensors, src_sensors, xyt_colloc, src_values_colloc).mean().item()
         
         n_test = len(test_cases)
         val_ic_u /= n_test

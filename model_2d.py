@@ -289,6 +289,7 @@ class PINNDeepONet_Wave2D(nn.Module):
     def get_velocity(self, u0_sensors, v0_sensors, src_sensors, xyt, create_graph=False):
         """
         Compute time derivative of displacement (velocity) at inference or training.
+        Works correctly even when called from within torch.no_grad() context.
         
         Args:
             u0_sensors: (n_sensors²,) - displacement IC on 2D grid (flattened)
@@ -300,19 +301,21 @@ class PINNDeepONet_Wave2D(nn.Module):
         Returns:
             u_t: (n_points,) - time derivative of displacement (velocity field)
         """
-        # Ensure xyt requires gradients for differentiation
-        xyt_grad = xyt.clone().requires_grad_(True)
-        
-        # Forward pass
-        u = self.forward(u0_sensors, v0_sensors, src_sensors, xyt_grad)
-        
-        # Compute time derivative using autograd
-        u_t = torch.autograd.grad(
-            u, xyt_grad,
-            torch.ones_like(u),
-            create_graph=create_graph,
-            retain_graph=False
-        )[0][:, 2]  # Extract time component (column 2)
+        # Enable gradients for this operation even if in no_grad context
+        with torch.enable_grad():
+            # Clone and enable gradients on the clone
+            xyt_grad = xyt.clone().requires_grad_(True)
+            
+            # Forward pass
+            u = self.forward(u0_sensors, v0_sensors, src_sensors, xyt_grad)
+            
+            # Compute time derivative using autograd
+            u_t = torch.autograd.grad(
+                u, xyt_grad,
+                torch.ones_like(u),
+                create_graph=create_graph,
+                retain_graph=False
+            )[0][:, 2]  # Extract time component (column 2)
         
         return u_t
     
