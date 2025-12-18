@@ -22,7 +22,7 @@ training:
   lr_scheduler_gamma: 0.995  # Exponential decay factor per epoch (0.995 = ~0.5% decay/epoch)
   # log_interval: 200
   val_interval: 20
-  es_patience: 5000
+  es_patience: 40000
   max_grad_norm: 1.0
   max_grad_ph1: 0.6
   n_batches: 16
@@ -41,7 +41,7 @@ training:
     enabled: true
     stages:
       - name: "IC_u_pretraining"
-        epochs: 1 #4000
+        epochs: 4000
         weights:
           w_ic_u: 1.0
           w_ic_v: 0.0
@@ -49,18 +49,18 @@ training:
         lr: 1.0e-3
         
       - name: "IC_v_training"
-        epochs: 1 #4000
+        epochs: 4000
         weights:
-          w_ic_u: 1.0
+          w_ic_u: 11.70
           w_ic_v: 1.0
           w_pde: 0.0
         lr: 5.0e-4
         
       - name: "PDE_training"
-        epochs: 1 #4000
+        epochs: 20000
         weights:
-          w_ic_u: 1.0
-          w_ic_v: 1.0
+          w_ic_u: 664.0
+          w_ic_v: 56.4
           w_pde: 1.0
         lr: 1.0e-4
 
