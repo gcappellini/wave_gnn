@@ -616,7 +616,7 @@ def plot_loss_history(history, save_path="loss_history.png"):
     
     epochs = history.get('epoch', [])
     
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
     
     # Plot 1: IC_U Loss
     if 'loss_ic_u' in history:
@@ -638,21 +638,40 @@ def plot_loss_history(history, save_path="loss_history.png"):
     
     # Plot 3: PDE Loss
     if 'loss_pde' in history:
-        axes[1, 0].semilogy(epochs, history['loss_pde'], 'r-', linewidth=2, label='PDE Loss')
-        axes[1, 0].set_xlabel('Epoch')
-        axes[1, 0].set_ylabel('Loss')
-        axes[1, 0].set_title('PDE Residual', fontsize=12, fontweight='bold')
-        axes[1, 0].grid(True, alpha=0.3)
-        axes[1, 0].legend()
+        axes[0, 2].semilogy(epochs, history['loss_pde'], 'r-', linewidth=2, label='PDE Loss')
+        axes[0, 2].set_xlabel('Epoch')
+        axes[0, 2].set_ylabel('Loss')
+        axes[0, 2].set_title('PDE Residual', fontsize=12, fontweight='bold')
+        axes[0, 2].grid(True, alpha=0.3)
+        axes[0, 2].legend()
     
     # Plot 4: Total Loss
     if 'loss_total' in history:
-        axes[1, 1].semilogy(epochs, history['loss_total'], 'k-', linewidth=2, label='Total Loss')
+        axes[1, 0].semilogy(epochs, history['loss_total'], 'k-', linewidth=2, label='Total Loss')
+        axes[1, 0].set_xlabel('Epoch')
+        axes[1, 0].set_ylabel('Loss')
+        axes[1, 0].set_title('Total Loss (All Components)', fontsize=12, fontweight='bold')
+        axes[1, 0].grid(True, alpha=0.3)
+        axes[1, 0].legend()
+    
+    # Plot 5: Learning Rate
+    if 'lr' in history and len(history['lr']) > 0:
+        axes[1, 1].semilogy(epochs, history['lr'], 'purple', linewidth=2, label='Learning Rate')
         axes[1, 1].set_xlabel('Epoch')
-        axes[1, 1].set_ylabel('Loss')
-        axes[1, 1].set_title('Total Loss (All Components)', fontsize=12, fontweight='bold')
+        axes[1, 1].set_ylabel('LR')
+        axes[1, 1].set_title('Learning Rate Schedule', fontsize=12, fontweight='bold')
         axes[1, 1].grid(True, alpha=0.3)
         axes[1, 1].legend()
+    
+    # Plot 6: Validation Metric
+    if 'val_metric' in history and len(history['val_metric']) > 0:
+        val_epochs = history.get('val_epochs', [])
+        axes[1, 2].semilogy(val_epochs, history['val_metric'], 'o-', color='#E6B89C', linewidth=2, markersize=6, label='Validation Metric')
+        axes[1, 2].set_xlabel('Epoch')
+        axes[1, 2].set_ylabel('Test Metric')
+        axes[1, 2].set_title('Total Test Metric', fontsize=12, fontweight='bold')
+        axes[1, 2].grid(True, alpha=0.3)
+        axes[1, 2].legend()
     
     plt.tight_layout()
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
