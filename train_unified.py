@@ -161,21 +161,35 @@ class UnifiedTrainer:
                     xyt_ic = torch.stack([x_ic_flat, y_ic_flat, t_ic], dim=-1)
                     xyt_ic.requires_grad_(True)
                     
-                    # Forward pass at IC
-                    u0_pred = self.model.forward(u0_sensors, v0_sensors, src_sensors, xyt_ic)
-                    v0_pred = self.model.get_velocity(u0_sensors, v0_sensors, src_sensors, xyt_ic)
+                    # Extract weights for this stage
+                    w_ic_u = stage.weights.w_ic_u
+                    w_ic_v = stage.weights.w_ic_v
+                    w_pde = stage.weights.w_pde
                     
-                    # Compute true IC values
-                    u0_true = self.model.generate_ic_sine_series(a_batch, x_ic_flat, y_ic_flat)
-                    v0_true = self.model.generate_ic_sine_series(b_batch, x_ic_flat, y_ic_flat)
+                    # IC losses - only compute if weight > 0
+                    loss_ic_u = torch.tensor(0.0, device=self.device)
+                    loss_ic_v = torch.tensor(0.0, device=self.device)
                     
-                    # IC losses
-                    loss_ic_u = torch.mean((u0_pred - u0_true) ** 2)
-                    loss_ic_v = torch.mean((v0_pred - v0_true) ** 2) if stage.weights.w_ic_v > 0 else torch.tensor(0.0, device=self.device)
+                    if w_ic_u > 0 or w_ic_v > 0:
+                        # Forward pass at IC
+                        u0_pred = self.model.forward(u0_sensors, v0_sensors, src_sensors, xyt_ic)
+                        
+                        # Compute true IC values
+                        u0_true = self.model.generate_ic_sine_series(a_batch, x_ic_flat, y_ic_flat)
+                        
+                        # Displacement loss (if needed)
+                        if w_ic_u > 0:
+                            loss_ic_u = torch.mean((u0_pred - u0_true) ** 2)
+                        
+                        # Velocity loss (if needed)
+                        if w_ic_v > 0:
+                            v0_pred = self.model.get_velocity(u0_sensors, v0_sensors, src_sensors, xyt_ic)
+                            v0_true = self.model.generate_ic_sine_series(b_batch, x_ic_flat, y_ic_flat)
+                            loss_ic_v = torch.mean((v0_pred - v0_true) ** 2)
                     
                     # PDE loss (if stage requires it)
                     loss_pde = torch.tensor(0.0, device=self.device)
-                    if stage.weights.w_pde > 0:
+                    if w_pde > 0:
                         # Sample collocation points for PDE
                         n_colloc = self.cfg.data.get('n_colloc', 256)
                         x_colloc = self.model.domain[0] + (self.model.domain[1] - self.model.domain[0]) * torch.rand(n_colloc, device=self.device)
@@ -201,10 +215,6 @@ class UnifiedTrainer:
                         ).mean()
                     
                     # Weighted loss
-                    w_ic_u = stage.weights.w_ic_u
-                    w_ic_v = stage.weights.w_ic_v
-                    w_pde = stage.weights.w_pde
-                    
                     loss_total = w_ic_u * loss_ic_u + w_ic_v * loss_ic_v + w_pde * loss_pde
                     
                     # Backward pass
@@ -237,7 +247,7 @@ class UnifiedTrainer:
                 
                 # Validation
                 if (global_epoch + 1) % val_interval == 0:
-                    val_ic_u, val_ic_v, val_pde, val_metric = self._validate(test_cases)
+                    val_ic_u, val_ic_v, val_pde, val_metric = self._validate(test_cases, stage)
                     self.training_history['val_epochs'].append(global_epoch)
                     self.training_history['val_loss_ic_u'].append(val_ic_u)
                     self.training_history['val_loss_ic_v'].append(val_ic_v)
@@ -276,12 +286,17 @@ class UnifiedTrainer:
         
         return self.training_history
     
-    def _validate(self, test_cases):
-        """Validate model on test set."""
+    def _validate(self, test_cases, stage):
+        """Validate model on test set, skipping zero-weight terms."""
         self.model.eval()
         val_ic_u = 0.0
         val_ic_v = 0.0
         val_pde = 0.0
+        
+        # Get weights for current stage
+        w_ic_u = stage.weights.w_ic_u
+        w_ic_v = stage.weights.w_ic_v
+        w_pde = stage.weights.w_pde
         
         with torch.no_grad():
             for test_case in test_cases:
@@ -295,31 +310,35 @@ class UnifiedTrainer:
                     test_case['center_y']
                 )
                 
-                # IC evaluation
-                n_ic_grid = int(np.sqrt(self.cfg.data.n_ic))
-                x_ic = torch.linspace(self.model.domain[0], self.model.domain[1], n_ic_grid, device=self.device)
-                y_ic = torch.linspace(self.model.domain[0], self.model.domain[1], n_ic_grid, device=self.device)
-                X_ic, Y_ic = torch.meshgrid(x_ic, y_ic, indexing='ij')
-                xyt_ic = torch.stack([X_ic.flatten(), Y_ic.flatten(), torch.zeros_like(X_ic.flatten())], dim=-1)
-                
-                # Predict IC and compute time derivatives
-                u0_pred = self.model.forward(u0_sensors, v0_sensors, src_sensors, xyt_ic)
-                v0_pred = self.model.compute_time_derivative(u0_sensors, v0_sensors, src_sensors, xyt_ic)
-                
-                # True IC values
-                u0_true = self.model.generate_ic_sine_series(test_case['a_coeffs'], X_ic.flatten(), Y_ic.flatten())
-                v0_true = self.model.generate_ic_sine_series(test_case['b_coeffs'], X_ic.flatten(), Y_ic.flatten())
-                
-                # IC losses
-                val_ic_u += torch.mean((u0_pred - u0_true) ** 2).item()
-                val_ic_v += torch.mean((v0_pred - v0_true) ** 2).item()
+                # IC evaluation - only compute if weights > 0
+                if w_ic_u > 0 or w_ic_v > 0:
+                    n_ic_grid = int(np.sqrt(self.cfg.data.n_ic))
+                    x_ic = torch.linspace(self.model.domain[0], self.model.domain[1], n_ic_grid, device=self.device)
+                    y_ic = torch.linspace(self.model.domain[0], self.model.domain[1], n_ic_grid, device=self.device)
+                    X_ic, Y_ic = torch.meshgrid(x_ic, y_ic, indexing='ij')
+                    xyt_ic = torch.stack([X_ic.flatten(), Y_ic.flatten(), torch.zeros_like(X_ic.flatten())], dim=-1)
+                    
+                    # True IC values
+                    u0_true = self.model.generate_ic_sine_series(test_case['a_coeffs'], X_ic.flatten(), Y_ic.flatten())
+                    v0_true = self.model.generate_ic_sine_series(test_case['b_coeffs'], X_ic.flatten(), Y_ic.flatten())
+                    
+                    # Displacement IC
+                    if w_ic_u > 0:
+                        u0_pred = self.model.forward(u0_sensors, v0_sensors, src_sensors, xyt_ic)
+                        val_ic_u += torch.mean((u0_pred - u0_true) ** 2).item()
+                    
+                    # Velocity IC
+                    if w_ic_v > 0:
+                        v0_pred = self.model.get_velocity(u0_sensors, v0_sensors, src_sensors, xyt_ic)
+                        val_ic_v += torch.mean((v0_pred - v0_true) ** 2).item()
                 
                 # PDE evaluation
-                if self.cfg.training.loss_schedule.stages[-1].weights.w_pde > 0:
+                if w_pde > 0:
                     x_colloc = self.model.domain[0] + (self.model.domain[1] - self.model.domain[0]) * torch.rand(256, device=self.device)
                     y_colloc = self.model.domain[0] + (self.model.domain[1] - self.model.domain[0]) * torch.rand(256, device=self.device)
                     t_colloc = torch.rand(256, device=self.device) * self.cfg.data.T_max
                     xyt_colloc = torch.stack([x_colloc, y_colloc, t_colloc], dim=-1)
+                    xyt_colloc.requires_grad_(True)  # Enable gradients for PDE residual computation
                     
                     # Compute source values AT COLLOCATION POINTS
                     if self.cfg.data.source_type == 'gaussian':
