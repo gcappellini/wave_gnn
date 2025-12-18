@@ -332,24 +332,25 @@ class UnifiedTrainer:
                         v0_pred = self.model.get_velocity(u0_sensors, v0_sensors, src_sensors, xyt_ic)
                         val_ic_v += torch.mean((v0_pred - v0_true) ** 2).item()
                 
-                # PDE evaluation
+                # PDE evaluation - requires gradients
                 if w_pde > 0:
-                    x_colloc = self.model.domain[0] + (self.model.domain[1] - self.model.domain[0]) * torch.rand(256, device=self.device)
-                    y_colloc = self.model.domain[0] + (self.model.domain[1] - self.model.domain[0]) * torch.rand(256, device=self.device)
-                    t_colloc = torch.rand(256, device=self.device) * self.cfg.data.T_max
-                    xyt_colloc = torch.stack([x_colloc, y_colloc, t_colloc], dim=-1)
-                    xyt_colloc.requires_grad_(True)  # Enable gradients for PDE residual computation
-                    
-                    # Compute source values AT COLLOCATION POINTS
-                    if self.cfg.data.source_type == 'gaussian':
-                        cx, cy = test_case['center_x'], test_case['center_y']
-                        sigma = 0.1
-                        src_values_colloc = (self.cfg.data.source_amplitude * 
-                                           torch.exp(-((x_colloc - cx)**2 + (y_colloc - cy)**2) / (2 * sigma**2)))
-                    else:
-                        src_values_colloc = torch.zeros(256, device=self.device)
-                    
-                    val_pde += self.model.compute_pde_residual(u0_sensors, v0_sensors, src_sensors, xyt_colloc, src_values_colloc).mean().item()
+                    with torch.enable_grad():
+                        x_colloc = self.model.domain[0] + (self.model.domain[1] - self.model.domain[0]) * torch.rand(256, device=self.device)
+                        y_colloc = self.model.domain[0] + (self.model.domain[1] - self.model.domain[0]) * torch.rand(256, device=self.device)
+                        t_colloc = torch.rand(256, device=self.device) * self.cfg.data.T_max
+                        xyt_colloc = torch.stack([x_colloc, y_colloc, t_colloc], dim=-1)
+                        xyt_colloc.requires_grad_(True)  # Enable gradients for PDE residual computation
+                        
+                        # Compute source values AT COLLOCATION POINTS
+                        if self.cfg.data.source_type == 'gaussian':
+                            cx, cy = test_case['center_x'], test_case['center_y']
+                            sigma = 0.1
+                            src_values_colloc = (self.cfg.data.source_amplitude * 
+                                               torch.exp(-((x_colloc - cx)**2 + (y_colloc - cy)**2) / (2 * sigma**2)))
+                        else:
+                            src_values_colloc = torch.zeros(256, device=self.device)
+                        
+                        val_pde += self.model.compute_pde_residual(u0_sensors, v0_sensors, src_sensors, xyt_colloc, src_values_colloc).mean().item()
         
         n_test = len(test_cases)
         val_ic_u /= n_test
