@@ -8,13 +8,13 @@ hydra:
 # Run settings
 run:
   # Model Loading
-  load_model: true
+  load_model: false
   load_from: ['2025-12-18','01-11-20']  # [date, time] of checkpoint to load
   
   # Resume Training (continue from checkpoint)
   # Only used if load_model=true
   # If false: skip training and go directly to validation
-  resume_training: false
+  resume_training: true
 
 training:
   n_epochs: 40000
