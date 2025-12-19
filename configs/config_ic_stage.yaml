@@ -19,7 +19,7 @@ run:
 training:
   n_epochs: 40000
   lr: 0.001
-  lr_scheduler_gamma: 0.995  # Exponential decay factor per epoch (0.995 = ~0.5% decay/epoch)
+  lr_scheduler_gamma: 1.0  # Exponential decay factor per epoch (0.995 = ~0.5% decay/epoch)
   # log_interval: 200
   val_interval: 20
   es_patience: 40000
