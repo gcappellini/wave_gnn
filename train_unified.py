@@ -109,12 +109,18 @@ class UnifiedTrainer:
             log.info(f"Weights -> IC_u: {stage.weights.w_ic_u:.2f}, IC_v: {stage.weights.w_ic_v:.2f}, PDE: {stage.weights.w_pde:.2f}")
             log.info(f"{'='*70}\n")
             
-            # Setup optimizer for this stage with exponential LR decay
+            # Setup optimizer for this stage
             optimizer = torch.optim.Adam(self.model.parameters(), lr=stage.lr)
-            # ExponentialLR: LR decays every epoch as: lr = initial_lr * gamma^epoch
-            lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(
+            # ReduceLROnPlateau: reduce LR only when metric stops improving
+            lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
                 optimizer,
-                gamma=self.cfg.training.get('lr_scheduler_gamma', 0.995)
+                mode='min',
+                factor=self.cfg.training.get('lr_reduce_factor', 0.5),
+                patience=self.cfg.training.get('lr_patience', 5),
+                threshold=self.cfg.training.get('lr_threshold', 1e-4),
+                cooldown=self.cfg.training.get('lr_cooldown', 0),
+                min_lr=self.cfg.training.get('min_lr', 1e-6),
+                verbose=False
             )
             
             # ===== EPOCH LOOP =====
@@ -228,9 +234,7 @@ class UnifiedTrainer:
                     loss_ic_v_accum += loss_ic_v.item() / n_batches
                     loss_pde_accum += loss_pde.item() / n_batches
                 
-                # Update LR
-                lr_scheduler.step()
-                current_lr = optimizer.param_groups[0]['lr']
+                # Accumulated total loss for logging
                 loss_total_accum = w_ic_u * loss_ic_u_accum + w_ic_v * loss_ic_v_accum + w_pde * loss_pde_accum
                 
                 # Log to history
@@ -253,6 +257,8 @@ class UnifiedTrainer:
                     self.training_history['val_loss_ic_v'].append(val_ic_v)
                     self.training_history['val_loss_pde'].append(val_pde)
                     self.training_history['val_metric'].append(val_metric)
+                    # Step LR scheduler based on validation metric (plateau)
+                    lr_scheduler.step(val_metric)
                     
                     if val_metric < best_metric:
                         best_metric = val_metric
@@ -265,6 +271,19 @@ class UnifiedTrainer:
                     log.info(f"Stage {stage_idx + 1} | Ep {epoch_in_stage + 1:3d}/{stage.epochs} | "
                             f"Loss: {loss_total_accum:.4e} | IC_u: {loss_ic_u_accum:.4e} | "
                             f"IC_v: {loss_ic_v_accum:.4e} | PDE: {loss_pde_accum:.4e}")
+                
+                # Record current LR after potential scheduler update
+                current_lr = optimizer.param_groups[0]['lr']
+                self.training_history['epoch'].append(global_epoch)
+                self.training_history['stage'].append(stage.name)
+                self.training_history['loss_total'].append(loss_total_accum)
+                self.training_history['loss_ic_u'].append(loss_ic_u_accum)
+                self.training_history['loss_ic_v'].append(loss_ic_v_accum)
+                self.training_history['loss_pde'].append(loss_pde_accum)
+                self.training_history['w_ic_u'].append(w_ic_u)
+                self.training_history['w_ic_v'].append(w_ic_v)
+                self.training_history['w_pde'].append(w_pde)
+                self.training_history['lr'].append(current_lr)
                 
                 global_epoch += 1
         

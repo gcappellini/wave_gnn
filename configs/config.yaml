@@ -34,6 +34,13 @@ training:
   train_lbfgs: False  
   n_epochs_pretrain: 4000
 
+  # LR scheduling via ReduceLROnPlateau (stepped on validation only)
+  lr_reduce_factor: 0.5     # multiply LR by this factor on plateau
+  lr_patience: 5            # number of validations with no improvement before reducing
+  lr_threshold: 1.0e-4      # minimum relative improvement to count as better
+  lr_cooldown: 0            # validations to ignore after a reduction
+  min_lr: 1.0e-6            # lower bound for LR
+
   # ============================================================
   # Loss Weight Scheduling (Unified Training Approach)
   # ============================================================
