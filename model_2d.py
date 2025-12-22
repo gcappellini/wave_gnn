@@ -84,6 +84,85 @@ class BranchNet(nn.Module):
         x = self.output_layer(x)
         return x
 
+
+class ConvBranchNet(nn.Module):
+    """Convolutional Branch Network: preserves spatial structure of 2D IC fields.
+    
+    This network processes the initial conditions (u0, v0) as 2D images instead of
+    flattened vectors, capturing spatial locality and reducing optimization bottlenecks.
+    
+    Architecture:
+        - Input: (Batch, Channels=2, N, N) where N is the grid size
+        - Conv2d layers with ReLU activations and downsampling
+        - Global Average Pooling for resolution-independence
+        - Final Linear layer to project to output_dim (DeepONet rank p)
+    
+    Args:
+        n_sensors_per_dim: Grid size N (e.g., 10 for 10x10 = 100 sensors)
+        output_dim: Output dimension (typically 2*p for IC branch encoding u0 and v0)
+        n_channels: Number of input channels (default: 2 for u0, v0)
+        hidden_channels: List of channel sizes for conv layers (default: [16, 32, 64])
+    """
+    def __init__(self, n_sensors_per_dim, output_dim, n_channels=2, hidden_channels=None):
+        super().__init__()
+        self.n_sensors_per_dim = n_sensors_per_dim
+        self.n_channels = n_channels
+        self.output_dim = output_dim
+        
+        # Default architecture: progressively increase channels while downsampling
+        if hidden_channels is None:
+            hidden_channels = [16, 32, 64, 128]
+        
+        # Build convolutional layers
+        layers = []
+        in_ch = n_channels
+        for i, out_ch in enumerate(hidden_channels):
+            # Conv layer with padding to maintain spatial dims
+            layers.append(nn.Conv2d(in_ch, out_ch, kernel_size=3, padding=1, stride=1))
+            layers.append(nn.ReLU(inplace=True))
+            
+            # Downsample every other layer (or use MaxPool2d)
+            if i % 2 == 1:  # Downsample after every 2nd conv
+                layers.append(nn.MaxPool2d(kernel_size=2, stride=2))
+            
+            in_ch = out_ch
+        
+        self.conv_layers = nn.Sequential(*layers)
+        
+        # Global Average Pooling: reduces (B, C, H, W) to (B, C)
+        # This makes the network resolution-independent
+        self.global_avg_pool = nn.AdaptiveAvgPool2d(1)
+        
+        # Final projection to output dimension
+        self.fc = nn.Linear(hidden_channels[-1], output_dim)
+    
+    def forward(self, x):
+        """
+        Args:
+            x: (Batch, Channels, N, N) or (Batch, Channels*N*N) flattened
+               If flattened, will be reshaped automatically
+        
+        Returns:
+            (Batch, output_dim) encoded features
+        """
+        # Handle flattened input (for backward compatibility)
+        if x.dim() == 2:
+            batch_size = x.shape[0]
+            x = x.view(batch_size, self.n_channels, self.n_sensors_per_dim, self.n_sensors_per_dim)
+        
+        # Convolutional feature extraction
+        x = self.conv_layers(x)  # (B, C_out, H', W')
+        
+        # Global average pooling
+        x = self.global_avg_pool(x)  # (B, C_out, 1, 1)
+        x = x.view(x.size(0), -1)    # (B, C_out)
+        
+        # Final projection
+        x = self.fc(x)  # (B, output_dim)
+        
+        return x
+
+
 class TrunkNet(nn.Module):
     def __init__(self, hidden_dim, output_dim, n_hidden_layers=4, residual=False, activation=None, fft_transform=None):
         super().__init__()
@@ -148,13 +227,31 @@ class PINNDeepONet_Wave2D(nn.Module):
         self.c = cfg.model.wave_speed
         self.k = cfg.model.damping_coeff
         self.domain = [0.0, 1.0]  # Square domain [0,1] × [0,1]
+        self.use_conv_branch = cfg.model.get('use_conv_branch', False)
 
         fft_trunk = FourierFeatureTransform(**(cfg.model.fft_trunk_args or {})) if cfg.model.use_fft_trunk else None
         
-        # IC branch: takes BOTH u0 and v0 sensors (2D grids flattened)
-        self.branch_ic = BranchNet(2 * cfg.model.n_sensors_ic * cfg.model.n_sensors_ic, cfg.model.branch_width, 2 * cfg.model.p, n_hidden_layers=cfg.model.branch_depth, activation=eval(cfg.model.branch_act))
+        # IC branch: Select between Conv and MLP based on config
+        if self.use_conv_branch:
+            log.info("Using ConvBranchNet for IC encoding (spatial structure preserved)")
+            self.branch_ic = ConvBranchNet(
+                n_sensors_per_dim=cfg.model.n_sensors_ic,
+                output_dim=2 * cfg.model.p,
+                n_channels=2,  # u0 and v0
+                hidden_channels=cfg.model.get('conv_hidden_channels', [16, 32, 64, 128])
+            )
+        else:
+            log.info("Using standard MLP BranchNet for IC encoding (flattened)")
+            # IC branch: takes BOTH u0 and v0 sensors (2D grids flattened)
+            self.branch_ic = BranchNet(
+                2 * cfg.model.n_sensors_ic * cfg.model.n_sensors_ic,
+                cfg.model.branch_width,
+                2 * cfg.model.p,
+                n_hidden_layers=cfg.model.branch_depth,
+                activation=eval(cfg.model.branch_act)
+            )
         
-        # Source branch: 2D grid flattened
+        # Source branch: 2D grid flattened (keep as MLP for now)
         self.branch_source = BranchNet(cfg.model.n_sensors_src * cfg.model.n_sensors_src, cfg.model.branch_width, cfg.model.p, n_hidden_layers=cfg.model.branch_depth, activation=eval(cfg.model.branch_act))
         
         # Trunk network for (x, y, t)
@@ -229,9 +326,20 @@ class PINNDeepONet_Wave2D(nn.Module):
             # NO rescaling: let network learn to work with this naturally
             bc_factor = 16 * x * (1.0 - x) * y * (1.0 - y)
 
-            # 3. Branch Encoding (Common to all methods)
-            ic_concat = torch.cat([u0_sensors, v0_sensors], dim=1)
-            ic_encoded = self.branch_ic(ic_concat)
+            # 3. Branch Encoding (with reshaping for ConvBranch)
+            if self.use_conv_branch:
+                # Reshape flattened sensors to 2D grids: (batch, n_sensors²) -> (batch, 1, N, N)
+                batch_size = u0_sensors.shape[0]
+                u0_grid = u0_sensors.view(batch_size, 1, self.n_sensors_ic, self.n_sensors_ic)
+                v0_grid = v0_sensors.view(batch_size, 1, self.n_sensors_ic, self.n_sensors_ic)
+                
+                # Stack into (batch, 2, N, N) for Conv input
+                ic_stack = torch.cat([u0_grid, v0_grid], dim=1)
+                ic_encoded = self.branch_ic(ic_stack)
+            else:
+                # Standard MLP path: concatenate flattened sensors
+                ic_concat = torch.cat([u0_sensors, v0_sensors], dim=1)
+                ic_encoded = self.branch_ic(ic_concat)
             
             b_u = ic_encoded[:, :self.p]
             b_v = ic_encoded[:, self.p:]
