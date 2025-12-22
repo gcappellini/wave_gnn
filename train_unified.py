@@ -247,7 +247,7 @@ class UnifiedTrainer:
                 self.training_history['w_ic_u'].append(w_ic_u)
                 self.training_history['w_ic_v'].append(w_ic_v)
                 self.training_history['w_pde'].append(w_pde)
-                self.training_history['lr'].append(current_lr)
+                self.training_history['lr'].append(stage.lr)
                 
                 # Validation
                 if (global_epoch + 1) % val_interval == 0:
@@ -273,7 +273,7 @@ class UnifiedTrainer:
                             f"IC_v: {loss_ic_v_accum:.4e} | PDE: {loss_pde_accum:.4e}")
                 
                 # Record current LR after potential scheduler update
-                current_lr = optimizer.param_groups[0]['lr']
+                stage.lr = optimizer.param_groups[0]['lr']
                 self.training_history['epoch'].append(global_epoch)
                 self.training_history['stage'].append(stage.name)
                 self.training_history['loss_total'].append(loss_total_accum)
@@ -283,7 +283,7 @@ class UnifiedTrainer:
                 self.training_history['w_ic_u'].append(w_ic_u)
                 self.training_history['w_ic_v'].append(w_ic_v)
                 self.training_history['w_pde'].append(w_pde)
-                self.training_history['lr'].append(current_lr)
+                self.training_history['lr'].append(stage.lr)
                 
                 global_epoch += 1
         

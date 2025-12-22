@@ -9,7 +9,7 @@ hydra:
 run:
   # Model Loading
   load_model: false
-  load_from: ['2025-12-18','01-11-20']  # [date, time] of checkpoint to load
+  load_from: ['2025-12-19','22-23-40']  # [date, time] of checkpoint to load
   
   # Resume Training (continue from checkpoint)
   # Only used if load_model=true
@@ -17,15 +17,15 @@ run:
   resume_training: true
 
 training:
-  n_epochs: 40000
+  n_epochs: 100
   lr: 0.001
   lr_scheduler_gamma: 1.0  # Exponential decay factor per epoch (0.995 = ~0.5% decay/epoch)
   # log_interval: 200
-  val_interval: 20
+  val_interval: 1
   es_patience: 40000
   max_grad_norm: 1.0
   max_grad_ph1: 0.6
-  n_batches: 16
+  n_batches: 2000
   n_batches_ph1: 16
   n_test_cases: 50
   test_seed: 42
@@ -48,7 +48,7 @@ training:
     enabled: true
     stages:
       - name: "IC_u_pretraining"
-        epochs: 4000
+        epochs: 80
         weights:
           w_ic_u: 1.0
           w_ic_v: 0.0
@@ -58,13 +58,13 @@ training:
 model:
   n_sensors_ic: 100
   n_sensors_src: 20
-  branch_width: 1024
+  branch_width: 300
   trunk_width: 300
   branch_act: nn.Tanh()
   trunk_act: nn.Tanh()
   branch_depth: 4
-  trunk_depth: 8
-  p: 1024
+  trunk_depth: 4
+  p: 300
   wave_speed: 1.0
   damping_coeff: 1.0
   use_fft_trunk: true
