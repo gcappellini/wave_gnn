@@ -103,11 +103,12 @@ class ConvBranchNet(nn.Module):
         n_channels: Number of input channels (default: 2 for u0, v0)
         hidden_channels: List of channel sizes for conv layers (default: [16, 32, 64])
     """
-    def __init__(self, n_sensors_per_dim, output_dim, n_channels=2, hidden_channels=None):
+    def __init__(self, n_sensors_per_dim, output_dim, n_channels=2, activation=None, hidden_channels=None):
         super().__init__()
         self.n_sensors_per_dim = n_sensors_per_dim
         self.n_channels = n_channels
         self.output_dim = output_dim
+        self.activation = activation if activation is not None else nn.Tanh()
         
         # Default architecture: progressively increase channels while downsampling
         if hidden_channels is None:
@@ -119,7 +120,7 @@ class ConvBranchNet(nn.Module):
         for i, out_ch in enumerate(hidden_channels):
             # Conv layer with padding to maintain spatial dims
             layers.append(nn.Conv2d(in_ch, out_ch, kernel_size=3, padding=1, stride=1))
-            layers.append(nn.ReLU(inplace=True))
+            layers.append(self.activation)
             
             # Downsample every other layer (or use MaxPool2d)
             if i % 2 == 1:  # Downsample after every 2nd conv
