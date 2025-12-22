@@ -17,7 +17,7 @@ run:
   resume_training: true
 
 training:
-  n_epochs: 100
+  n_epochs: 4000
   lr: 0.001
   lr_scheduler_gamma: 1.0  # Exponential decay factor per epoch (0.995 = ~0.5% decay/epoch)
   # log_interval: 200
@@ -25,7 +25,7 @@ training:
   es_patience: 40000
   max_grad_norm: 1.0
   max_grad_ph1: 0.6
-  n_batches: 2000
+  n_batches: 1024
   n_batches_ph1: 16
   n_test_cases: 50
   test_seed: 42
@@ -36,7 +36,7 @@ training:
 
   # LR scheduling via ReduceLROnPlateau (stepped on validation only)
   lr_reduce_factor: 0.5     # multiply LR by this factor on plateau
-  lr_patience: 5            # number of validations with no improvement before reducing
+  lr_patience: 500            # number of validations with no improvement before reducing
   lr_threshold: 1.0e-4      # minimum relative improvement to count as better
   lr_cooldown: 0            # validations to ignore after a reduction
   min_lr: 1.0e-6            # lower bound for LR
@@ -48,7 +48,7 @@ training:
     enabled: true
     stages:
       - name: "IC_u_pretraining"
-        epochs: 80
+        epochs: 100
         weights:
           w_ic_u: 1.0
           w_ic_v: 0.0
@@ -56,10 +56,12 @@ training:
         lr: 1.0e-3
 
 model:
-  n_sensors_ic: 100
+  use_conv_branch: true
+  conv_hidden_channels: [16, 32, 64, 128]
+  n_sensors_ic: 20
   n_sensors_src: 20
   branch_width: 300
-  trunk_width: 300
+  trunk_width: 50
   branch_act: nn.Tanh()
   trunk_act: nn.Tanh()
   branch_depth: 4
@@ -67,7 +69,7 @@ model:
   p: 300
   wave_speed: 1.0
   damping_coeff: 1.0
-  use_fft_trunk: true
+  use_fft_trunk: false
   ntk_colloc_sample_size: 256   # Subset of collocation points for NTK computation (reduces memory)
   ntk_ic_sample_size: 64        # Subset of IC points for NTK computation (reduces memory)
   fft_trunk_args:
