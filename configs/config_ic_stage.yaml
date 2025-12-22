@@ -57,7 +57,7 @@ training:
 
 model:
   use_conv_branch: true
-  conv_hidden_channels: [16, 32, 64, 128]
+  conv_hidden_channels: [32, 32, 64, 64, 128, 128]
   n_sensors_ic: 20
   n_sensors_src: 20
   branch_width: 300

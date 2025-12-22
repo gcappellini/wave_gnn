@@ -112,7 +112,7 @@ class ConvBranchNet(nn.Module):
         
         # Default architecture: progressively increase channels while downsampling
         if hidden_channels is None:
-            hidden_channels = [16, 32, 64, 128]
+            hidden_channels = [32, 32, 64, 64, 128, 128]
         
         # Build convolutional layers
         layers = []
@@ -120,6 +120,7 @@ class ConvBranchNet(nn.Module):
         for i, out_ch in enumerate(hidden_channels):
             # Conv layer with padding to maintain spatial dims
             layers.append(nn.Conv2d(in_ch, out_ch, kernel_size=3, padding=1, stride=1))
+            layers.append(nn.BatchNorm2d(out_ch))
             layers.append(self.activation)
             
             # Downsample every other layer (or use MaxPool2d)
