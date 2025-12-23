@@ -8,8 +8,8 @@ tlist = linspace(0, t_f, 100);   % Nt time steps
 Nt = numel(tlist);
 
 % Dataset parameters
-N_samples = 100;                  % randomized ICs
-Nx = 50; Ny = 50;               % uniform query grid
+N_samples = 128;                  % randomized ICs
+Nx = 100; Ny = 100;               % uniform query grid
 K = 4; L = 4;                     % Fourier modes for IC synthesis
 
 % Grids for storage and visualization
@@ -44,8 +44,9 @@ specifyCoefficients(model, m = m, d = d * results.M, c = wave_speed^2, a = a, f 
 
 mesh = model.Mesh;
 
-% Preallocate storage for displacement over space-time for all samples
+% Preallocate storage for displacement and velocity over space-time for all samples
 U_data = zeros(Nx, Ny, Nt, N_samples);
+V_data = zeros(Nx, Ny, Nt, N_samples);
 
 cpu_time_start = cputime;
 for sample_id = 1:N_samples
@@ -61,6 +62,27 @@ for sample_id = 1:N_samples
         u_grid = interpolateSolution(result, Xq(:), Yq(:), ti);
         U_data(:, :, ti, sample_id) = reshape(u_grid, Ny, Nx)';
     end
+    
+    % Compute velocity via temporal finite differences on displacement
+    for ti = 1:Nt
+        if ti == 1
+            % Forward difference for first time step
+            u_curr = reshape(interpolateSolution(result, Xq(:), Yq(:), ti), Ny, Nx)';
+            u_next = reshape(interpolateSolution(result, Xq(:), Yq(:), ti+1), Ny, Nx)';
+            v_grid = (u_next - u_curr) / (tlist(ti+1) - tlist(ti));
+        elseif ti == Nt
+            % Backward difference for last time step
+            u_curr = reshape(interpolateSolution(result, Xq(:), Yq(:), ti), Ny, Nx)';
+            u_prev = reshape(interpolateSolution(result, Xq(:), Yq(:), ti-1), Ny, Nx)';
+            v_grid = (u_curr - u_prev) / (tlist(ti) - tlist(ti-1));
+        else
+            % Central difference for interior time steps
+            u_next = reshape(interpolateSolution(result, Xq(:), Yq(:), ti+1), Ny, Nx)';
+            u_prev = reshape(interpolateSolution(result, Xq(:), Yq(:), ti-1), Ny, Nx)';
+            v_grid = (u_next - u_prev) / (tlist(ti+1) - tlist(ti-1));
+        end
+        V_data(:, :, ti, sample_id) = v_grid;
+    end
 
     fprintf('Finished sample %d/%d\n', sample_id, N_samples);
 end
@@ -68,7 +90,7 @@ cpu_time_end = cputime - cpu_time_start
 
 % Save dataset to script directory
 script_dir = fileparts(mfilename('fullpath'));
-save(fullfile(script_dir, 'data', 'test_cases.mat'), 'U_data', 'x_grid', 'y_grid', 'tlist', '-v7.3');
+save(fullfile(script_dir, 'data', 'test_cases.mat'), 'U_data', 'V_data', 'x_grid', 'y_grid', 'tlist', '-v7.3');
 
 % Visualize three random samples at mid time
 mid_idx = round(Nt / 2);

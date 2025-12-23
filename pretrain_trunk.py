@@ -42,13 +42,34 @@ sys.stderr = sys.stdout
 
 # --- CONFIGURATION ---
 SVD_PATH = os.path.join(SCRIPT_DIR, 'data', 'svd_basis_data.npy')
-MODEL_SAVE_PATH = os.path.join(LOG_DIR, 'pretrained_trunk_p64.pth')
-RANK = 64                # We limit to 64 for this test run
+MODEL_SAVE_PATH = os.path.join(LOG_DIR, 'pretrained_trunk_p128.pth')
+RANK = 128                # We limit to 128 for this test run
 TRUNK_HIDDEN = 300       # Hidden layer size for Trunk
 TRUNK_N_LAYERS = 6       # Number of hidden layers
 BATCH_SIZE = 10000       # Large batch for fast training
 EPOCHS = 2000
 LR = 1e-3
+
+# Save configuration to log directory
+config_dict = {
+    'timestamp': timestamp,
+    'svd_path': SVD_PATH,
+    'model_save_path': MODEL_SAVE_PATH,
+    'rank': RANK,
+    'trunk_hidden': TRUNK_HIDDEN,
+    'trunk_n_layers': TRUNK_N_LAYERS,
+    'batch_size': BATCH_SIZE,
+    'epochs': EPOCHS,
+    'lr': LR,
+    'device': str(torch.device("cuda" if torch.cuda.is_available() else "cpu")),
+    'train_test_split': 0.9
+}
+
+import json
+config_path = os.path.join(LOG_DIR, 'config.json')
+with open(config_path, 'w') as f:
+    json.dump(config_dict, f, indent=4)
+print(f"Configuration saved to {config_path}\n")
 
 # --- 2. DATA LOADING ---
 print(f"Loading SVD data from {SVD_PATH}...")
@@ -105,6 +126,11 @@ fft_dict = {"input_dim": 3,
     "sigma_temporal_list": [0.10],
     "seed": 42}
 
+# Update config with FFT parameters
+config_dict['fft_trunk_args'] = fft_dict
+with open(config_path, 'w') as f:
+    json.dump(config_dict, f, indent=4)
+
 fft_trunk = FourierFeatureTransform(**fft_dict)
 trunk = TrunkNet(
     hidden_dim=TRUNK_HIDDEN,
@@ -113,10 +139,13 @@ trunk = TrunkNet(
     activation=nn.Tanh(),
     fft_transform=fft_trunk
 ).to(device)
+
 optimizer = optim.Adam(trunk.parameters(), lr=LR)
 scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=500, gamma=0.5)
 criterion = nn.MSELoss()
 scaler = GradScaler(enabled=device.type == "cuda")
+
+
 
 print("Starting Trunk Pre-training...")
 train_loss_history = []
