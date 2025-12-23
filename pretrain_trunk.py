@@ -1,13 +1,44 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from torch.cuda.amp import autocast, GradScaler
 import numpy as np
 import matplotlib.pyplot as plt
 from torch.utils.data import TensorDataset, DataLoader
 import os
+import sys
+import time
+from datetime import datetime
 from model_2d import TrunkNet
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# --- LOGGING SETUP ---
+timestamp = datetime.now().strftime("%Y-%m-%d/%H-%M-%S")
+LOG_DIR = os.path.join(SCRIPT_DIR, 'outputs', timestamp)
+os.makedirs(LOG_DIR, exist_ok=True)
+LOG_PATH = os.path.join(LOG_DIR, 'pretrain_trunk.log')
+
+class Tee:
+    def __init__(self, log_file, also_stdout=True):
+        self.log_file = log_file
+        self.also_stdout = also_stdout
+        self._stdout = sys.stdout if also_stdout else None
+
+    def write(self, message):
+        if self.also_stdout and self._stdout:
+            self._stdout.write(message)
+        self.log_file.write(message)
+        self.log_file.flush()
+
+    def flush(self):
+        if self.also_stdout and self._stdout:
+            self._stdout.flush()
+        self.log_file.flush()
+
+log_fh = open(LOG_PATH, 'w')
+sys.stdout = Tee(log_fh, also_stdout=True)
+sys.stderr = sys.stdout
 
 # --- CONFIGURATION ---
 SVD_PATH = os.path.join(SCRIPT_DIR, 'data', 'svd_basis_data.npy')
@@ -59,8 +90,8 @@ train_size = int(0.9 * len(dataset))
 test_size = len(dataset) - train_size
 train_dataset, test_dataset = random_split(dataset, [train_size, test_size])
 
-train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
-test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
+train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, drop_last=True)
+test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, drop_last=False)
 
 print(f"Train size: {train_size}, Test size: {test_size}")
 
@@ -74,10 +105,13 @@ trunk = TrunkNet(
 optimizer = optim.Adam(trunk.parameters(), lr=LR)
 scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=500, gamma=0.5)
 criterion = nn.MSELoss()
+scaler = GradScaler(enabled=device.type == "cuda")
 
 print("Starting Trunk Pre-training...")
 train_loss_history = []
 test_loss_history = []
+
+training_start = time.time()
 
 # Compute initial loss for normalization
 trunk.eval()
@@ -96,12 +130,14 @@ for epoch in range(EPOCHS):
     total_loss = 0
     
     for batch_x, batch_y in train_loader:
-        optimizer.zero_grad()
-        pred = trunk(batch_x)
-        loss = criterion(pred, batch_y)
-        loss.backward()
-        optimizer.step()
-        total_loss += loss.item()
+        optimizer.zero_grad(set_to_none=True)
+        with autocast(enabled=device.type == "cuda"):
+            pred = trunk(batch_x)
+            loss = criterion(pred, batch_y)
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
+        total_loss += loss.detach().item()
     
     avg_train_loss = total_loss / len(train_loader)
     normalized_train_loss = avg_train_loss / initial_loss
@@ -112,9 +148,10 @@ for epoch in range(EPOCHS):
     total_test_loss = 0
     with torch.no_grad():
         for batch_x, batch_y in test_loader:
-            pred = trunk(batch_x)
-            loss = criterion(pred, batch_y)
-            total_test_loss += loss.item()
+            with autocast(enabled=device.type == "cuda"):
+                pred = trunk(batch_x)
+                loss = criterion(pred, batch_y)
+            total_test_loss += loss.detach().item()
     
     avg_test_loss = total_test_loss / len(test_loader)
     normalized_test_loss = avg_test_loss / initial_loss
@@ -124,6 +161,9 @@ for epoch in range(EPOCHS):
     
     if epoch % 100 == 0:
         print(f"Epoch {epoch}/{EPOCHS} | Train Loss: {normalized_train_loss:.4f} | Test Loss: {normalized_test_loss:.4f} | LR: {optimizer.param_groups[0]['lr']:.1e}")
+
+training_time_sec = time.time() - training_start
+print(f"Training finished in {training_time_sec/60:.2f} min ({training_time_sec:.1f} sec)")
 
 # --- 4. SAVE & VISUALIZE ---
 torch.save(trunk.state_dict(), MODEL_SAVE_PATH)
