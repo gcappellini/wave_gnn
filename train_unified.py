@@ -36,6 +36,25 @@ class UnifiedTrainer:
         self.cfg = cfg
         self.device = device
         self.training_history = self._init_history()
+
+    def _sample_ic_coeffs(self, mode, n_ic_u, n_ic_v, a_range, b_range, device):
+        """Sample IC coefficients per sample.
+        mode: '1d' produces vectors of size n_ic_u and n_ic_v.
+              '2d' produces KxL matrices with 1/(k^2+l^2) decay, uniform in [-1,1].
+        """
+        if mode == '2d':
+            k_idx = torch.arange(1, n_ic_u + 1, device=device).view(-1, 1).float()
+            l_idx = torch.arange(1, n_ic_v + 1, device=device).view(1, -1).float()
+            decay = 1.0 / (k_idx**2 + l_idx**2)
+            a_coeff = (-1.0 + 2.0 * torch.rand(n_ic_u, n_ic_v, device=device)) * decay
+            b_coeff = (-1.0 + 2.0 * torch.rand(n_ic_u, n_ic_v, device=device)) * decay
+            return a_coeff, b_coeff
+        else:
+            a_low, a_high = a_range
+            b_low, b_high = b_range
+            a_coeff = a_low + (a_high - a_low) * torch.rand(n_ic_u, device=device)
+            b_coeff = b_low + (b_high - b_low) * torch.rand(n_ic_v, device=device)
+            return a_coeff, b_coeff
         
     def _init_history(self):
         """Initialize tracking dictionary."""
@@ -88,6 +107,7 @@ class UnifiedTrainer:
         batch_size = self.cfg.training.get('batch_size', 8)
         val_interval = self.cfg.training.get('val_interval', 20)
         max_grad_norm = self.cfg.training.get('max_grad_norm', 1.0)
+        ic_mode = self.cfg.data.get('ic_coeff_mode', '1d')
         
         # Setup IC grid (shared across all stages)
         n_ic_grid = int(np.sqrt(n_ic))
@@ -109,8 +129,9 @@ class UnifiedTrainer:
             log.info(f"Weights -> IC_u: {stage.weights.w_ic_u:.2f}, IC_v: {stage.weights.w_ic_v:.2f}, PDE: {stage.weights.w_pde:.2f}")
             log.info(f"{'='*70}\n")
             
-            # Setup optimizer for this stage
-            optimizer = torch.optim.Adam(self.model.parameters(), lr=stage.lr)
+            # Setup optimizer for this stage (trainable params only)
+            trainable_params = [p for p in self.model.parameters() if p.requires_grad]
+            optimizer = torch.optim.Adam(trainable_params, lr=stage.lr)
             # ReduceLROnPlateau: reduce LR only when metric stops improving
             lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
                 optimizer,
@@ -131,108 +152,117 @@ class UnifiedTrainer:
                 loss_pde_accum = 0.0
                 
                 batch_size = self.cfg.training.get('batch_size', 8)
-                
+
                 # ===== BATCH LOOP =====
                 for batch_idx in range(n_batches):
-                    # Sample IC coefficients
-                    a_coeffs_list = []
-                    b_coeffs_list = []
-                    
+                    # Accumulate per-sample losses then take mean over batch
+                    loss_ic_u_batch = 0.0
+                    loss_ic_v_batch = 0.0
+                    loss_pde_batch = 0.0
+
                     for _ in range(batch_size):
-                        # Sample scalar or 1D coefficients, NOT 2D
-                        a_coeff = torch.randn(self.cfg.data.get('n_ic_u', 2), device=self.device)
-                        b_coeff = torch.randn(self.cfg.data.get('n_ic_v', 2), device=self.device)
-                        a_coeffs_list.append(a_coeff)
-                        b_coeffs_list.append(b_coeff)
-                    
-                    a_batch = torch.stack(a_coeffs_list)  # (batch_size, n_ic_u)
-                    b_batch = torch.stack(b_coeffs_list)  # (batch_size, n_ic_v)
-                    
-                    # Clamp to valid ranges
-                    a_batch = torch.clamp(a_batch, self.cfg.data.a_range[0], self.cfg.data.a_range[1])
-                    b_batch = torch.clamp(b_batch, self.cfg.data.b_range[0], self.cfg.data.b_range[1])
-                    
-                    # Generate IC fields (sensors)
-                    u0_sensors = self.model.generate_ic_sine_series(a_batch)
-                    v0_sensors = self.model.generate_ic_sine_series(b_batch)
-                    src_sensors = self.model.generate_source(
-                        self.cfg.data.source_type,
-                        self.cfg.data.source_amplitude,
-                        self.cfg.data.center_x,
-                        self.cfg.data.center_y
-                    )
-                    
-                    # Setup IC evaluation points (t=0)
-                    t_ic = torch.zeros_like(x_ic_flat)
-                    xyt_ic = torch.stack([x_ic_flat, y_ic_flat, t_ic], dim=-1)
-                    xyt_ic.requires_grad_(True)
-                    
-                    # Extract weights for this stage
-                    w_ic_u = stage.weights.w_ic_u
-                    w_ic_v = stage.weights.w_ic_v
-                    w_pde = stage.weights.w_pde
-                    
-                    # IC losses - only compute if weight > 0
-                    loss_ic_u = torch.tensor(0.0, device=self.device)
-                    loss_ic_v = torch.tensor(0.0, device=self.device)
-                    
-                    if w_ic_u > 0 or w_ic_v > 0:
-                        # Forward pass at IC
-                        u0_pred = self.model.forward(u0_sensors, v0_sensors, src_sensors, xyt_ic)
-                        
-                        # Compute true IC values
-                        u0_true = self.model.generate_ic_sine_series(a_batch, x_ic_flat, y_ic_flat)
-                        
-                        # Displacement loss (if needed)
-                        if w_ic_u > 0:
-                            loss_ic_u = torch.mean((u0_pred - u0_true) ** 2)
-                        
-                        # Velocity loss (if needed)
-                        if w_ic_v > 0:
-                            v0_pred = self.model.get_velocity(u0_sensors, v0_sensors, src_sensors, xyt_ic)
-                            v0_true = self.model.generate_ic_sine_series(b_batch, x_ic_flat, y_ic_flat)
-                            loss_ic_v = torch.mean((v0_pred - v0_true) ** 2)
-                    
-                    # PDE loss (if stage requires it)
-                    loss_pde = torch.tensor(0.0, device=self.device)
-                    if w_pde > 0:
-                        # Sample collocation points for PDE
-                        n_colloc = self.cfg.data.get('n_colloc', 256)
-                        x_colloc = self.model.domain[0] + (self.model.domain[1] - self.model.domain[0]) * torch.rand(n_colloc, device=self.device)
-                        y_colloc = self.model.domain[0] + (self.model.domain[1] - self.model.domain[0]) * torch.rand(n_colloc, device=self.device)
-                        t_colloc = torch.rand(n_colloc, device=self.device) * self.cfg.data.T_max
-                        xyt_colloc = torch.stack([x_colloc, y_colloc, t_colloc], dim=-1)
-                        
-                        # Compute source values AT COLLOCATION POINTS (not at sensor grid)
-                        if self.cfg.data.source_type == 'gaussian':
-                            # Gaussian source centered at (center_x, center_y)
-                            cx, cy = self.cfg.data.center_x, self.cfg.data.center_y
-                            sigma = 0.1
-                            src_values_colloc = (self.cfg.data.source_amplitude * 
-                                               torch.exp(-((x_colloc - cx)**2 + (y_colloc - cy)**2) / (2 * sigma**2)))
-                        else:
-                            # Zero source
-                            src_values_colloc = torch.zeros(n_colloc, device=self.device)
-                        
-                        # Compute PDE residual (using existing method)
-                        loss_pde = self.model.compute_pde_residual(
-                            u0_sensors, v0_sensors, src_sensors,
-                            xyt_colloc, src_values_colloc
-                        ).mean()
-                    
-                    # Weighted loss
-                    loss_total = w_ic_u * loss_ic_u + w_ic_v * loss_ic_v + w_pde * loss_pde
-                    
-                    # Backward pass
-                    optimizer.zero_grad()
-                    loss_total.backward()
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_grad_norm)
+                        # Sample IC coefficients per sample
+                        a_coeff, b_coeff = self._sample_ic_coeffs(
+                            ic_mode,
+                            n_ic_u=n_ic_u,
+                            n_ic_v=n_ic_v,
+                            a_range=a_range,
+                            b_range=b_range,
+                            device=self.device,
+                        )
+
+                        # Generate sensors for this sample
+                        u0_sensors = self.model.generate_ic_sine_series(a_coeff)
+                        v0_sensors = self.model.generate_ic_sine_series(b_coeff)
+                        src_sensors = self.model.generate_source(
+                            self.cfg.data.source_type,
+                            self.cfg.data.source_amplitude,
+                            self.cfg.data.center_x,
+                            self.cfg.data.center_y,
+                        )
+
+                        # Setup IC evaluation points (t=0)
+                        t_ic = torch.zeros_like(x_ic_flat)
+                        xyt_ic = torch.stack([x_ic_flat, y_ic_flat, t_ic], dim=-1)
+                        xyt_ic.requires_grad_(True)
+
+                        # Extract weights for this stage
+                        w_ic_u = stage.weights.w_ic_u
+                        w_ic_v = stage.weights.w_ic_v
+                        w_pde = stage.weights.w_pde
+
+                        # IC losses - only compute if weight > 0
+                        loss_ic_u = torch.tensor(0.0, device=self.device)
+                        loss_ic_v = torch.tensor(0.0, device=self.device)
+
+                        if w_ic_u > 0 or w_ic_v > 0:
+                            # Forward pass at IC
+                            u0_pred = self.model.forward(u0_sensors, v0_sensors, src_sensors, xyt_ic)
+
+                            # Compute true IC values
+                            u0_true = self.model.generate_ic_sine_series(a_coeff, x_ic_flat, y_ic_flat)
+
+                            # Displacement loss (if needed)
+                            if w_ic_u > 0:
+                                loss_ic_u = torch.mean((u0_pred - u0_true) ** 2)
+
+                            # Velocity loss (if needed)
+                            if w_ic_v > 0:
+                                v0_pred = self.model.get_velocity(u0_sensors, v0_sensors, src_sensors, xyt_ic)
+                                v0_true = self.model.generate_ic_sine_series(b_coeff, x_ic_flat, y_ic_flat)
+                                loss_ic_v = torch.mean((v0_pred - v0_true) ** 2)
+
+                        # PDE loss (if stage requires it)
+                        loss_pde = torch.tensor(0.0, device=self.device)
+                        if w_pde > 0:
+                            # Sample collocation points for PDE
+                            n_colloc = self.cfg.data.get('n_colloc', 256)
+                            x_colloc = self.model.domain[0] + (self.model.domain[1] - self.model.domain[0]) * torch.rand(n_colloc, device=self.device)
+                            y_colloc = self.model.domain[0] + (self.model.domain[1] - self.model.domain[0]) * torch.rand(n_colloc, device=self.device)
+                            t_colloc = torch.rand(n_colloc, device=self.device) * self.cfg.data.T_max
+                            xyt_colloc = torch.stack([x_colloc, y_colloc, t_colloc], dim=-1)
+
+                            # Compute source values AT COLLOCATION POINTS (not at sensor grid)
+                            if self.cfg.data.source_type == 'gaussian':
+                                cx, cy = self.cfg.data.center_x, self.cfg.data.center_y
+                                sigma = 0.1
+                                src_values_colloc = (
+                                    self.cfg.data.source_amplitude
+                                    * torch.exp(-((x_colloc - cx) ** 2 + (y_colloc - cy) ** 2) / (2 * sigma ** 2))
+                                )
+                            else:
+                                # Zero source
+                                src_values_colloc = torch.zeros(n_colloc, device=self.device)
+
+                            # Compute PDE residual (using existing method)
+                            loss_pde = self.model.compute_pde_residual(
+                                u0_sensors,
+                                v0_sensors,
+                                src_sensors,
+                                xyt_colloc,
+                                src_values_colloc,
+                            ).mean()
+
+                        # Weighted loss per sample
+                        loss_total = w_ic_u * loss_ic_u + w_ic_v * loss_ic_v + w_pde * loss_pde
+
+                        # Backward pass per sample (grad accumulation)
+                        loss_total.backward()
+
+                        # Accumulate for logging
+                        loss_ic_u_batch += loss_ic_u.item()
+                        loss_ic_v_batch += loss_ic_v.item()
+                        loss_pde_batch += loss_pde.item()
+
+                    # After processing batch_size samples, update once
+                    torch.nn.utils.clip_grad_norm_(trainable_params, max_grad_norm)
                     optimizer.step()
-                    
-                    # Accumulate
-                    loss_ic_u_accum += loss_ic_u.item() / n_batches
-                    loss_ic_v_accum += loss_ic_v.item() / n_batches
-                    loss_pde_accum += loss_pde.item() / n_batches
+                    optimizer.zero_grad()
+
+                    # Accumulate averaged per-batch losses
+                    loss_ic_u_accum += (loss_ic_u_batch / batch_size) / n_batches
+                    loss_ic_v_accum += (loss_ic_v_batch / batch_size) / n_batches
+                    loss_pde_accum += (loss_pde_batch / batch_size) / n_batches
                 
                 # Accumulated total loss for logging
                 loss_total_accum = w_ic_u * loss_ic_u_accum + w_ic_v * loss_ic_v_accum + w_pde * loss_pde_accum

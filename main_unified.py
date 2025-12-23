@@ -84,6 +84,52 @@ def main(cfg: DictConfig):
     log.info(f"✓ Model created with {sum(p.numel() for p in model.parameters())} parameters\n")
     
     # ============================================================
+    # Load Pretrained Trunk (optional)
+    # ============================================================
+    if cfg.run.get('load_pretrained_trunk', False) and not cfg.run.get('load_model', False):
+        trunk_path = cfg.run.get('pretrained_trunk_path', os.path.join(SCRIPT_DIR, 'data/pretrained_trunk_p64.pth'))
+        if not os.path.isabs(trunk_path):
+            trunk_path = os.path.join(SCRIPT_DIR, trunk_path)
+        if not hasattr(model, 'trunk'):
+            log.error("Model does not expose a 'trunk' attribute; cannot load pretrained trunk.")
+            return
+        if os.path.exists(trunk_path):
+            try:
+                trunk_ckpt = torch.load(trunk_path, map_location=DEVICE)
+                # Derive a usable state_dict for the trunk
+                trunk_state = None
+                if isinstance(trunk_ckpt, dict):
+                    if 'trunk_state_dict' in trunk_ckpt:
+                        trunk_state = trunk_ckpt['trunk_state_dict']
+                    elif 'state_dict' in trunk_ckpt:
+                        # Try to extract only trunk.* keys if present; else use as-is
+                        sd = trunk_ckpt['state_dict']
+                        filtered = {k.replace('trunk.', ''): v for k, v in sd.items() if k.startswith('trunk.')}
+                        trunk_state = filtered if len(filtered) > 0 else sd
+                    else:
+                        # Assume the dict is directly a state_dict
+                        trunk_state = trunk_ckpt
+                else:
+                    # Assume the checkpoint is directly a state_dict
+                    trunk_state = trunk_ckpt
+
+                missing, unexpected = model.trunk.load_state_dict(trunk_state, strict=False)
+                log.info(f"✓ Trunk loaded from {trunk_path} | missing: {len(missing)}, unexpected: {len(unexpected)}")
+
+                if cfg.run.get('freeze_trunk', True):
+                    for p in model.trunk.parameters():
+                        p.requires_grad = False
+                    log.info("Trunk loaded from SVD pre-training and FROZEN.")
+                else:
+                    log.info("Trunk loaded from SVD pre-training (not frozen).")
+            except Exception as e:
+                log.error(f"Failed to load pretrained trunk from {trunk_path}: {e}")
+                return
+        else:
+            log.error(f"Pretrained trunk file not found: {trunk_path}")
+            return
+    
+    # ============================================================
     # Load Model (if specified)
     # ============================================================
     skip_training = False
@@ -121,11 +167,21 @@ def main(cfg: DictConfig):
     n_test = cfg.training.get('n_test_cases', 10)
     n_ic_u = cfg.data.get('n_ic_u', 2)
     n_ic_v = cfg.data.get('n_ic_v', 2)
+    ic_mode = cfg.data.get('ic_coeff_mode', '1d')  # '1d' (diagonal) or '2d' (full KxL like MATLAB)
     
     for i in range(n_test):
-        # Create 1D coefficient tensors (shape: (n_ic_u,) and (n_ic_v,))
-        a_coeff = torch.randn(n_ic_u, device=DEVICE) * 0.2
-        b_coeff = torch.randn(n_ic_v, device=DEVICE) * 0.1
+        if ic_mode == '2d':
+            # Full 2D coefficients with decay 1/(k^2 + l^2), consistent with MATLAB make_coeffs
+            k_idx = torch.arange(1, n_ic_u + 1, device=DEVICE).view(-1, 1)
+            l_idx = torch.arange(1, n_ic_v + 1, device=DEVICE).view(1, -1)
+            decay = 1.0 / (k_idx.float()**2 + l_idx.float()**2)
+            a_coeff = (-1 + 2 * torch.rand(n_ic_u, n_ic_v, device=DEVICE)) * decay
+            b_coeff = (-1 + 2 * torch.rand(n_ic_u, n_ic_v, device=DEVICE)) * decay
+        else:
+            # Diagonal/symmetric 1D mode (sum_k coeff[k] sin(kπx) sin(kπy))
+            a_coeff = torch.randn(n_ic_u, device=DEVICE) * 0.2
+            b_coeff = torch.randn(n_ic_v, device=DEVICE) * 0.1
+
         test_cases.append({
             'a_coeffs': a_coeff,
             'b_coeffs': b_coeff,
