@@ -9,7 +9,7 @@ import os
 import sys
 import time
 from datetime import datetime
-from model_2d import TrunkNet
+from model_2d import TrunkNet, FourierFeatureTransform
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -42,7 +42,7 @@ sys.stderr = sys.stdout
 
 # --- CONFIGURATION ---
 SVD_PATH = os.path.join(SCRIPT_DIR, 'data', 'svd_basis_data.npy')
-MODEL_SAVE_PATH = os.path.join(SCRIPT_DIR, 'data', 'pretrained_trunk_p64.pth')
+MODEL_SAVE_PATH = os.path.join(LOG_DIR, 'pretrained_trunk_p64.pth')
 RANK = 64                # We limit to 64 for this test run
 TRUNK_HIDDEN = 300       # Hidden layer size for Trunk
 TRUNK_N_LAYERS = 6       # Number of hidden layers
@@ -96,11 +96,22 @@ test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, dro
 print(f"Train size: {train_size}, Test size: {test_size}")
 
 # --- 3. TRAINING LOOP ---
+fft_dict = {"input_dim": 3,
+    "m_spatial_x": 64, 
+    "m_spatial_y": 64,
+    "m_temporal": 64,
+    "sigma_spatial_x": 0.10,
+    "sigma_spatial_y": 0.10,
+    "sigma_temporal_list": [0.10],
+    "seed": 42}
+
+fft_trunk = FourierFeatureTransform(**fft_dict)
 trunk = TrunkNet(
     hidden_dim=TRUNK_HIDDEN,
     output_dim=RANK,
     n_hidden_layers=TRUNK_N_LAYERS,
-    activation=nn.Tanh()
+    activation=nn.Tanh(),
+    fft_transform=fft_trunk
 ).to(device)
 optimizer = optim.Adam(trunk.parameters(), lr=LR)
 scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=500, gamma=0.5)
