@@ -68,6 +68,15 @@ def main(cfg: DictConfig):
         log.warning(f"Ground truth file not found: {gt_file}")
     
     # ============================================================
+    # Load Pretrained Trunk (optional) - Requires FFT disabled
+    # ============================================================
+    # If loading pretrained trunk, create model WITHOUT FFT first
+    fft_enabled = cfg.model.get('use_fft_trunk', False)
+    if cfg.run.get('load_pretrained_trunk', False) and not cfg.run.get('load_model', False):
+        log.info("Loading pretrained trunk: temporarily disabling FFT for model creation...")
+        cfg.model.use_fft_trunk = False
+    
+    # ============================================================
     # Create Model
     # ============================================================
     log.info("Creating model...")
@@ -113,15 +122,15 @@ def main(cfg: DictConfig):
                     # Assume the checkpoint is directly a state_dict
                     trunk_state = trunk_ckpt
 
-                missing, unexpected = model.trunk.load_state_dict(trunk_state, strict=False)
-                log.info(f"✓ Trunk loaded from {trunk_path} | missing: {len(missing)}, unexpected: {len(unexpected)}")
+                missing, unexpected = model.trunk.load_state_dict(trunk_state, strict=True)
+                log.info(f"✓ Trunk loaded from {trunk_path}")
 
                 if cfg.run.get('freeze_trunk', True):
                     for p in model.trunk.parameters():
                         p.requires_grad = False
-                    log.info("Trunk loaded from SVD pre-training and FROZEN.")
+                    log.info("✓ Trunk weights FROZEN")
                 else:
-                    log.info("Trunk loaded from SVD pre-training (not frozen).")
+                    log.info("✓ Trunk weights loaded (not frozen).")
             except Exception as e:
                 log.error(f"Failed to load pretrained trunk from {trunk_path}: {e}")
                 return
