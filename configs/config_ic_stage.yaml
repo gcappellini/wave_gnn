@@ -13,7 +13,7 @@ run:
   
   # Pretrained Trunk Loading (used when load_model=false)
   load_pretrained_trunk: true
-  pretrained_trunk_path: data/pretrained_trunk_p64.pth
+  pretrained_trunk_path: outputs/2025-12-25/11-39-16/pretrained_trunk.pth
   freeze_trunk: true
   
   # Resume Training (continue from checkpoint)
@@ -30,7 +30,7 @@ training:
   es_patience: 40000
   max_grad_norm: 1.0
   max_grad_ph1: 0.6
-  n_batches: 32
+  n_batches: 1024
   n_batches_ph1: 16
   n_test_cases: 50
   test_seed: 42
