@@ -4,7 +4,6 @@ import torch.optim as optim
 from torch.cuda.amp import autocast, GradScaler
 import numpy as np
 import matplotlib.pyplot as plt
-from torch.utils.data import TensorDataset, DataLoader
 import os
 import sys
 import time
@@ -46,9 +45,11 @@ MODEL_SAVE_PATH = os.path.join(LOG_DIR, 'pretrained_trunk.pth')
 RANK = 64                # We limit to 64 for this test run
 TRUNK_HIDDEN = 300       # Hidden layer size for Trunk
 TRUNK_N_LAYERS = 6       # Number of hidden layers
-BATCH_SIZE = 10000       # Large batch for fast training
+BATCH_SIZE = 100000      # Massive batch size for GPU saturation (tune as needed)
 EPOCHS = 2000
 LR = 1e-3
+USE_COMPILE = True       # Enable torch.compile for kernel fusion (PyTorch 2.0+)
+USE_AMP = True           # Enable Automatic Mixed Precision (FP16/BF16)
 
 # Save configuration to log directory
 config_dict = {
@@ -62,7 +63,9 @@ config_dict = {
     'epochs': EPOCHS,
     'lr': LR,
     'device': str(torch.device("cuda" if torch.cuda.is_available() else "cpu")),
-    'train_test_split': 0.9
+    'train_test_split': 0.9,
+    'use_compile': USE_COMPILE,
+    'use_amp': USE_AMP
 }
 
 import json
@@ -104,17 +107,28 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 inputs_t = torch.tensor(coords, dtype=torch.float32).to(device)
 targets_t = torch.tensor(targets, dtype=torch.float32).to(device)
 
-# Train/Test split for validation
-from torch.utils.data import random_split
-dataset = TensorDataset(inputs_t, targets_t)
-train_size = int(0.9 * len(dataset))
-test_size = len(dataset) - train_size
-train_dataset, test_dataset = random_split(dataset, [train_size, test_size])
+print(f"✓ Full dataset pre-loaded to {device.type.upper()}")
+print(f"  Inputs shape: {inputs_t.shape}, GPU memory: {inputs_t.element_size() * inputs_t.nelement() / 1e9:.2f} GB")
+print(f"  Targets shape: {targets_t.shape}, GPU memory: {targets_t.element_size() * targets_t.nelement() / 1e9:.2f} GB")
 
-train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, drop_last=True)
-test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, drop_last=False)
+# Manual train/test split indices (no DataLoader, no workers)
+total_size = len(inputs_t)
+train_size = int(0.9 * total_size)
+test_size = total_size - train_size
+
+# Random permutation for shuffling
+perm = torch.randperm(total_size, device=device)
+train_indices = perm[:train_size]
+test_indices = perm[train_size:]
+
+# Pre-allocate batches on GPU for faster access
+train_inputs = inputs_t[train_indices]
+train_targets = targets_t[train_indices]
+test_inputs = inputs_t[test_indices]
+test_targets = targets_t[test_indices]
 
 print(f"Train size: {train_size}, Test size: {test_size}")
+print(f"✓ Manual batching setup complete (no DataLoader overhead)")
 
 # --- 3. TRAINING LOOP ---
 fft_dict = {"input_dim": 3,
@@ -140,10 +154,22 @@ trunk = TrunkNet(
     fft_transform=fft_trunk
 ).to(device)
 
+# =========== KEY OPTIMIZATION 1: TORCH COMPILE ===========
+# Fuse kernels and reduce Python overhead (PyTorch 2.0+)
+if USE_COMPILE:
+    try:
+        trunk = torch.compile(trunk, mode='max-autotune')
+        print("✓ Model compiled with torch.compile (kernel fusion enabled)")
+    except Exception as e:
+        print(f"⚠ torch.compile not available or failed ({e}), running in eager mode")
+
 optimizer = optim.Adam(trunk.parameters(), lr=LR)
 scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=500, gamma=0.5)
 criterion = nn.MSELoss()
-scaler = GradScaler(enabled=device.type == "cuda")
+scaler = GradScaler(enabled=(device.type == "cuda") and USE_AMP)
+
+if USE_AMP:
+    print(f"✓ Automatic Mixed Precision (AMP) enabled")
 
 
 
@@ -157,50 +183,79 @@ training_start = time.time()
 trunk.eval()
 with torch.no_grad():
     initial_loss = 0
-    for batch_x, batch_y in train_loader:
-        pred = trunk(batch_x)
-        loss = criterion(pred, batch_y)
+    n_batches = 0
+    for idx in range(0, train_size, BATCH_SIZE):
+        batch_end = min(idx + BATCH_SIZE, train_size)
+        batch_x = train_inputs[idx:batch_end]
+        batch_y = train_targets[idx:batch_end]
+        with autocast(enabled=(device.type == "cuda") and USE_AMP):
+            pred = trunk(batch_x)
+            loss = criterion(pred, batch_y)
         initial_loss += loss.item()
-    initial_loss /= len(train_loader)
+        n_batches += 1
+    initial_loss /= n_batches
     print(f"Initial Loss (before training): {initial_loss:.2e}")
 
 for epoch in range(EPOCHS):
-    # Training
+    # ========== TRAINING LOOP ==========
     trunk.train()
     total_loss = 0
+    n_batches = 0
     
-    for batch_x, batch_y in train_loader:
+    # Shuffle training data
+    perm = torch.randperm(train_size, device=device)
+    shuffled_inputs = train_inputs[perm]
+    shuffled_targets = train_targets[perm]
+    
+    # Manual batching with GPU pre-loaded data
+    for idx in range(0, train_size, BATCH_SIZE):
+        batch_end = min(idx + BATCH_SIZE, train_size)
+        batch_x = shuffled_inputs[idx:batch_end]
+        batch_y = shuffled_targets[idx:batch_end]
+        
         optimizer.zero_grad(set_to_none=True)
-        with autocast(enabled=device.type == "cuda"):
+        
+        # =========== KEY OPTIMIZATION 2: AUTOMATIC MIXED PRECISION ===========
+        with autocast(enabled=(device.type == "cuda") and USE_AMP):
             pred = trunk(batch_x)
             loss = criterion(pred, batch_y)
+        
+        # Scale loss and backward pass
         scaler.scale(loss).backward()
         scaler.step(optimizer)
         scaler.update()
+        
         total_loss += loss.detach().item()
+        n_batches += 1
     
-    avg_train_loss = total_loss / len(train_loader)
+    avg_train_loss = total_loss / n_batches
     normalized_train_loss = avg_train_loss / initial_loss
     train_loss_history.append(normalized_train_loss)
     
-    # Validation
+    # ========== VALIDATION LOOP ==========
     trunk.eval()
     total_test_loss = 0
+    n_batches = 0
     with torch.no_grad():
-        for batch_x, batch_y in test_loader:
-            with autocast(enabled=device.type == "cuda"):
+        for idx in range(0, test_size, BATCH_SIZE):
+            batch_end = min(idx + BATCH_SIZE, test_size)
+            batch_x = test_inputs[idx:batch_end]
+            batch_y = test_targets[idx:batch_end]
+            with autocast(enabled=(device.type == "cuda") and USE_AMP):
                 pred = trunk(batch_x)
                 loss = criterion(pred, batch_y)
             total_test_loss += loss.detach().item()
+            n_batches += 1
     
-    avg_test_loss = total_test_loss / len(test_loader)
+    avg_test_loss = total_test_loss / n_batches
     normalized_test_loss = avg_test_loss / initial_loss
     test_loss_history.append(normalized_test_loss)
     
     scheduler.step()
     
     if epoch % 100 == 0:
-        print(f"Epoch {epoch}/{EPOCHS} | Train Loss: {normalized_train_loss:.4f} | Test Loss: {normalized_test_loss:.4f} | LR: {optimizer.param_groups[0]['lr']:.1e}")
+        elapsed = time.time() - training_start
+        print(f"Epoch {epoch:4d}/{EPOCHS} | Train Loss: {normalized_train_loss:.4f} | Test Loss: {normalized_test_loss:.4f} | LR: {optimizer.param_groups[0]['lr']:.1e} | Time: {elapsed/60:.1f}m")
 
 training_time_sec = time.time() - training_start
 print(f"Training finished in {training_time_sec/60:.2f} min ({training_time_sec:.1f} sec)")
