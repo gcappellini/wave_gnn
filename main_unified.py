@@ -68,13 +68,13 @@ def main(cfg: DictConfig):
         log.warning(f"Ground truth file not found: {gt_file}")
     
     # ============================================================
-    # Load Pretrained Trunk (optional) - Requires FFT disabled
+    # Load Pretrained Trunk (optional) - Requires FFT enabled
     # ============================================================
-    # If loading pretrained trunk, create model WITHOUT FFT first
+    # If loading pretrained trunk, create model WITH FFT (pretrained model was trained with FFT)
     fft_enabled = cfg.model.get('use_fft_trunk', False)
     if cfg.run.get('load_pretrained_trunk', False) and not cfg.run.get('load_model', False):
-        log.info("Loading pretrained trunk: temporarily disabling FFT for model creation...")
-        cfg.model.use_fft_trunk = False
+        log.info("Loading pretrained trunk: enabling FFT for model creation (pretrained model uses FFT)...")
+        cfg.model.use_fft_trunk = True
     
     # ============================================================
     # Create Model
@@ -127,7 +127,8 @@ def main(cfg: DictConfig):
                     log.info("Detected torch.compile() wrapper in checkpoint; removing '_orig_mod.' prefix...")
                     trunk_state = {k.replace('_orig_mod.', ''): v for k, v in trunk_state.items()}
 
-                missing, unexpected = model.trunk.load_state_dict(trunk_state, strict=True)
+                # Load with strict=False to allow FFT parameters to be loaded
+                model.trunk.load_state_dict(trunk_state, strict=False)
                 log.info(f"✓ Trunk loaded from {trunk_path}")
 
                 if cfg.run.get('freeze_trunk', True):
