@@ -34,6 +34,12 @@ class Tee:
         if self.also_stdout and self._stdout:
             self._stdout.flush()
         self.log_file.flush()
+    
+    def isatty(self):
+        """Return True if stdout is a TTY (required for torch.compile compatibility)."""
+        if self.also_stdout and self._stdout:
+            return self._stdout.isatty()
+        return False
 
 log_fh = open(LOG_PATH, 'w')
 sys.stdout = Tee(log_fh, also_stdout=True)
