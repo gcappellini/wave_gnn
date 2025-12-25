@@ -42,8 +42,8 @@ sys.stderr = sys.stdout
 
 # --- CONFIGURATION ---
 SVD_PATH = os.path.join(SCRIPT_DIR, 'data', 'svd_basis_data.npy')
-MODEL_SAVE_PATH = os.path.join(LOG_DIR, 'pretrained_trunk_p128.pth')
-RANK = 128                # We limit to 128 for this test run
+MODEL_SAVE_PATH = os.path.join(LOG_DIR, 'pretrained_trunk.pth')
+RANK = 64                # We limit to 64 for this test run
 TRUNK_HIDDEN = 300       # Hidden layer size for Trunk
 TRUNK_N_LAYERS = 6       # Number of hidden layers
 BATCH_SIZE = 10000       # Large batch for fast training
@@ -217,7 +217,7 @@ plt.xlabel("Epochs")
 plt.ylabel("Normalized Loss (Initial Loss = 1.0)")
 plt.legend()
 plt.grid(True, alpha=0.3)
-plt.savefig(os.path.join(SCRIPT_DIR, 'data', 'trunk_pretrain_loss.png'))
+plt.savefig(os.path.join(LOG_DIR, 'trunk_pretrain_loss.png'))
 plt.show()
 
 # Verification Plot
@@ -241,5 +241,5 @@ ax[0].imshow(true_slice, origin='lower', cmap='seismic')
 ax[0].set_title("True SVD Basis #0")
 ax[1].imshow(pred_slice, origin='lower', cmap='seismic')
 ax[1].set_title("Neural Trunk Basis #0")
-plt.savefig(os.path.join(SCRIPT_DIR, 'data', 'trunk_verification.png'))
+plt.savefig(os.path.join(LOG_DIR, 'trunk_verification.png'))
 plt.show()
