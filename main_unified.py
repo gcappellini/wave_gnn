@@ -121,6 +121,11 @@ def main(cfg: DictConfig):
                 else:
                     # Assume the checkpoint is directly a state_dict
                     trunk_state = trunk_ckpt
+                
+                # Remove _orig_mod. prefix if model was saved with torch.compile()
+                if trunk_state and any(k.startswith('_orig_mod.') for k in trunk_state.keys()):
+                    log.info("Detected torch.compile() wrapper in checkpoint; removing '_orig_mod.' prefix...")
+                    trunk_state = {k.replace('_orig_mod.', ''): v for k, v in trunk_state.items()}
 
                 missing, unexpected = model.trunk.load_state_dict(trunk_state, strict=True)
                 log.info(f"✓ Trunk loaded from {trunk_path}")
