@@ -126,9 +126,66 @@ print(f"Relative error range: [{rel_error.min():.6e}, {rel_error.max():.6e}]")
 print(f"Absolute error range: [{abs_error.min():.6e}, {abs_error.max():.6e}]")
 
 # ============================================================
-# 6. PLOT MODES AT 5 TIME INSTANTS
+# 6. SAVE PREDICTIONS FOR SAMPLE 0 (ENTIRE SPATIAL GRID AT 5 TIMES)
 # ============================================================
-print("\n6. Creating prediction visualizations...")
+print("\n6. Saving trunk predictions for sample 0 (full spatial grid at selected times)...")
+
+# Time instants for sample 0
+time_instants_sample0 = [0.0, 0.25, 0.5, 0.75, 1.0]
+t_indices_sample0 = [int(t_inst * (Nt - 1)) for t_inst in time_instants_sample0]
+
+# Extract predictions and ground truth for all spatial points at these times
+layer_size = Nx * Ny
+sample_0_pred_list = []
+sample_0_gt_list = []
+
+for t_inst, t_idx in zip(time_instants_sample0, t_indices_sample0):
+    start_idx = t_idx * layer_size
+    end_idx = start_idx + layer_size
+    
+    sample_0_pred_list.append(pred_all_denorm[start_idx:end_idx, :])  # (Nx*Ny, N_MODES)
+    sample_0_gt_list.append(true_basis[start_idx:end_idx, :])  # (Nx*Ny, N_MODES)
+
+# Stack into arrays: (5, Nx*Ny, N_MODES)
+sample_0_pred = np.stack(sample_0_pred_list, axis=0)
+sample_0_gt = np.stack(sample_0_gt_list, axis=0)
+
+# Compute errors
+sample_0_abs_error = np.abs(sample_0_pred - sample_0_gt)
+sample_0_rel_error = sample_0_abs_error / (np.maximum(np.abs(sample_0_gt), 1e-12))
+
+# Save results
+sample_0_results = {
+    'predicted_basis': sample_0_pred,  # (5, Nx*Ny, N_MODES)
+    'ground_truth_basis': sample_0_gt,  # (5, Nx*Ny, N_MODES)
+    'absolute_error': sample_0_abs_error,
+    'relative_error': sample_0_rel_error,
+    'time_instants': np.array(time_instants_sample0),
+    'time_indices': np.array(t_indices_sample0),
+    'grid_shape': (Nx, Ny),
+}
+
+sample_0_path = os.path.join(SCRIPT_DIR, 'data/trunk_sample0_predictions.npz')
+np.savez(sample_0_path, **sample_0_results)
+print(f"✓ Sample 0 predictions saved to {sample_0_path}")
+print(f"  Shape: {sample_0_pred.shape} (5 times × {Nx*Ny} spatial points × {N_MODES} modes)")
+
+# Print summary statistics
+print(f"\nSample 0 (full spatial grid) statistics:")
+print(f"  Overall mean absolute error: {sample_0_abs_error.mean():.6e}")
+print(f"  Overall mean relative error: {sample_0_rel_error.mean():.6f}")
+print(f"\nPer-time statistics:")
+print(f"{'Time':<8} {'Mean Abs Error':<18} {'Mean Rel Error':<18}")
+print("-" * 50)
+for i, t_inst in enumerate(time_instants_sample0):
+    mae = sample_0_abs_error[i].mean()
+    mre = sample_0_rel_error[i].mean()
+    print(f"{t_inst:<8.2f} {mae:<18.6e} {mre:<18.6f}")
+
+# ============================================================
+# 7. PLOT MODES AT 5 TIME INSTANTS
+# ============================================================
+print("\n7. Creating prediction visualizations...")
 
 # Time instants to visualize
 time_instants = [0.0, 0.25, 0.5, 0.75, 1.0]
@@ -187,9 +244,9 @@ for t_inst, t_idx in zip(time_instants, t_indices):
     plt.close()
 
 # ============================================================
-# 7. PLOT RELATIVE ERRORS AT 5 TIME INSTANTS
+# 8. PLOT RELATIVE ERRORS AT 5 TIME INSTANTS
 # ============================================================
-print("\n7. Creating relative error visualizations...")
+print("\n8. Creating relative error visualizations...")
 
 for t_inst, t_idx in zip(time_instants, t_indices):
     print(f"   Plotting relative errors at t={t_inst} (index {t_idx})...")
