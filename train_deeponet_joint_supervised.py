@@ -34,6 +34,13 @@ TRAIN_TEST_SPLIT = 0.8
 POINTS_PER_SAMPLE = 5000  # space-time points sampled per sample
 SEED = 42
 
+# Optional PINN loss (PDE residual)
+USE_PINN_LOSS = True
+PDE_LOSS_WEIGHT = 0.50
+N_COLLOC_PER_BATCH = 4096
+WAVE_SPEED = 1.0
+DAMPING_COEFF = 1.0
+
 np.random.seed(SEED)
 torch.manual_seed(SEED)
 
@@ -169,10 +176,12 @@ class MLP(nn.Module):
         return self.net(x)
 
 class DeepONet(nn.Module):
-    def __init__(self, trunk, branch):
+    def __init__(self, trunk, branch, c=1.0, k=1.0):
         super().__init__()
         self.trunk = trunk
         self.branch = branch
+        self.c = c
+        self.k = k
 
     def forward(self, ic, coords):
         trunk_out = self.trunk(coords)  # (B, N_MODES)
@@ -180,11 +189,52 @@ class DeepONet(nn.Module):
         u = torch.sum(trunk_out * branch_out, dim=1)  # (B,)
         return u
 
+    def compute_pde_residual(self, ic, xyt):
+        xyt_grad = xyt.clone().requires_grad_(True)
+        u = self.forward(ic, xyt_grad)
+
+        # First derivatives
+        grad_u = torch.autograd.grad(
+            u, xyt_grad,
+            torch.ones_like(u),
+            create_graph=True,
+            retain_graph=True
+        )[0]
+        u_x = grad_u[:, 0]
+        u_y = grad_u[:, 1]
+        u_t = grad_u[:, 2]
+
+        # Second derivatives in space
+        u_xx = torch.autograd.grad(
+            u_x, xyt_grad,
+            torch.ones_like(u_x),
+            create_graph=True,
+            retain_graph=True
+        )[0][:, 0]
+
+        u_yy = torch.autograd.grad(
+            u_y, xyt_grad,
+            torch.ones_like(u_y),
+            create_graph=True,
+            retain_graph=True
+        )[0][:, 1]
+
+        # Second derivative in time
+        u_tt = torch.autograd.grad(
+            u_t, xyt_grad,
+            torch.ones_like(u_t),
+            create_graph=True
+        )[0][:, 2]
+
+        # PDE residual: u_tt + k*u_t - c^2*(u_xx + u_yy) = 0
+        residual = u_tt + self.k * u_t - self.c**2 * (u_xx + u_yy)
+        return residual
+
 trunk = MLP(3, TRUNK_HIDDEN_DIM, N_MODES, TRUNK_N_LAYERS).to(DEVICE)
 branch = MLP(ic_dim, BRANCH_HIDDEN_DIM, N_MODES, BRANCH_N_LAYERS).to(DEVICE)
 
 # Load pre-trained trunk weights from SVD training
-trunk_pretrained_path = os.path.join(SCRIPT_DIR, 'logs_2601/trunk_svd_simple.pth')
+trunk_pretrained_path = os.path.join(SCRIPT_DIR, 'data/trunk_svd_simple.pth')
 if os.path.exists(trunk_pretrained_path):
     print(f"\n>>> Loading pre-trained trunk weights from: {trunk_pretrained_path}")
     trunk_checkpoint = torch.load(trunk_pretrained_path, map_location=DEVICE)
@@ -194,12 +244,16 @@ else:
     print(f"\n>>> WARNING: Pre-trained trunk not found at {trunk_pretrained_path}")
     print(">>> Starting with random initialization")
 
-model = DeepONet(trunk, branch).to(DEVICE)
+model = DeepONet(trunk, branch, WAVE_SPEED, DAMPING_COEFF).to(DEVICE)
 
 # ============================================================
 # 7. TRAINING LOOP (FINE-TUNING)
 # ============================================================
 print("\n7. Fine-tuning DeepONet (trunk + branch)...")
+if USE_PINN_LOSS:
+    print("   PINN loss enabled: PDE residual will be added")
+else:
+    print("   PINN loss disabled: supervised loss only")
 optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
 loss_fn = nn.MSELoss()
 
@@ -212,7 +266,25 @@ for epoch in range(N_EPOCHS):
     for ic_b, coords_b, target_b in train_loader:
         optimizer.zero_grad()
         pred = model(ic_b, coords_b)
-        loss = loss_fn(pred, target_b)
+        supervised_loss = loss_fn(pred, target_b)
+
+        if USE_PINN_LOSS:
+            colloc_idx = np.random.randint(0, N_samples, size=N_COLLOC_PER_BATCH)
+            ic_colloc = ic_norm[colloc_idx]
+            x_colloc = np.random.rand(N_COLLOC_PER_BATCH, 1)
+            y_colloc = np.random.rand(N_COLLOC_PER_BATCH, 1)
+            t_colloc = np.random.rand(N_COLLOC_PER_BATCH, 1)
+            coords_colloc = np.hstack([x_colloc, y_colloc, t_colloc])
+
+            ic_colloc_t = torch.from_numpy(ic_colloc).float().to(DEVICE)
+            coords_colloc_t = torch.from_numpy(coords_colloc).float().to(DEVICE)
+
+            residual = model.compute_pde_residual(ic_colloc_t, coords_colloc_t)
+            pde_loss = torch.mean(residual**2)
+            loss = supervised_loss + PDE_LOSS_WEIGHT * pde_loss
+        else:
+            pde_loss = None
+            loss = supervised_loss
         loss.backward()
         optimizer.step()
         epoch_loss += loss.item()
@@ -232,7 +304,13 @@ for epoch in range(N_EPOCHS):
         test_losses.append(test_loss)
 
     if (epoch + 1) % 20 == 0:
-        print(f"Epoch {epoch+1:4d}/{N_EPOCHS} | Train Loss={train_loss:.6e} | Test Loss={test_loss:.6e}")
+        if USE_PINN_LOSS and pde_loss is not None:
+            print(
+                f"Epoch {epoch+1:4d}/{N_EPOCHS} | Train Loss={train_loss:.6e} | "
+                f"Test Loss={test_loss:.6e} | PDE Loss={pde_loss.item():.6e}"
+            )
+        else:
+            print(f"Epoch {epoch+1:4d}/{N_EPOCHS} | Train Loss={train_loss:.6e} | Test Loss={test_loss:.6e}")
 
 # ============================================================
 # 8. SAVE CHECKPOINT
@@ -253,6 +331,11 @@ checkpoint = {
         'branch_n_layers': BRANCH_N_LAYERS,
         'points_per_sample': POINTS_PER_SAMPLE,
         'pretrained_trunk': trunk_pretrained_path if os.path.exists(trunk_pretrained_path) else None,
+        'use_pinn_loss': USE_PINN_LOSS,
+        'pde_loss_weight': PDE_LOSS_WEIGHT,
+        'n_colloc_per_batch': N_COLLOC_PER_BATCH,
+        'wave_speed': WAVE_SPEED,
+        'damping_coeff': DAMPING_COEFF,
     },
     'normalization': {
         'ic_min': ic_min,
