@@ -34,6 +34,7 @@ logs_*/
 checkpoints/
 *.pt
 *.pth
+!data/trunk_svd_simple.pth
 best_model.pt
 
 # Figures and data
