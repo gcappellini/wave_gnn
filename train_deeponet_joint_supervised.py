@@ -38,7 +38,7 @@ np.random.seed(SEED)
 torch.manual_seed(SEED)
 
 print("=" * 70)
-print("TRAINING JOINT DEEPONET (SUPERVISED) ON MATLAB DATA")
+print("FINE-TUNING DEEPONET (SUPERVISED) FROM PRE-TRAINED TRUNK")
 print("=" * 70)
 print(f"Device: {DEVICE}")
 
@@ -182,12 +182,24 @@ class DeepONet(nn.Module):
 
 trunk = MLP(3, TRUNK_HIDDEN_DIM, N_MODES, TRUNK_N_LAYERS).to(DEVICE)
 branch = MLP(ic_dim, BRANCH_HIDDEN_DIM, N_MODES, BRANCH_N_LAYERS).to(DEVICE)
+
+# Load pre-trained trunk weights from SVD training
+trunk_pretrained_path = os.path.join(SCRIPT_DIR, 'logs_2601/trunk_svd_simple.pth')
+if os.path.exists(trunk_pretrained_path):
+    print(f"\n>>> Loading pre-trained trunk weights from: {trunk_pretrained_path}")
+    trunk_checkpoint = torch.load(trunk_pretrained_path, map_location=DEVICE)
+    trunk.load_state_dict(trunk_checkpoint['model_state_dict'])
+    print("✓ Pre-trained trunk weights loaded successfully")
+else:
+    print(f"\n>>> WARNING: Pre-trained trunk not found at {trunk_pretrained_path}")
+    print(">>> Starting with random initialization")
+
 model = DeepONet(trunk, branch).to(DEVICE)
 
 # ============================================================
-# 7. TRAINING LOOP
+# 7. TRAINING LOOP (FINE-TUNING)
 # ============================================================
-print("\n7. Training...")
+print("\n7. Fine-tuning DeepONet (trunk + branch)...")
 optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
 loss_fn = nn.MSELoss()
 
@@ -240,6 +252,7 @@ checkpoint = {
         'branch_hidden_dim': BRANCH_HIDDEN_DIM,
         'branch_n_layers': BRANCH_N_LAYERS,
         'points_per_sample': POINTS_PER_SAMPLE,
+        'pretrained_trunk': trunk_pretrained_path if os.path.exists(trunk_pretrained_path) else None,
     },
     'normalization': {
         'ic_min': ic_min,
