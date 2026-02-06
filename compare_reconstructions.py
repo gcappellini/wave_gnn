@@ -233,7 +233,7 @@ plt.suptitle('Comparison of Reconstruction Methods (Sample 0)\nGround Truth | SV
              fontsize=14, y=0.995)
 plt.tight_layout()
 
-save_path = os.path.join(SCRIPT_DIR, 'data/comparison_reconstructions_sample0.png')
+save_path = os.path.join(SCRIPT_DIR, 'data/comparison_reconstructions_sample0_new.png')
 plt.savefig(save_path, dpi=150, bbox_inches='tight')
 print(f"\n✓ Comparison plot saved to {save_path}")
 plt.close()

@@ -102,6 +102,7 @@ print(f"Loading checkpoint: {latest_ckpt.name}")
 # Load checkpoint
 checkpoint = torch.load(latest_ckpt, map_location=DEVICE)
 config = checkpoint['config']
+norm_data = checkpoint['normalization']
 
 N_MODES = config['n_modes']
 N_SENSORS = config['n_sensors']
@@ -109,6 +110,25 @@ TRUNK_HIDDEN_DIM = config['trunk_hidden_dim']
 TRUNK_N_LAYERS = config['trunk_n_layers']
 BRANCH_HIDDEN_DIM = config['branch_hidden_dim']
 BRANCH_N_LAYERS = config['branch_n_layers']
+
+# Extract normalization parameters (from trunk SVD training)
+trunk_norm_path = os.path.join(SCRIPT_DIR, 'logs_2601/trunk_svd_simple.pth')
+if not os.path.exists(trunk_norm_path):
+    trunk_norm_path = os.path.join(SCRIPT_DIR, 'data/trunk_svd_simple.pth')
+
+if not os.path.exists(trunk_norm_path):
+    raise FileNotFoundError(
+        f"Trunk normalization checkpoint not found. Tried: {trunk_norm_path}"
+    )
+
+trunk_ckpt = torch.load(trunk_norm_path, map_location=DEVICE)
+trunk_norm = trunk_ckpt['normalization']
+targets_min = trunk_norm['min']
+targets_max = trunk_norm['max']
+targets_range = targets_max - targets_min
+
+print("\nNormalization parameters (trunk SVD training):")
+print(f"  targets_min: {targets_min:.6f}, targets_max: {targets_max:.6f}")
 
 # Build trunk only
 trunk = MLP(3, TRUNK_HIDDEN_DIM, N_MODES, TRUNK_N_LAYERS).to(DEVICE)
@@ -140,8 +160,13 @@ with torch.no_grad():
     trunk_out = model.trunk(coords_tensor).cpu().numpy()  # (Nx*Ny, N_MODES)
 
 # Reshape to spatial: (Nx, Ny, N_MODES)
-trunk_modes = trunk_out.reshape(Nx, Ny, N_MODES, order='F')
+trunk_modes_norm = trunk_out.reshape(Nx, Ny, N_MODES, order='F')
+
+# Denormalize trunk outputs from [-1, 1] to SVD mode dimensions
+trunk_modes = (trunk_modes_norm + 1) * targets_range / 2 + targets_min
 print(f"Trunk predictions shape: {trunk_modes.shape}")
+print(f"Trunk value range after denormalization: [{trunk_modes.min():.6f}, {trunk_modes.max():.6f}]")
+print(f"SVD modes value range: [{modes_svd[:, :, t_idx, :N_MODES].min():.6f}, {modes_svd[:, :, t_idx, :N_MODES].max():.6f}]")
 
 # ============================================================
 # 4. CREATE COMPARISON PLOT
@@ -202,7 +227,7 @@ plt.suptitle(f'Trunk Network vs SVD Modes Comparison (Sample 0, t={t_actual:.2f}
              f'Left: Trunk Prediction | Right: SVD Ground Truth', 
              fontsize=14, y=0.995)
 
-save_path = os.path.join(SCRIPT_DIR, f'data/trunk_vs_svd_all_modes_t{TIME_INSTANT:.2f}.png')
+save_path = os.path.join(SCRIPT_DIR, f'data/trunk_vs_svd_all_modes_t{TIME_INSTANT:.2f}_new.png')
 plt.savefig(save_path, dpi=150, bbox_inches='tight')
 print(f"\n✓ Comparison plot saved to {save_path}")
 plt.close()
