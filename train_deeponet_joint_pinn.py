@@ -47,7 +47,7 @@ np.random.seed(SEED)
 torch.manual_seed(SEED)
 
 print("=" * 70)
-print("TRAINING JOINT DEEPONET (PINN) ON MATLAB DATA")
+print("FINE-TUNING DEEPONET WITH PINN LOSS FROM SUPERVISED CHECKPOINT")
 print("=" * 70)
 print(f"Device: {DEVICE}")
 
@@ -228,6 +228,18 @@ trunk = MLP(3, TRUNK_HIDDEN_DIM, N_MODES, TRUNK_N_LAYERS).to(DEVICE)
 branch = MLP(ic_dim, BRANCH_HIDDEN_DIM, N_MODES, BRANCH_N_LAYERS).to(DEVICE)
 model = DeepONet(trunk, branch, WAVE_SPEED, DAMPING_COEFF).to(DEVICE)
 
+# Load pre-trained supervised model
+pretrained_path = os.path.join(SCRIPT_DIR, 'data/deeponet_joint_supervised_20260206_130551.pth')
+if os.path.exists(pretrained_path):
+    print(f"\n>>> Loading pre-trained supervised model from: {pretrained_path}")
+    pretrained_ckpt = torch.load(pretrained_path, map_location=DEVICE)
+    model.load_state_dict(pretrained_ckpt['model_state_dict'])
+    print("✓ Pre-trained model loaded successfully")
+    print(">>> Now fine-tuning with PINN loss...")
+else:
+    print(f"\n>>> WARNING: Pre-trained model not found at {pretrained_path}")
+    print(">>> Starting from random initialization")
+
 # ============================================================
 # 6. TRAINING LOOP (IC + PDE)
 # ============================================================
@@ -296,7 +308,7 @@ for epoch in range(N_EPOCHS):
 print("\n7. Saving checkpoint...")
 
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-ckpt_path = os.path.join(SCRIPT_DIR, f"data/deeponet_joint_pinn_{timestamp}.pth")
+ckpt_path = os.path.join(SCRIPT_DIR, f"data/deeponet_pinn_finetuned_{timestamp}.pth")
 
 checkpoint = {
     'model_state_dict': model.state_dict(),
@@ -311,6 +323,7 @@ checkpoint = {
         'n_colloc_per_epoch': N_COLLOC_PER_EPOCH,
         'wave_speed': WAVE_SPEED,
         'damping_coeff': DAMPING_COEFF,
+        'pretrained_from': pretrained_path if os.path.exists(pretrained_path) else None,
     },
     'normalization': {
         'ic_min': ic_min,
@@ -378,7 +391,7 @@ for i, t_val in enumerate(time_instants):
     plt.colorbar(im2, ax=axes[i, 2], fraction=0.046)
 
 plt.tight_layout()
-plot_path = os.path.join(SCRIPT_DIR, f"data/deeponet_joint_pinn_eval_sample0_{timestamp}.png")
+plot_path = os.path.join(SCRIPT_DIR, f"data/deeponet_pinn_finetuned_eval_sample0_{timestamp}.png")
 plt.savefig(plot_path, dpi=150)
 print(f"✓ Evaluation plot saved to {plot_path}")
 plt.close()
@@ -394,7 +407,7 @@ plt.ylabel('Loss')
 plt.title('DeepONet PINN Training Loss')
 plt.legend()
 plt.grid(True, alpha=0.3)
-loss_path = os.path.join(SCRIPT_DIR, f"data/deeponet_joint_pinn_loss_{timestamp}.png")
+loss_path = os.path.join(SCRIPT_DIR, f"data/deeponet_pinn_finetuned_loss_{timestamp}.png")
 plt.savefig(loss_path, dpi=150)
 print(f"✓ Loss plot saved to {loss_path}")
 plt.close()
