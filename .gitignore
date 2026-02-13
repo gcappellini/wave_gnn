@@ -31,6 +31,7 @@ multirun/
 logs_*/
 
 data_old/
+z_*/
 # Checkpoints and models
 checkpoints/
 *.pt
