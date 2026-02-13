@@ -30,6 +30,7 @@ multirun/
 .hydra/
 logs_*/
 
+data_old/
 # Checkpoints and models
 checkpoints/
 *.pt
