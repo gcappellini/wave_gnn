@@ -3,13 +3,21 @@ import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.utils.extmath import randomized_svd
 import os
+from datetime import datetime
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Create timestamped output directory
+TIMESTAMP = datetime.now().strftime("%Y%m%d_%H%M%S")
+OUTPUT_DIR = os.path.join(SCRIPT_DIR, 'outputs', TIMESTAMP)
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # 1. CONFIGURAZIONE
 DATA_PATH = 'data/test_cases.mat'  # Il file generato da MATLAB
 N_MODES = 128                    # Numero di basi da estrarre (p)
 VISUALIZE = True
+
+print(f"Output directory: {OUTPUT_DIR}")
 
 print(f"Loading data from {DATA_PATH}...")
 # MATLAB v7.3 files use HDF5 format, need h5py instead of scipy.io
@@ -99,7 +107,8 @@ if VISUALIZE:
     
     plt.suptitle(f"Trunk Basis Functions ({actual_modes} modes captured)", fontsize=16)
     plt.tight_layout()
-    plt.savefig(os.path.join(SCRIPT_DIR, 'data/svd_modes_check.png'), dpi=150)
+    plt.savefig(os.path.join(OUTPUT_DIR, 'svd_modes_check.png'), dpi=150)
+    print(f"Saved: {os.path.join(OUTPUT_DIR, 'svd_modes_check.png')}")
     plt.show()
 
     # Plot Decadimento Valori Singolari (Energia)
@@ -124,7 +133,8 @@ if VISUALIZE:
     axes[1].set_ylim([0, 105])
     
     plt.tight_layout()
-    plt.savefig(os.path.join(SCRIPT_DIR, 'data/svd_energy_decay.png'))
+    plt.savefig(os.path.join(OUTPUT_DIR, 'svd_energy_decay.png'))
+    print(f"Saved: {os.path.join(OUTPUT_DIR, 'svd_energy_decay.png')}")
     plt.show()
     
     # Se la curva scende rapidamente, significa che i modi disponibili sono sufficienti.
@@ -185,7 +195,8 @@ if VISUALIZE:
     ax4.grid(True, alpha=0.3)
     
     plt.tight_layout()
-    plt.savefig(os.path.join(SCRIPT_DIR, 'data/svd_coefficients_analysis.png'), dpi=150)
+    plt.savefig(os.path.join(OUTPUT_DIR, 'svd_coefficients_analysis.png'), dpi=150)
+    print(f"Saved: {os.path.join(OUTPUT_DIR, 'svd_coefficients_analysis.png')}")
     plt.show()
     
     # ============================================================
@@ -274,7 +285,8 @@ if VISUALIZE:
     ax4.grid(True, alpha=0.3)
     
     plt.tight_layout()
-    plt.savefig(os.path.join(SCRIPT_DIR, 'data/svd_temporal_evolution.png'), dpi=150)
+    plt.savefig(os.path.join(OUTPUT_DIR, 'svd_temporal_evolution.png'), dpi=150)
+    print(f"Saved: {os.path.join(OUTPUT_DIR, 'svd_temporal_evolution.png')}")
     plt.show()
     
     print("\nTemporal evolution visualization saved!")

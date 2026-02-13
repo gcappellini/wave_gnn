@@ -12,19 +12,34 @@ import torch.nn as nn
 import matplotlib.pyplot as plt
 import os
 from pathlib import Path
+from datetime import datetime
 
 # ============================================================
 # CONFIGURATION
 # ============================================================
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Create timestamped output directory
+TIMESTAMP = datetime.now().strftime("%Y%m%d_%H%M%S")
+OUTPUT_DIR = os.path.join(SCRIPT_DIR, 'outputs', TIMESTAMP)
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 N_MODES = 18
 
 print(f"Device: {DEVICE}")
 
 # Find most recent DeepONet checkpoint
-checkpoint_dir = os.path.join(SCRIPT_DIR, 'data')
+checkpoint_dir = os.path.join(SCRIPT_DIR, 'models')
 deeponet_checkpoints = sorted(Path(checkpoint_dir).glob('deeponet_supervised_*.pth'))
+if not deeponet_checkpoints:
+    # Fall back to old locations for compatibility
+    for fallback_dir in [os.path.join(SCRIPT_DIR, 'data'), os.path.join(SCRIPT_DIR, 'logs_2601')]:
+        if os.path.exists(fallback_dir):
+            deeponet_checkpoints = sorted(Path(fallback_dir).glob('deeponet_supervised_*.pth'))
+            if deeponet_checkpoints:
+                checkpoint_dir = fallback_dir
+                break
 if not deeponet_checkpoints:
     raise FileNotFoundError(f"No DeepONet checkpoint found in {checkpoint_dir}")
 
@@ -291,7 +306,7 @@ for idx, (t_idx, t_val) in enumerate(zip(time_indices, time_values)):
     plt.subplots_adjust(left=0.05, right=0.9, top=0.96, bottom=0.02, 
                         wspace=0.15, hspace=0.4)
     
-    output_path = os.path.join(SCRIPT_DIR, f'deeponet_predictions_t_{t_val:.2f}.png')
+    output_path = os.path.join(OUTPUT_DIR, f'deeponet_predictions_t_{t_val:.2f}.png')
     plt.savefig(output_path, dpi=150, bbox_inches='tight')
     print(f"✓ Saved {output_path}")
     plt.close()
@@ -334,7 +349,7 @@ for idx, (t_idx, t_val) in enumerate(zip(time_indices, time_values)):
     plt.subplots_adjust(left=0.05, right=0.9, top=0.96, bottom=0.02,
                         wspace=0.15, hspace=0.4)
     
-    output_path = os.path.join(SCRIPT_DIR, f'deeponet_abs_errors_t_{t_val:.2f}.png')
+    output_path = os.path.join(OUTPUT_DIR, f'deeponet_abs_errors_t_{t_val:.2f}.png')
     plt.savefig(output_path, dpi=150, bbox_inches='tight')
     print(f"✓ Saved {output_path}")
     plt.close()

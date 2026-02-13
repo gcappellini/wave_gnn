@@ -12,8 +12,15 @@ import torch
 import torch.nn as nn
 import matplotlib.pyplot as plt
 from pathlib import Path
+from datetime import datetime
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Create timestamped output directory
+TIMESTAMP = datetime.now().strftime("%Y%m%d_%H%M%S")
+OUTPUT_DIR = os.path.join(SCRIPT_DIR, 'outputs', TIMESTAMP)
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 # ============================================================
@@ -86,7 +93,7 @@ print("\n[3/3] Loading DeepONet and making predictions...")
 
 # Find latest checkpoint
 search_dirs = [
-    os.path.join(SCRIPT_DIR, 'data'),
+    os.path.join(SCRIPT_DIR, 'models'),
     os.path.join(SCRIPT_DIR, 'logs_2601'),
     os.path.join(SCRIPT_DIR, 'logs'),
 ]
@@ -233,7 +240,7 @@ plt.suptitle('Comparison of Reconstruction Methods (Sample 0)\nGround Truth | SV
              fontsize=14, y=0.995)
 plt.tight_layout()
 
-save_path = os.path.join(SCRIPT_DIR, 'data/comparison_reconstructions_sample0_new.png')
+save_path = os.path.join(OUTPUT_DIR, 'comparison_reconstructions_sample0.png')
 plt.savefig(save_path, dpi=150, bbox_inches='tight')
 print(f"\n✓ Comparison plot saved to {save_path}")
 plt.close()

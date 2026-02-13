@@ -90,7 +90,7 @@ cpu_time_end = cputime - cpu_time_start
 
 % Save dataset to script directory
 script_dir = fileparts(mfilename('fullpath'));
-save(fullfile(script_dir, 'data', 'test_cases.mat'), 'U_data', 'V_data', 'x_grid', 'y_grid', 'tlist', '-v7.3');
+save(fullfile(script_dir, 'data', 'free_evolution.mat'), 'U_data', 'V_data', 'x_grid', 'y_grid', 'tlist', '-v7.3');
 
 % Visualize three random samples at mid time
 mid_idx = round(Nt / 2);

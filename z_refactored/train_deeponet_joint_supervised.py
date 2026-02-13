@@ -16,6 +16,12 @@ from torch.utils.data import DataLoader, TensorDataset
 import matplotlib.pyplot as plt
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Create timestamped output directory
+TIMESTAMP = datetime.now().strftime("%Y%m%d_%H%M%S")
+OUTPUT_DIR = os.path.join(SCRIPT_DIR, 'outputs', TIMESTAMP)
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 # ============================================================
@@ -234,7 +240,7 @@ trunk = MLP(3, TRUNK_HIDDEN_DIM, N_MODES, TRUNK_N_LAYERS).to(DEVICE)
 branch = MLP(ic_dim, BRANCH_HIDDEN_DIM, N_MODES, BRANCH_N_LAYERS).to(DEVICE)
 
 # Load pre-trained trunk weights from SVD training
-trunk_pretrained_path = os.path.join(SCRIPT_DIR, 'data/trunk_svd_simple.pth')
+trunk_pretrained_path = os.path.join(SCRIPT_DIR, 'models/trunk_svd_simple.pth')
 if os.path.exists(trunk_pretrained_path):
     print(f"\n>>> Loading pre-trained trunk weights from: {trunk_pretrained_path}")
     trunk_checkpoint = torch.load(trunk_pretrained_path, map_location=DEVICE)
@@ -317,8 +323,8 @@ for epoch in range(N_EPOCHS):
 # ============================================================
 print("\n8. Saving checkpoint...")
 
-timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-ckpt_path = os.path.join(SCRIPT_DIR, f"data/deeponet_joint_supervised_{timestamp}.pth")
+os.makedirs(os.path.join(SCRIPT_DIR, 'models'), exist_ok=True)
+ckpt_path = os.path.join(SCRIPT_DIR, f"models/deeponet_joint_supervised_{TIMESTAMP}.pth")
 
 checkpoint = {
     'model_state_dict': model.state_dict(),
@@ -409,7 +415,7 @@ for i, t_val in enumerate(time_instants):
     plt.colorbar(im2, ax=axes[i, 2], fraction=0.046)
 
 plt.tight_layout()
-plot_path = os.path.join(SCRIPT_DIR, f"data/deeponet_joint_eval_sample0_{timestamp}.png")
+plot_path = os.path.join(OUTPUT_DIR, f"deeponet_joint_eval_sample0.png")
 plt.savefig(plot_path, dpi=150)
 print(f"✓ Evaluation plot saved to {plot_path}")
 plt.close()
@@ -425,7 +431,7 @@ plt.ylabel('MSE Loss')
 plt.title('DeepONet Joint Training Loss')
 plt.legend()
 plt.grid(True, alpha=0.3)
-loss_path = os.path.join(SCRIPT_DIR, f"data/deeponet_joint_training_loss_{timestamp}.png")
+loss_path = os.path.join(OUTPUT_DIR, f"deeponet_joint_training_loss.png")
 plt.savefig(loss_path, dpi=150)
 print(f"✓ Loss plot saved to {loss_path}")
 plt.close()

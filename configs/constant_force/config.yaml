@@ -1,0 +1,57 @@
+# Configuration for constant force problem (2D wave equation with forcing)
+# TO BE IMPLEMENTED
+
+problem:
+  name: constant_force
+  description: "2D wave equation with random Fourier IC and constant forcing"
+  
+  # Ground truth generation (MATLAB)
+  matlab:
+    script: wave_2D_matlab_reference.m
+    t_final: 1.0
+    nt_time_steps: 100
+    nx: 100
+    ny: 100
+    n_samples: 128
+    wave_speed: 1.0
+    damping: 1.0
+    forcing_amplitude: 1.0  # Constant forcing
+    source_center_x: 0.35
+    source_center_y: 0.65
+    source_width: 0.3
+    fourier_modes_k: 4
+    fourier_modes_l: 4
+
+# SVD basis extraction
+svd:
+  n_modes: 18
+  visualize: true
+
+# Neural network architecture
+networks:
+  trunk:
+    input_dim: 3
+    output_dim: 18
+    hidden_dim: 128
+    n_layers: 4
+  
+  branch:
+    input_dim: 64
+    output_dim: 18
+    hidden_dim: 128
+    n_layers: 4
+
+# Training configuration
+training:
+  batch_size: 256
+  learning_rate: 1.0e-3
+  n_epochs: 500
+  train_test_split: 0.8
+  points_per_sample: 5000
+  use_pinn_loss: false
+  pde_loss_weight: 0.5
+  n_collocation_per_batch: 4096
+
+# Sensors for branch network
+sensors:
+  n_sensors: 8

@@ -10,8 +10,15 @@ import torch
 import torch.nn as nn
 import matplotlib.pyplot as plt
 from pathlib import Path
+from datetime import datetime
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Create timestamped output directory
+TIMESTAMP = datetime.now().strftime("%Y%m%d_%H%M%S")
+OUTPUT_DIR = os.path.join(SCRIPT_DIR, 'outputs', TIMESTAMP)
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 # Configuration
@@ -81,7 +88,7 @@ print("\n[3/4] Loading DeepONet and getting trunk predictions...")
 
 # Find latest checkpoint
 search_dirs = [
-    os.path.join(SCRIPT_DIR, 'data'),
+    os.path.join(SCRIPT_DIR, 'models'),
     os.path.join(SCRIPT_DIR, 'logs_2601'),
     os.path.join(SCRIPT_DIR, 'logs'),
 ]
@@ -227,7 +234,7 @@ plt.suptitle(f'Trunk Network vs SVD Modes Comparison (Sample 0, t={t_actual:.2f}
              f'Left: Trunk Prediction | Right: SVD Ground Truth', 
              fontsize=14, y=0.995)
 
-save_path = os.path.join(SCRIPT_DIR, f'data/trunk_vs_svd_all_modes_t{TIME_INSTANT:.2f}_new.png')
+save_path = os.path.join(OUTPUT_DIR, f'trunk_vs_svd_all_modes_t{TIME_INSTANT:.2f}.png')
 plt.savefig(save_path, dpi=150, bbox_inches='tight')
 print(f"\n✓ Comparison plot saved to {save_path}")
 plt.close()

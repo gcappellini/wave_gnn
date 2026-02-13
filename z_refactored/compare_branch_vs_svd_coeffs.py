@@ -9,8 +9,15 @@ import torch
 import torch.nn as nn
 import matplotlib.pyplot as plt
 from pathlib import Path
+from datetime import datetime
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Create timestamped output directory
+TIMESTAMP = datetime.now().strftime("%Y%m%d_%H%M%S")
+OUTPUT_DIR = os.path.join(SCRIPT_DIR, 'outputs', TIMESTAMP)
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 SAMPLE_IDX = 0
@@ -74,7 +81,7 @@ print("\n[3/4] Loading DeepONet and getting branch prediction...")
 
 # Find latest checkpoint
 search_dirs = [
-    os.path.join(SCRIPT_DIR, 'data'),
+    os.path.join(SCRIPT_DIR, 'models'),
     os.path.join(SCRIPT_DIR, 'logs_2601'),
     os.path.join(SCRIPT_DIR, 'logs'),
 ]
@@ -174,7 +181,7 @@ ax.grid(True, axis='y', alpha=0.3)
 ax.legend()
 
 plt.tight_layout()
-save_path = os.path.join(SCRIPT_DIR, f'data/branch_vs_svd_coeffs_sample{SAMPLE_IDX}.png')
+save_path = os.path.join(OUTPUT_DIR, f'branch_vs_svd_coeffs_sample{SAMPLE_IDX}.png')
 plt.savefig(save_path, dpi=150)
 print(f"\n✓ Comparison plot saved to {save_path}")
 plt.close()

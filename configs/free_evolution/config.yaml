@@ -1,0 +1,57 @@
+# Main configuration for free evolution problem (2D wave equation, no forcing)
+
+problem:
+  name: free_evolution
+  description: "2D wave equation with random Fourier IC, no forcing"
+  
+  # Ground truth generation (MATLAB)
+  matlab:
+    script: wave_2D_matlab_reference.m
+    t_final: 1.0
+    nt_time_steps: 100
+    nx: 100
+    ny: 100
+    n_samples: 128
+    wave_speed: 1.0
+    damping: 1.0
+    forcing_amplitude: 0.0  # No forcing
+    fourier_modes_k: 4
+    fourier_modes_l: 4
+
+# SVD basis extraction
+svd:
+  n_modes: 18
+  visualize: true
+
+# Neural network architecture
+networks:
+  trunk:
+    input_dim: 3        # (x, y, t)
+    output_dim: 18      # n_modes
+    hidden_dim: 128
+    n_layers: 4
+  
+  branch:
+    input_dim: 64       # 8x8 sensor grid
+    output_dim: 18      # n_modes
+    hidden_dim: 128
+    n_layers: 4
+
+# Training configuration
+training:
+  batch_size: 256
+  learning_rate: 1.0e-3
+  n_epochs: 500
+  train_test_split: 0.8
+  
+  # Data sampling (for large problems)
+  points_per_sample: 5000  # Random space-time points per sample
+  
+  # Physics-informed loss (optional)
+  use_pinn_loss: false
+  pde_loss_weight: 0.5
+  n_collocation_per_batch: 4096
+
+# Sensors for branch network
+sensors:
+  n_sensors: 8  # 8x8 grid on domain [0,1]^2 at t=0

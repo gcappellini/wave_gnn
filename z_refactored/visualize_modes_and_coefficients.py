@@ -10,8 +10,15 @@ Loads pre-computed SVD data and shows:
 import os
 import numpy as np
 import matplotlib.pyplot as plt
+from datetime import datetime
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Create timestamped output directory
+TIMESTAMP = datetime.now().strftime("%Y%m%d_%H%M%S")
+OUTPUT_DIR = os.path.join(SCRIPT_DIR, 'outputs', TIMESTAMP)
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
 SVD_DATA_PATH = os.path.join(SCRIPT_DIR, 'data/svd_basis_data.npy')
 
 if not os.path.exists(SVD_DATA_PATH):
