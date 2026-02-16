@@ -36,8 +36,7 @@ z_*/
 checkpoints/
 *.pt
 *.pth
-!data/trunk_svd_simple.pth
-!data/deeponet_joint_supervised_20260206_130551.pth
+!models/*.pth
 best_model.pt
 
 # Figures and data
