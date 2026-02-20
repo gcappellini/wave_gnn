@@ -11,36 +11,7 @@ import torch
 import torch.nn as nn
 from pathlib import Path
 
-
-class MLP(nn.Module):
-    """Simple feedforward MLP network (must match training.py implementation)."""
-    
-    def __init__(self, input_dim: int, hidden_dim: int, output_dim: int, n_layers: int):
-        super().__init__()
-        # n_layers = total number of Linear layers
-        layers = [nn.Linear(input_dim, hidden_dim), nn.Tanh()]
-        for _ in range(n_layers - 2):  # n_layers - 2 because we have 1 input + 1 output
-            layers += [nn.Linear(hidden_dim, hidden_dim), nn.Tanh()]
-        layers.append(nn.Linear(hidden_dim, output_dim))
-        self.net = nn.Sequential(*layers)
-    
-    def forward(self, x):
-        return self.net(x)
-
-
-class DeepONet(nn.Module):
-    """DeepONet operator network: trunk + branch."""
-    
-    def __init__(self, trunk: MLP, branch: MLP):
-        super().__init__()
-        self.trunk = trunk
-        self.branch = branch
-    
-    def forward(self, ic: torch.Tensor, coords: torch.Tensor) -> torch.Tensor:
-        trunk_out = self.trunk(coords)  # (B, N_MODES)
-        branch_out = self.branch(ic)    # (B, N_MODES)
-        u = torch.sum(trunk_out * branch_out, dim=1)  # (B,)
-        return u
+from .models import MLP, DeepONet
 
 
 def plot_validation_basic(
@@ -131,106 +102,9 @@ def plot_validation_basic(
     n_modes = Sigma.shape[0]
     
     # ========================================================================
-    # 2. LOAD BRANCH MODEL AND PREDICT COEFFICIENTS
+    # 2. PLOT COMPARISONS
     # ========================================================================
-    print("\n2. Loading branch model and predicting coefficients...")
-    
-    branch_checkpoint = models_dir / "branch_svd_free_evolution.pth"
-    if branch_checkpoint.exists():
-        # Load checkpoint to get config and weights
-        ckpt = torch.load(branch_checkpoint, map_location=device, weights_only=False)
-        config = ckpt['config']
-        state_dict = ckpt['model_state_dict']
-        
-        # Infer dimensions from state_dict (more reliable than config)
-        # First layer: net.0.weight has shape (hidden_dim, input_dim)
-        # Last layer: net.X.weight has shape (output_dim, hidden_dim)
-        first_layer_weight = state_dict['net.0.weight']
-        input_dim = first_layer_weight.shape[1]
-        hidden_dim = first_layer_weight.shape[0]
-        
-        # Find last layer (highest index)
-        last_layer_key = [k for k in state_dict.keys() if k.startswith('net.') and k.endswith('.weight')][-1]
-        last_layer_weight = state_dict[last_layer_key]
-        output_dim = last_layer_weight.shape[0]
-        
-        # Count layers (every weight except first and last is hidden)
-        n_layers = len([k for k in state_dict.keys() if k.endswith('.weight')])
-        
-        print(f"  Detected model architecture:")
-        print(f"    Input dim: {input_dim}")
-        print(f"    Hidden dim: {hidden_dim}")
-        print(f"    Output dim (n_modes): {output_dim}")
-        print(f"    N layers: {n_layers}")
-        
-        # Reconstruct branch model with correct dimensions
-        branch = MLP(
-            input_dim=input_dim,
-            hidden_dim=hidden_dim,
-            output_dim=output_dim,
-            n_layers=n_layers
-        ).to(device)
-        
-        branch.load_state_dict(state_dict)
-        branch.eval()
-        
-        # Extract sensors matching training procedure
-        # Training uses n_sensors x n_sensors grid
-        n_sensors_inferred = int(np.sqrt(input_dim))
-        
-        sensor_x_indices = np.linspace(0, Nx - 1, n_sensors_inferred, dtype=int)
-        sensor_y_indices = np.linspace(0, Ny - 1, n_sensors_inferred, dtype=int)
-        
-        ic_sensors = []
-        for s in range(N_samples):
-            u_ic = u_fom[:, :, 0, s]
-            sensors = [u_ic[si, sj] for si in sensor_x_indices for sj in sensor_y_indices]
-            ic_sensors.append(sensors)
-        
-        ic_sensors = np.array(ic_sensors)
-        
-        # Normalize (same as training)
-        ic_min = ic_sensors.min(axis=0, keepdims=True)
-        ic_max = ic_sensors.max(axis=0, keepdims=True)
-        ic_range = ic_max - ic_min
-        ic_norm = 2 * (ic_sensors - ic_min) / (ic_range + 1e-10) - 1
-        
-        ic_tensor = torch.tensor(ic_norm, dtype=torch.float32).to(device)
-        
-        with torch.no_grad():
-            coeffs_pred_norm = branch(ic_tensor).cpu().numpy()  # (N_samples, n_modes)
-        
-        # Denormalize predictions (need to match training normalization)
-        # Training normalizes target coefficients, so we need those stats
-        # For now, compare normalized values
-        
-        # True coefficients from SVD (transpose to match prediction shape)
-        VT = svd_data['coefficients'][:output_dim, :]  # (n_modes, N_samples)
-        Sigma = svd_data['singular_values'][:output_dim]
-        coeffs_true = (Sigma[:, None] * VT).T  # (N_samples, n_modes)
-        
-        # Normalize true coeffs (same as training)
-        coeff_min = coeffs_true.min()
-        coeff_max = coeffs_true.max()
-        coeff_range = coeff_max - coeff_min
-        coeffs_true_norm = 2 * (coeffs_true - coeff_min) / (coeff_range + 1e-10) - 1
-        
-        branch_error = np.mean((coeffs_true_norm - coeffs_pred_norm) ** 2)
-        print(f"  Branch coefficient MSE (normalized): {branch_error:.6e}")
-        
-        branch_loaded = True
-    else:
-        print(f"  ⚠ Branch checkpoint not found: {branch_checkpoint}")
-        branch_loaded = False
-        coeffs_true = None
-        coeffs_pred_norm = None
-        coeffs_true_norm = None
-        output_dim = n_modes  # Use data shape as fallback
-    
-    # ========================================================================
-    # 3. PLOT COMPARISONS
-    # ========================================================================
-    print("\n3. Generating plots...")
+    print("\n2. Generating plots...")
     
     # Plot 1: SVD Reconstruction Comparison
     fig, axes = plt.subplots(n_samples_plot, 4, figsize=(16, 4*n_samples_plot))
@@ -282,59 +156,10 @@ def plot_validation_basic(
     plt.close()
     print(f"  ✓ Saved: validation_svd_reconstruction.png")
     
-    # Plot 2: Coefficient Comparison (if branch model available)
-    if branch_loaded:
-        fig, axes = plt.subplots(2, 2, figsize=(12, 10))
-        
-        # 2a: Coefficient scatter (first few modes)
-        ax = axes[0, 0]
-        modes_to_plot = min(3, output_dim)
-        for mode_idx in range(modes_to_plot):
-            ax.scatter(coeffs_true_norm[:, mode_idx], coeffs_pred_norm[:, mode_idx], 
-                      alpha=0.6, s=30, label=f'Mode {mode_idx}')
-        
-        # Perfect prediction line
-        coeff_range = [coeffs_true_norm[:, :modes_to_plot].min(), coeffs_true_norm[:, :modes_to_plot].max()]
-        ax.plot(coeff_range, coeff_range, 'k--', linewidth=2, label='Perfect')
-        
-        ax.set_xlabel('SVD Coefficients (True, normalized)', fontsize=11)
-        ax.set_ylabel('Branch Predictions (normalized)', fontsize=11)
-        ax.set_title('Branch vs SVD Coefficients', fontsize=12)
-        ax.legend(fontsize=9)
-        ax.grid(True, alpha=0.3)
-        
-        # 2b: Error by mode
-        ax = axes[0, 1]
-        mode_errors = np.mean((coeffs_true_norm - coeffs_pred_norm) ** 2, axis=0)
-        ax.bar(range(output_dim), mode_errors, color='steelblue', alpha=0.7)
-        ax.set_xlabel('Mode Index', fontsize=11)
-        ax.set_ylabel('MSE', fontsize=11)
-        ax.set_title('Branch Error by Mode', fontsize=12)
-        ax.grid(True, alpha=0.3, axis='y')
-        
-        # 2c: Coefficient histogram
-        ax = axes[1, 0]
-        ax.hist(coeffs_true_norm[:, 0], bins=30, alpha=0.6, label='SVD (Mode 0)', color='blue')
-        ax.hist(coeffs_pred_norm[:, 0], bins=30, alpha=0.6, label='Branch (Mode 0)', color='red')
-        ax.set_xlabel('Coefficient Value (normalized)', fontsize=11)
-        ax.set_ylabel('Count', fontsize=11)
-        ax.set_title('Coefficient Distribution (Mode 0)', fontsize=12)
-        ax.legend(fontsize=9)
-        ax.grid(True, alpha=0.3)
-        
-        # 2d: Relative error by sample
-        ax = axes[1, 1]
-        sample_errors = np.mean((coeffs_true_norm - coeffs_pred_norm) ** 2, axis=1)
-        ax.plot(sample_errors, 'o-', color='steelblue', markersize=4, linewidth=1.5)
-        ax.set_xlabel('Sample Index', fontsize=11)
-        ax.set_ylabel('MSE', fontsize=11)
-        ax.set_title('Branch Error by Sample', fontsize=12)
-        ax.grid(True, alpha=0.3)
-        
-        plt.tight_layout()
-        plt.savefig(os.path.join(output_dir, 'validation_branch_coefficients.png'), dpi=150, bbox_inches='tight')
-        plt.close()
-        print(f"  ✓ Saved: validation_branch_coefficients.png")
+    # ========================================================================
+    # SECTION 3: BRANCH VALIDATION
+    # ========================================================================
+    plot_branch_validation(output_dir, u_fom, svd_data, models_dir, device)
     
     # ========================================================================
     # SECTION 4: TRUNK VALIDATION
@@ -353,11 +178,176 @@ def plot_validation_basic(
     print("VALIDATION SUMMARY")
     print("=" * 70)
     print(f"SVD Reconstruction MSE: {svd_error:.6e}")
-    if branch_loaded:
-        print(f"Branch Coefficient MSE:  {branch_error:.6e}")
     print("=" * 70)
     print("✓ Validation plots complete")
     print("=" * 70)
+
+
+def plot_branch_validation(
+    output_dir: str,
+    u_fom: np.ndarray,
+    svd_data: dict,
+    models_dir: str,
+    device: torch.device = None,
+):
+    """
+    Compare branch network coefficient predictions with SVD coefficients.
+    
+    Args:
+        output_dir: Directory to save plots
+        u_fom: Ground truth data (Nx, Ny, Nt, N_samples)
+        svd_data: SVD decomposition dict
+        models_dir: Path to models directory
+        device: Torch device
+    """
+    
+    print("\n" + "=" * 70)
+    print("BRANCH VALIDATION: Comparing Coefficients with SVD")
+    print("=" * 70)
+    
+    if device is None:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    models_dir = Path(models_dir)
+    branch_checkpoint = models_dir / "branch_svd_free_evolution.pth"
+    
+    if not branch_checkpoint.exists():
+        print(f"⚠ Warning: Branch checkpoint not found: {branch_checkpoint}")
+        print("  Skipping branch validation.")
+        return
+    
+    # Load branch model
+    print("Loading branch model...")
+    ckpt = torch.load(branch_checkpoint, map_location=device, weights_only=False)
+    config = ckpt['config']
+    state_dict = ckpt['model_state_dict']
+    
+    # Infer dimensions from state_dict
+    first_layer_weight = state_dict['net.0.weight']
+    input_dim = first_layer_weight.shape[1]
+    hidden_dim = first_layer_weight.shape[0]
+    
+    last_layer_key = [k for k in state_dict.keys() if k.startswith('net.') and k.endswith('.weight')][-1]
+    last_layer_weight = state_dict[last_layer_key]
+    output_dim = last_layer_weight.shape[0]
+    
+    n_layers = len([k for k in state_dict.keys() if k.endswith('.weight')])
+    
+    print(f"  Detected model architecture:")
+    print(f"    Input dim: {input_dim}")
+    print(f"    Hidden dim: {hidden_dim}")
+    print(f"    Output dim (n_modes): {output_dim}")
+    print(f"    N layers: {n_layers}")
+    
+    # Reconstruct branch model
+    branch = MLP(
+        input_dim=input_dim,
+        hidden_dim=hidden_dim,
+        output_dim=output_dim,
+        n_layers=n_layers
+    ).to(device)
+    
+    branch.load_state_dict(state_dict)
+    branch.eval()
+    
+    # Extract initial conditions from u_fom
+    Nx, Ny, Nt, N_samples = u_fom.shape
+    
+    # Extract sensors matching training procedure
+    n_sensors_inferred = int(np.sqrt(input_dim))
+    sensor_x_indices = np.linspace(0, Nx - 1, n_sensors_inferred, dtype=int)
+    sensor_y_indices = np.linspace(0, Ny - 1, n_sensors_inferred, dtype=int)
+    
+    ic_sensors = []
+    for s in range(N_samples):
+        u_ic = u_fom[:, :, 0, s]
+        sensors = [u_ic[si, sj] for si in sensor_x_indices for sj in sensor_y_indices]
+        ic_sensors.append(sensors)
+    
+    ic_sensors = np.array(ic_sensors)
+    
+    # Normalize (same as training)
+    ic_min = ic_sensors.min(axis=0, keepdims=True)
+    ic_max = ic_sensors.max(axis=0, keepdims=True)
+    ic_range = ic_max - ic_min
+    ic_norm = 2 * (ic_sensors - ic_min) / (ic_range + 1e-10) - 1
+    
+    ic_tensor = torch.tensor(ic_norm, dtype=torch.float32).to(device)
+    
+    # Get predictions
+    print("Generating predictions...")
+    with torch.no_grad():
+        coeffs_pred_norm = branch(ic_tensor).cpu().numpy()  # (N_samples, n_modes)
+    
+    # Get true coefficients from SVD
+    VT = svd_data['coefficients'][:output_dim, :]  # (n_modes, N_samples)
+    Sigma = svd_data['singular_values'][:output_dim]
+    coeffs_true = (Sigma[:, None] * VT).T  # (N_samples, n_modes)
+    
+    # Normalize true coeffs (same as training)
+    coeff_min = coeffs_true.min()
+    coeff_max = coeffs_true.max()
+    coeff_range = coeff_max - coeff_min
+    coeffs_true_norm = 2 * (coeffs_true - coeff_min) / (coeff_range + 1e-10) - 1
+    
+    branch_error = np.mean((coeffs_true_norm - coeffs_pred_norm) ** 2)
+    print(f"  Branch coefficient MSE (normalized): {branch_error:.6e}")
+    
+    # Create comparison plots
+    print("  Generating comparison plot...")
+    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+    
+    # 2a: Coefficient scatter (first few modes)
+    ax = axes[0, 0]
+    modes_to_plot = min(3, output_dim)
+    for mode_idx in range(modes_to_plot):
+        ax.scatter(coeffs_true_norm[:, mode_idx], coeffs_pred_norm[:, mode_idx], 
+                  alpha=0.6, s=30, label=f'Mode {mode_idx}')
+    
+    # Perfect prediction line
+    coeff_range_plot = [coeffs_true_norm[:, :modes_to_plot].min(), coeffs_true_norm[:, :modes_to_plot].max()]
+    ax.plot(coeff_range_plot, coeff_range_plot, 'k--', linewidth=2, label='Perfect')
+    
+    ax.set_xlabel('SVD Coefficients (True, normalized)', fontsize=11)
+    ax.set_ylabel('Branch Predictions (normalized)', fontsize=11)
+    ax.set_title('Branch vs SVD Coefficients', fontsize=12)
+    ax.legend(fontsize=9)
+    ax.grid(True, alpha=0.3)
+    
+    # 2b: Error by mode
+    ax = axes[0, 1]
+    mode_errors = np.mean((coeffs_true_norm - coeffs_pred_norm) ** 2, axis=0)
+    ax.bar(range(output_dim), mode_errors, color='steelblue', alpha=0.7)
+    ax.set_xlabel('Mode Index', fontsize=11)
+    ax.set_ylabel('MSE', fontsize=11)
+    ax.set_title('Branch Error by Mode', fontsize=12)
+    ax.grid(True, alpha=0.3, axis='y')
+    
+    # 2c: Coefficient histogram
+    ax = axes[1, 0]
+    ax.hist(coeffs_true_norm[:, 0], bins=30, alpha=0.6, label='SVD (Mode 0)', color='blue')
+    ax.hist(coeffs_pred_norm[:, 0], bins=30, alpha=0.6, label='Branch (Mode 0)', color='red')
+    ax.set_xlabel('Coefficient Value (normalized)', fontsize=11)
+    ax.set_ylabel('Count', fontsize=11)
+    ax.set_title('Coefficient Distribution (Mode 0)', fontsize=12)
+    ax.legend(fontsize=9)
+    ax.grid(True, alpha=0.3)
+    
+    # 2d: Relative error by sample
+    ax = axes[1, 1]
+    sample_errors = np.mean((coeffs_true_norm - coeffs_pred_norm) ** 2, axis=1)
+    ax.plot(sample_errors, 'o-', color='steelblue', markersize=4, linewidth=1.5)
+    ax.set_xlabel('Sample Index', fontsize=11)
+    ax.set_ylabel('MSE', fontsize=11)
+    ax.set_title('Branch Error by Sample', fontsize=12)
+    ax.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    save_path = os.path.join(output_dir, 'validation_branch_coefficients.png')
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"  ✓ Saved: validation_branch_coefficients.png")
+    print(f"  ✓ Branch validation complete")
 
 
 def plot_trunk_validation(
@@ -621,55 +611,36 @@ def plot_deeponet_validation(
     branch_output_dim = branch_state[branch_last_keys[-1]].shape[0]
     branch_n_layers = len(branch_last_keys)
     
-    # Create models
-    trunk = MLP(3, trunk_hidden_dim, n_modes, trunk_n_layers).to(device)
-    branch = MLP(branch_input_dim, branch_hidden_dim, branch_output_dim, branch_n_layers).to(device)
+    # Create trunk and branch networks
+    trunk_net = MLP(3, trunk_hidden_dim, n_modes, trunk_n_layers).to(device)
+    branch_net = MLP(branch_input_dim, branch_hidden_dim, branch_output_dim, branch_n_layers).to(device)
     
-    trunk.load_state_dict(trunk_state)
-    branch.load_state_dict(branch_state)
+    trunk_net.load_state_dict(trunk_state)
+    branch_net.load_state_dict(branch_state)
     
-    trunk.eval()
-    branch.eval()
+    # Create DeepONet model
+    deeponet = DeepONet(trunk_net, branch_net).to(device)
+    deeponet.eval()
     
     print(f"  DeepONet loaded: {n_modes} modes")
     
-    # Get normalization ranges from SVD basis (same as used during training)
-    U_basis = svd_data['basis']
+    # Get grid dimensions
     grid_info = svd_data['grid_info']
     Nx, Ny, Nt = grid_info.astype(int)
-    spatial_size = Nx * Ny * Nt
-    
-    U_basis_spatial = U_basis[:spatial_size, :n_modes]
-    mode_min = U_basis_spatial.min()
-    mode_max = U_basis_spatial.max()
-    mode_range = mode_max - mode_min
-    
-    # Get coefficient ranges
-    VT = svd_data['coefficients'][:n_modes, :]
-    Sigma = svd_data['singular_values'][:n_modes]
-    coeffs_true = (Sigma[:, None] * VT).T  # (N_samples, n_modes)
-    coeff_min = coeffs_true.min()
-    coeff_max = coeffs_true.max()
-    coeff_range = coeff_max - coeff_min
     
     # Extract IC sensors
     n_sensors_inferred = int(np.sqrt(branch_input_dim))
     sensor_x_indices = np.linspace(0, Nx - 1, n_sensors_inferred, dtype=int)
     sensor_y_indices = np.linspace(0, Ny - 1, n_sensors_inferred, dtype=int)
     
-    Nx, Ny, Nt, N_samples = u_fom.shape
+    N_samples = u_fom.shape[3]
     
     u_ic = u_fom[:, :, 0, sample_idx]
     sensors = [u_ic[si, sj] for si in sensor_x_indices for sj in sensor_y_indices]
     ic_sensors = np.array(sensors)
     
-    # Normalize IC
-    ic_min = ic_sensors.min()
-    ic_max = ic_sensors.max()
-    ic_range = ic_max - ic_min
-    ic_norm = 2 * (ic_sensors - ic_min) / (ic_range + 1e-10) - 1
-    
-    ic_tensor = torch.from_numpy(ic_norm).float().unsqueeze(0).to(device)
+    # No normalization - use raw IC values
+    ic_tensor = torch.from_numpy(ic_sensors).float().unsqueeze(0).to(device)
     
     # Build coordinate grid
     x = np.linspace(0, 1, Nx)
@@ -695,19 +666,9 @@ def plot_deeponet_validation(
         coords_tensor = torch.from_numpy(coords_t).float().to(device)
         ic_batch = ic_tensor.repeat(coords_tensor.shape[0], 1)
         
-        # Get denormalized trunk and branch outputs
+        # Use DeepONet forward method directly - no denormalization
         with torch.no_grad():
-            trunk_out_norm = trunk(coords_tensor).cpu().numpy()  # (Nx*Ny, n_modes) in [-1, 1]
-            branch_out_norm = branch(ic_batch).cpu().numpy()      # (Nx*Ny, n_modes) in [-1, 1]
-        
-        # Denormalize trunk outputs (modes) to original scale
-        trunk_out = (trunk_out_norm + 1) * mode_range / 2 + mode_min
-        
-        # Denormalize branch outputs (coefficients) to original scale
-        branch_out = (branch_out_norm + 1) * coeff_range / 2 + coeff_min
-        
-        # Reconstruct field: u = sum(mode * coeff)
-        u_pred = np.sum(trunk_out * branch_out, axis=1)
+            u_pred = deeponet(ic_batch, coords_tensor).cpu().numpy()  # (Nx*Ny,)
         
         # Reshape
         u_pred = u_pred.reshape(Nx, Ny, order='F')

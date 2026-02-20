@@ -16,58 +16,7 @@ from torch.utils.data import TensorDataset, DataLoader
 import matplotlib.pyplot as plt
 from datetime import datetime
 
-
-class MLP(nn.Module):
-    """Simple feedforward MLP network."""
-    
-    def __init__(self, input_dim: int, hidden_dim: int, output_dim: int, n_layers: int):
-        super().__init__()
-        # n_layers = total number of Linear layers
-        layers = [nn.Linear(input_dim, hidden_dim), nn.Tanh()]
-        for _ in range(n_layers - 2):  # n_layers - 2 because we have 1 input + 1 output
-            layers += [nn.Linear(hidden_dim, hidden_dim), nn.Tanh()]
-        layers.append(nn.Linear(hidden_dim, output_dim))
-        self.net = nn.Sequential(*layers)
-    
-    def forward(self, x):
-        return self.net(x)
-
-
-class DeepONet(nn.Module):
-    """DeepONet operator network: trunk + branch."""
-    
-    def __init__(self, trunk: MLP, branch: MLP, wave_speed: float = 1.0, damping: float = 1.0):
-        super().__init__()
-        self.trunk = trunk
-        self.branch = branch
-        self.c = wave_speed
-        self.k = damping
-    
-    def forward(self, ic: torch.Tensor, coords: torch.Tensor) -> torch.Tensor:
-        trunk_out = self.trunk(coords)  # (B, N_MODES)
-        branch_out = self.branch(ic)    # (B, N_MODES)
-        u = torch.sum(trunk_out * branch_out, dim=1)  # (B,)
-        return u
-    
-    def compute_pde_residual(self, ic: torch.Tensor, xyt: torch.Tensor) -> torch.Tensor:
-        """Compute 2D wave equation residual: u_tt + k*u_t - c^2*(u_xx+u_yy)."""
-        xyt_grad = xyt.clone().requires_grad_(True)
-        u = self.forward(ic, xyt_grad)
-        
-        grad_u = torch.autograd.grad(
-            u, xyt_grad,
-            torch.ones_like(u),
-            create_graph=True,
-            retain_graph=True
-        )[0]
-        u_x, u_y, u_t = grad_u[:, 0], grad_u[:, 1], grad_u[:, 2]
-        
-        u_xx = torch.autograd.grad(u_x, xyt_grad, torch.ones_like(u_x), create_graph=True, retain_graph=True)[0][:, 0]
-        u_yy = torch.autograd.grad(u_y, xyt_grad, torch.ones_like(u_y), create_graph=True, retain_graph=True)[0][:, 1]
-        u_tt = torch.autograd.grad(u_t, xyt_grad, torch.ones_like(u_t), create_graph=True)[0][:, 2]
-        
-        residual = u_tt + self.k * u_t - self.c**2 * (u_xx + u_yy)
-        return residual
+from .models import MLP, DeepONet
 
 
 def train_trunk(
@@ -329,33 +278,226 @@ def train_deeponet_joint(
     u_fom: np.ndarray,
     svd_data: dict,
     trunk_pretrained_path: str = None,
+    branch_pretrained_path: str = None,
     device: torch.device = None,
     output_dir: str = None,
     models_dir: str = None,
 ) -> dict:
-    """Joint training of trunk + branch on full ground truth."""
+    """Joint training of DeepONet on ground truth data.
+    
+    Trains the complete DeepONet (trunk + branch) on raw field data,
+    optionally initializing from pretrained trunk and branch networks.
+    """
     
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     print("\n" + "=" * 70)
-    print("TRAINING DEEPONET (Joint Trunk + Branch)")
+    print("TRAINING DEEPONET (Joint Trunk + Branch on Ground Truth)")
     print("=" * 70)
     
-    # (Simplified for now - can expand with full GT training if needed)
-    # For now, just fine-tune branch on GT data
+    # Extract data dimensions
+    Nx, Ny, Nt, N_samples = u_fom.shape
+    n_modes = config['n_modes']
+    n_sensors = config['n_sensors']
+    
+    # Initialize trunk network
+    trunk = MLP(3, config['trunk_hidden_dim'], n_modes, config['trunk_n_layers']).to(device)
+    if trunk_pretrained_path and os.path.exists(trunk_pretrained_path):
+        print(f"Loading pretrained trunk from: {trunk_pretrained_path}")
+        trunk_ckpt = torch.load(trunk_pretrained_path, map_location=device, weights_only=False)
+        trunk_state = trunk_ckpt.get('model_state_dict', trunk_ckpt)
+        trunk.load_state_dict(trunk_state)
+        print("  ✓ Trunk loaded")
+    else:
+        print("  Initializing trunk from scratch")
+    
+    # Initialize branch network
+    ic_dim = n_sensors * n_sensors
+    branch = MLP(ic_dim, config['branch_hidden_dim'], n_modes, config['branch_n_layers']).to(device)
+    if branch_pretrained_path and os.path.exists(branch_pretrained_path):
+        print(f"Loading pretrained branch from: {branch_pretrained_path}")
+        branch_ckpt = torch.load(branch_pretrained_path, map_location=device, weights_only=False)
+        branch_state = branch_ckpt.get('model_state_dict', branch_ckpt)
+        branch.load_state_dict(branch_state)
+        print("  ✓ Branch loaded")
+    else:
+        print("  Initializing branch from scratch")
+    
+    # Create DeepONet
+    deeponet = DeepONet(
+        trunk=trunk,
+        branch=branch,
+        wave_speed=config.get('wave_speed', 1.0),
+        damping=config.get('damping', 1.0)
+    ).to(device)
+    
+    print(f"\nDeepONet architecture:")
+    print(f"  Trunk: 3 → {config['trunk_hidden_dim']} ({config['trunk_n_layers']} layers) → {n_modes}")
+    print(f"  Branch: {ic_dim} → {config['branch_hidden_dim']} ({config['branch_n_layers']} layers) → {n_modes}")
+    
+    # Prepare training data
+    print("\nPreparing training data...")
+    
+    # Extract IC sensors for all samples
+    sensor_x_indices = np.linspace(0, Nx - 1, n_sensors, dtype=int)
+    sensor_y_indices = np.linspace(0, Ny - 1, n_sensors, dtype=int)
+    
+    ic_sensors = []
+    for s in range(N_samples):
+        u_ic = u_fom[:, :, 0, s]
+        sensors = [u_ic[si, sj] for si in sensor_x_indices for sj in sensor_y_indices]
+        ic_sensors.append(sensors)
+    ic_sensors = np.array(ic_sensors)  # (N_samples, n_sensors^2)
+    
+    # Normalize IC sensors
+    ic_min = ic_sensors.min()
+    ic_max = ic_sensors.max()
+    ic_range = ic_max - ic_min
+    ic_sensors_norm = 2 * (ic_sensors - ic_min) / (ic_range + 1e-10) - 1
+    
+    # Generate coordinate grid
+    x = np.linspace(0, 1, Nx)
+    y = np.linspace(0, 1, Ny)
+    t_vals = np.linspace(0, 1, Nt)
+    X, Y, T = np.meshgrid(x, y, t_vals, indexing='ij')
+    coords_all = np.stack([X.flatten('F'), Y.flatten('F'), T.flatten('F')], axis=1)  # (Nx*Ny*Nt, 3)
+    
+    # Normalize field values
+    u_min = u_fom.min()
+    u_max = u_fom.max()
+    u_range = u_max - u_min
+    u_fom_norm = 2 * (u_fom - u_min) / (u_range + 1e-10) - 1
+    u_targets_all = u_fom_norm.reshape(-1, N_samples, order='F')  # (Nx*Ny*Nt, N_samples)
+    
+    # Sample points for training (to avoid memory issues)
+    n_points_per_sample = config.get('n_points_per_sample', 1000)
+    n_total_points = min(n_points_per_sample * N_samples, coords_all.shape[0] * N_samples)
+    
+    # Create training dataset
+    coords_list = []
+    ic_list = []
+    targets_list = []
+    
+    for s in range(N_samples):
+        # Sample random space-time points for this sample
+        n_pts = min(n_points_per_sample, coords_all.shape[0])
+        pt_indices = np.random.choice(coords_all.shape[0], n_pts, replace=False)
+        
+        coords_sample = coords_all[pt_indices]  # (n_pts, 3)
+        ic_sample = np.tile(ic_sensors_norm[s], (n_pts, 1))  # (n_pts, n_sensors^2)
+        targets_sample = u_targets_all[pt_indices, s]  # (n_pts,)
+        
+        coords_list.append(coords_sample)
+        ic_list.append(ic_sample)
+        targets_list.append(targets_sample)
+    
+    coords_train = np.vstack(coords_list)
+    ic_train = np.vstack(ic_list)
+    targets_train = np.hstack(targets_list)
+    
+    print(f"  Training points: {len(targets_train)}")
+    print(f"  IC range: [{ic_sensors.min():.6f}, {ic_sensors.max():.6f}]")
+    print(f"  Target range: [{u_fom.min():.6f}, {u_fom.max():.6f}]")
+    
+    # Convert to tensors
+    coords_tensor = torch.from_numpy(coords_train).float().to(device)
+    ic_tensor = torch.from_numpy(ic_train).float().to(device)
+    targets_tensor = torch.from_numpy(targets_train).float().unsqueeze(1).to(device)
+    
+    # Train/test split
+    n_total = len(targets_train)
+    n_train = int(n_total * config.get('train_test_split', 0.8))
+    indices = torch.randperm(n_total)
+    train_idx = indices[:n_train]
+    test_idx = indices[n_train:]
+    
+    train_dataset = TensorDataset(ic_tensor[train_idx], coords_tensor[train_idx], targets_tensor[train_idx])
+    test_ic = ic_tensor[test_idx]
+    test_coords = coords_tensor[test_idx]
+    test_targets = targets_tensor[test_idx]
+    
+    train_loader = DataLoader(train_dataset, batch_size=config['batch_size'], shuffle=True)
+    
+    # Setup optimizer
+    optimizer = optim.Adam(deeponet.parameters(), lr=config.get('learning_rate', 1e-3))
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=50, verbose=False)
+    criterion = nn.MSELoss()
+    
+    # Training loop
+    train_losses, test_losses = [], []
+    best_test_loss = float('inf')
+    best_state = None
+    
+    print(f"\nTraining: {len(train_idx)} points, Testing: {len(test_idx)} points")
+    print("Starting training...\n")
+    
+    for epoch in range(config['n_epochs']):
+        deeponet.train()
+        train_loss_epoch = 0.0
+        
+        for ic_batch, coords_batch, targets_batch in train_loader:
+            optimizer.zero_grad()
+            pred = deeponet(ic_batch, coords_batch).unsqueeze(1)  # (batch, 1)
+            loss = criterion(pred, targets_batch)
+            loss.backward()
+            optimizer.step()
+            train_loss_epoch += loss.item()
+        
+        train_loss_epoch /= len(train_loader)
+        train_losses.append(train_loss_epoch)
+        
+        # Validation
+        deeponet.eval()
+        with torch.no_grad():
+            pred_test = deeponet(test_ic, test_coords).unsqueeze(1)
+            test_loss = criterion(pred_test, test_targets).item()
+        test_losses.append(test_loss)
+        scheduler.step(test_loss)
+        
+        if test_loss < best_test_loss:
+            best_test_loss = test_loss
+            best_state = {k: v.cpu().clone() for k, v in deeponet.state_dict().items()}
+        
+        if (epoch + 1) % 50 == 0:
+            print(f"Epoch {epoch+1:3d}/{config['n_epochs']} | Train: {train_loss_epoch:.6e} | Test: {test_loss:.6e}")
+    
+    # Load best model
+    deeponet.load_state_dict(best_state)
+    deeponet.eval()
     
     # Save checkpoint
     save_dir = models_dir if models_dir else os.path.join(os.path.dirname(output_dir or '.'), 'models')
     os.makedirs(save_dir, exist_ok=True)
     ckpt_path = os.path.join(save_dir, 'deeponet_free_evolution.pth')
     torch.save({
+        'model_state_dict': best_state,
+        'trunk_state_dict': {k: v for k, v in best_state.items() if k.startswith('trunk.')},
+        'branch_state_dict': {k: v for k, v in best_state.items() if k.startswith('branch.')},
         'config': config,
-        'status': 'placeholder'
+        'normalization': {
+            'ic_min': ic_min,
+            'ic_max': ic_max,
+            'u_min': u_min,
+            'u_max': u_max,
+        }
     }, ckpt_path)
-    print(f"✓ Saved: {ckpt_path}")
+    print(f"\n✓ Saved: {ckpt_path}")
+    
+    # Plot training curves
+    if output_dir:
+        plt.figure(figsize=(8, 5))
+        plt.semilogy(train_losses, label='Train')
+        plt.semilogy(test_losses, label='Test')
+        plt.xlabel('Epoch')
+        plt.ylabel('MSE Loss')
+        plt.title('DeepONet Joint Training Loss')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        plt.savefig(os.path.join(output_dir, 'deeponet_training_curves.png'), dpi=150)
+        plt.close()
     
     print("✓ DeepONet joint training complete")
     print("=" * 70)
     
-    return {'train_losses': [], 'test_losses': []}
+    return {'model': deeponet, 'train_losses': train_losses, 'test_losses': test_losses}
