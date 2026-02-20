@@ -45,7 +45,7 @@ training:
   train_test_split: 0.8
   
   # Data sampling (for large problems)
-  points_per_sample: 5000  # Random space-time points per sample
+  points_per_sample: 100  # Random space-time points per sample
   
   # Physics-informed loss (optional)
   use_pinn_loss: false
