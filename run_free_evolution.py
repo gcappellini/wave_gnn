@@ -162,8 +162,14 @@ def main(cfg: DictConfig):
     trunk_checkpoint = models_dir / "trunk_svd_free_evolution.pth"
     
     if not trunk_checkpoint.exists():
+        # Build config with all required fields
+        trunk_config = OmegaConf.to_container(cfg.training)
+        trunk_config['n_modes'] = cfg.svd.n_modes
+        trunk_config['trunk_hidden_dim'] = cfg.networks.trunk.hidden_dim
+        trunk_config['trunk_n_layers'] = cfg.networks.trunk.n_layers
+        
         trunk_result = train_trunk(
-            config=OmegaConf.to_container(cfg.training),
+            config=trunk_config,
             svd_data=svd_data,
             device=device,
             output_dir=str(output_dir),
@@ -183,10 +189,10 @@ def main(cfg: DictConfig):
     branch_checkpoint = models_dir / "branch_svd_free_evolution.pth"
     
     if not branch_checkpoint.exists():
+        # Build config with all required fields
         branch_config = OmegaConf.to_container(cfg.training)
-        branch_config['n_modes'] = cfg.networks.branch.output_dim
+        branch_config['n_modes'] = cfg.svd.n_modes
         branch_config['n_sensors'] = cfg.sensors.n_sensors
-        branch_config['batch_size'] = cfg.training.batch_size
         branch_config['branch_hidden_dim'] = cfg.networks.branch.hidden_dim
         branch_config['branch_n_layers'] = cfg.networks.branch.n_layers
         
@@ -213,9 +219,18 @@ def main(cfg: DictConfig):
     deeponet_checkpoint = models_dir / "deeponet_free_evolution.pth"
     
     if not deeponet_checkpoint.exists():
+        # Build config with all required fields
+        deeponet_config = OmegaConf.to_container(cfg.training)
+        deeponet_config['n_modes'] = cfg.svd.n_modes
+        deeponet_config['trunk_hidden_dim'] = cfg.networks.trunk.hidden_dim
+        deeponet_config['trunk_n_layers'] = cfg.networks.trunk.n_layers
+        deeponet_config['branch_hidden_dim'] = cfg.networks.branch.hidden_dim
+        deeponet_config['branch_n_layers'] = cfg.networks.branch.n_layers
+        deeponet_config['n_sensors'] = cfg.sensors.n_sensors
+        
         trunk_pretrained = models_dir / "trunk_svd_free_evolution.pth"
         deeponet_result = train_deeponet_joint(
-            config=OmegaConf.to_container(cfg.training),
+            config=deeponet_config,
             u_fom=u_fom,
             svd_data=svd_data,
             trunk_pretrained_path=str(trunk_pretrained),
