@@ -45,7 +45,10 @@ training:
   train_test_split: 0.8
   
   # Data sampling (for large problems)
-  points_per_sample: 100  # Random space-time points per sample
+  max_trunk_points: 10000           # Max space-time points for trunk training (None = use all)
+  max_branch_samples: None          # Max samples for branch training (None = use all)
+  max_deeponet_samples: None        # Max samples for DeepONet joint training (None = use all)
+  points_per_sample: 5000           # Random space-time points per sample for DeepONet
   
   # Physics-informed loss (optional)
   use_pinn_loss: false

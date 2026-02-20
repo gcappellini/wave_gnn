@@ -47,6 +47,20 @@ def train_trunk(
     X, Y, T = np.meshgrid(x, y, t, indexing='ij')
     coords = np.stack([X.flatten('F'), Y.flatten('F'), T.flatten('F')], axis=1)
     
+    # Sample points for training (if max_trunk_points specified)
+    max_trunk_points = config.get('max_trunk_points', None)
+    if max_trunk_points and n_space_time > max_trunk_points:
+        print(f"Sampling {max_trunk_points} points from {n_space_time} total space-time points")
+        sample_idx = np.random.choice(n_space_time, max_trunk_points, replace=False)
+        coords = coords[sample_idx]
+        targets_raw = targets_raw[sample_idx]
+    else:
+        if max_trunk_points:
+            print(f"Using all {n_space_time} space-time points (≤ max_trunk_points={max_trunk_points})")
+    
+        else:
+            print(f"Using all {n_space_time} space-time points")
+    
     # Normalize
     targets_min = targets_raw.min()
     targets_max = targets_raw.max()
@@ -159,12 +173,27 @@ def train_branch(
     n_modes = config['n_modes']
     n_sensors = config['n_sensors']
     
+    # Sample training samples if max_branch_samples specified
+    max_branch_samples = config.get('max_branch_samples', None)
+    if max_branch_samples and N_samples > max_branch_samples:
+        print(f"Sampling {max_branch_samples} samples from {N_samples} total samples")
+        sample_indices = np.random.choice(N_samples, max_branch_samples, replace=False)
+        u_fom_subset = u_fom[:, :, :, sample_indices]
+        N_samples_train = max_branch_samples
+    else:
+        if max_branch_samples:
+            print(f"Using all {N_samples} samples (≤ max_branch_samples={max_branch_samples})")
+        else:
+            print(f"Using all {N_samples} samples")
+        u_fom_subset = u_fom
+        N_samples_train = N_samples
+    
     sensor_x_indices = np.linspace(0, Nx - 1, n_sensors, dtype=int)
     sensor_y_indices = np.linspace(0, Ny - 1, n_sensors, dtype=int)
     
     ic_sensors = []
-    for s in range(N_samples):
-        u_ic = u_fom[:, :, 0, s]
+    for s in range(N_samples_train):
+        u_ic = u_fom_subset[:, :, 0, s]
         sensors = [u_ic[si, sj] for si in sensor_x_indices for sj in sensor_y_indices]
         ic_sensors.append(sensors)
     
@@ -175,9 +204,11 @@ def train_branch(
     ic_norm = 2 * (ic_sensors - ic_min) / (ic_range + 1e-10) - 1
     
     # Get SVD coefficients (ground truth for branch)
-    VT = svd_data['coefficients'][:n_modes, :]  # (n_modes, N_samples)
+    VT = svd_data['coefficients'][:n_modes, :]  # (n_modes, N_samples_total)
+    if max_branch_samples and N_samples > max_branch_samples:
+        VT = VT[:, sample_indices]  # Select same samples
     Sigma = svd_data['singular_values'][:n_modes]
-    target_coeffs = (Sigma[:, None] * VT).T  # (N_samples, n_modes)
+    target_coeffs = (Sigma[:, None] * VT).T  # (N_samples_train, n_modes)
     
     # Normalize coefficients
     coeff_min = target_coeffs.min()
@@ -186,8 +217,8 @@ def train_branch(
     target_norm = 2 * (target_coeffs - coeff_min) / (coeff_range + 1e-10) - 1
     
     # Train/test split
-    indices = np.random.permutation(N_samples)
-    train_size = int(N_samples * config['train_test_split'])
+    indices = np.random.permutation(N_samples_train)
+    train_size = int(N_samples_train * config['train_test_split'])
     train_idx = indices[:train_size]
     test_idx = indices[train_size:]
     
@@ -300,6 +331,19 @@ def train_deeponet_joint(
     Nx, Ny, Nt, N_samples = u_fom.shape
     n_modes = config['n_modes']
     n_sensors = config['n_sensors']
+    
+    # Sample training samples if max_deeponet_samples specified
+    max_deeponet_samples = config.get('max_deeponet_samples', None)
+    if max_deeponet_samples and N_samples > max_deeponet_samples:
+        print(f"Sampling {max_deeponet_samples} samples from {N_samples} total samples")
+        sample_indices = np.random.choice(N_samples, max_deeponet_samples, replace=False)
+        u_fom = u_fom[:, :, :, sample_indices]
+        N_samples = max_deeponet_samples
+    else:
+        if max_deeponet_samples:
+            print(f"Using all {N_samples} samples (≤ max_deeponet_samples={max_deeponet_samples})")
+        else:
+            print(f"Using all {N_samples} samples")
     
     # Initialize trunk network
     trunk = MLP(3, config['trunk_hidden_dim'], n_modes, config['trunk_n_layers']).to(device)
