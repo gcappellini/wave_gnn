@@ -30,14 +30,28 @@ from src.plotting import plot_validation_basic
 
 
 class TeeLogger:
-    """Redirect stdout to both console and file."""
+    """Redirect stdout to both console and file with timestamps."""
     def __init__(self, log_file):
         self.terminal = sys.stdout
         self.log = open(log_file, 'w')
     
     def write(self, message):
-        self.terminal.write(message)
-        self.log.write(message)
+        # Add timestamp to non-empty lines
+        lines = message.split('\n')
+        timestamped_lines = []
+        
+        for line in lines:
+            if line.strip():  # Non-empty line
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                timestamped_line = f"[{timestamp}] {line}"
+            else:  # Empty line
+                timestamped_line = line
+            timestamped_lines.append(timestamped_line)
+        
+        timestamped_message = '\n'.join(timestamped_lines)
+        
+        self.terminal.write(timestamped_message)
+        self.log.write(timestamped_message)
         self.log.flush()
     
     def flush(self):
