@@ -179,8 +179,9 @@ def plot_validation_basic(
     # ========================================================================
     # SECTION 5: DEEPONET VALIDATION
     # ========================================================================
-    if cfg.training.deeponet_n_epochs > 0:
-        plot_deeponet_validation(output_dir, u_fom, svd_data, models_dir, device)
+    plot_deeponet_validation(output_dir, u_fom, svd_data, models_dir, device)
+    plot_deeponet_test(output_dir, data_dir, models_dir, device)
+        
     
     # ========================================================================
     # SUMMARY
@@ -725,3 +726,185 @@ def plot_deeponet_validation(
     plt.close()
     print(f"  ✓ Saved: validation_deeponet_sample{sample_idx}.png")
     print("  ✓ DeepONet validation complete")
+
+
+def plot_deeponet_test(
+    output_dir: str,
+    data_dir: str = None,
+    models_dir: str = None,
+    device: torch.device = None,
+    time_instants: list = [0.0, 0.5, 1.0],
+):
+    """
+    Test DeepONet predictions against the out-of-range single-sample dataset.
+    
+    Args:
+        output_dir: Directory to save plots
+        data_dir: Path to data directory (contains free_evolution_test.mat)
+        models_dir: Path to models directory
+        device: Torch device
+        time_instants: List of time instants (0.0 to 1.0)
+    """
+    
+    print("\n" + "=" * 70)
+    print("DEEPONET TEST: Out-of-Range Single Sample")
+    print("=" * 70)
+    
+    if device is None:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    # Auto-detect paths if not provided
+    if data_dir is None:
+        script_dir = Path(output_dir).parent.parent
+        data_dir = script_dir / "data"
+        models_dir = script_dir / "models"
+    else:
+        data_dir = Path(data_dir)
+        models_dir = Path(models_dir)
+    
+    # Load test data
+    import h5py
+    mat_file = data_dir / "free_evolution_test.mat"
+    if not mat_file.exists():
+        print(f"⚠ Warning: Test file not found: {mat_file}")
+        print("  Skipping DeepONet test.")
+        return
+    
+    with h5py.File(mat_file, 'r') as f:
+        u_fom = np.array(f['U_data']).T
+    
+    Nx, Ny, Nt, N_samples = u_fom.shape
+    if N_samples != 1:
+        print(f"  Warning: Expected a single test sample, got {N_samples}.")
+    
+    # Load DeepONet model
+    output_dir = Path(output_dir)
+    deeponet_checkpoint = output_dir / "deeponet_free_evolution.pth"
+    if not deeponet_checkpoint.exists():
+        print(f"⚠ Warning: DeepONet checkpoint not found: {deeponet_checkpoint}")
+        print("  Skipping DeepONet test.")
+        return
+    
+    print("Loading DeepONet model...")
+    deeponet_ckpt = torch.load(deeponet_checkpoint, map_location=device, weights_only=False)
+    deeponet_state = deeponet_ckpt.get('model_state_dict', deeponet_ckpt)
+    
+    # Infer trunk dimensions from state dict
+    trunk_first_layer = deeponet_state['trunk.net.0.weight']
+    trunk_hidden_dim = trunk_first_layer.shape[0]
+    trunk_last_keys = [k for k in deeponet_state.keys() if k.startswith('trunk.') and k.endswith('.weight')]
+    n_modes = deeponet_state[trunk_last_keys[-1]].shape[0]
+    trunk_n_layers = len(trunk_last_keys)
+    
+    # Infer branch dimensions from state dict
+    branch_first_layer = deeponet_state['branch.net.0.weight']
+    branch_input_dim = branch_first_layer.shape[1]
+    branch_hidden_dim = branch_first_layer.shape[0]
+    branch_last_keys = [k for k in deeponet_state.keys() if k.startswith('branch.') and k.endswith('.weight')]
+    branch_output_dim = deeponet_state[branch_last_keys[-1]].shape[0]
+    branch_n_layers = len(branch_last_keys)
+    
+    # Create trunk and branch networks
+    trunk_net = MLP(3, trunk_hidden_dim, n_modes, trunk_n_layers).to(device)
+    branch_net = MLP(branch_input_dim, branch_hidden_dim, branch_output_dim, branch_n_layers).to(device)
+    
+    # Create DeepONet model
+    deeponet = DeepONet(trunk_net, branch_net).to(device)
+    deeponet.load_state_dict(deeponet_state)
+    deeponet.eval()
+    
+    print(f"  DeepONet loaded: {n_modes} modes")
+    
+    # Extract IC sensors
+    n_sensors_inferred = int(np.sqrt(branch_input_dim))
+    sensor_x_indices = np.linspace(0, Nx - 1, n_sensors_inferred, dtype=int)
+    sensor_y_indices = np.linspace(0, Ny - 1, n_sensors_inferred, dtype=int)
+    
+    u_ic = u_fom[:, :, 0, 0]
+    sensors = [u_ic[si, sj] for si in sensor_x_indices for sj in sensor_y_indices]
+    ic_sensors = np.array(sensors)
+    
+    # No normalization - use raw IC values
+    ic_tensor = torch.from_numpy(ic_sensors).float().unsqueeze(0).to(device)
+    
+    # Build coordinate grid
+    x = np.linspace(0, 1, Nx)
+    y = np.linspace(0, 1, Ny)
+    t = np.linspace(0, 1, Nt)
+    X, Y, T = np.meshgrid(x, y, t, indexing='ij')
+    
+    # Generate predictions at time instants
+    print("  Generating predictions for test sample...")
+    preds = []
+    gts = []
+    
+    for t_val in time_instants:
+        t_idx = int(t_val * (Nt - 1))
+        t_actual = t[t_idx]
+        
+        coords_t = np.stack([
+            X[:, :, t_idx].flatten('F'),
+            Y[:, :, t_idx].flatten('F'),
+            np.full((Nx * Ny,), t_actual)
+        ], axis=1)
+        
+        coords_tensor = torch.from_numpy(coords_t).float().to(device)
+        ic_batch = ic_tensor.repeat(coords_tensor.shape[0], 1)
+        
+        # Use DeepONet forward method directly - no denormalization
+        with torch.no_grad():
+            u_pred = deeponet(ic_batch, coords_tensor).cpu().numpy()  # (Nx*Ny,)
+        
+        # Reshape
+        u_pred = u_pred.reshape(Nx, Ny, order='F')
+        u_gt = u_fom[:, :, t_idx, 0]
+        
+        preds.append(u_pred)
+        gts.append(u_gt)
+    
+    # Plot GT vs Pred vs Error
+    fig, axes = plt.subplots(len(time_instants), 3, figsize=(15, 4 * len(time_instants)))
+    if len(time_instants) == 1:
+        axes = axes[np.newaxis, :]
+    
+    for i, t_val in enumerate(time_instants):
+        gt = gts[i]
+        pred = preds[i]
+        err = np.abs(pred - gt)
+        vmin = min(gt.min(), pred.min())
+        vmax = max(gt.max(), pred.max())
+        
+        # Ground truth
+        im0 = axes[i, 0].imshow(gt, cmap='seismic', origin='lower', vmin=vmin, vmax=vmax)
+        axes[i, 0].set_title(f"Ground Truth (t={t_val:.2f})", fontsize=11)
+        axes[i, 0].set_xticks([])
+        axes[i, 0].set_yticks([])
+        plt.colorbar(im0, ax=axes[i, 0], fraction=0.046)
+        
+        # Prediction
+        im1 = axes[i, 1].imshow(pred, cmap='seismic', origin='lower', vmin=vmin, vmax=vmax)
+        axes[i, 1].set_title(f"DeepONet Prediction (t={t_val:.2f})", fontsize=11)
+        axes[i, 1].set_xticks([])
+        axes[i, 1].set_yticks([])
+        plt.colorbar(im1, ax=axes[i, 1], fraction=0.046)
+        
+        # Error
+        im2 = axes[i, 2].imshow(err, cmap='hot', origin='lower')
+        axes[i, 2].set_title(f"Absolute Error (t={t_val:.2f})", fontsize=11)
+        axes[i, 2].set_xticks([])
+        axes[i, 2].set_yticks([])
+        plt.colorbar(im2, ax=axes[i, 2], fraction=0.046)
+        
+        # Compute metrics
+        l2_error = np.linalg.norm(pred - gt) / np.linalg.norm(gt)
+        max_error = err.max()
+        print(f"  t={t_val:.2f}: L2 Error = {l2_error:.6e}, Max Error = {max_error:.6e}")
+    
+    plt.suptitle('DeepONet Test: Out-of-Range Sample', fontsize=14, y=0.995)
+    plt.tight_layout()
+    
+    save_path = os.path.join(output_dir, 'validation_deeponet_test.png')
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print("  ✓ Saved: validation_deeponet_test.png")
+    print("  ✓ DeepONet test complete")
