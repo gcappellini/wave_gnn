@@ -111,7 +111,7 @@ title(sprintf('Velocity at t=%.3f', tlist(1)));
 zlim([min(V_data(:)) max(V_data(:))]);
 
 % GIF output settings
-gif_path = fullfile(script_dir, 'validation_animation.gif');
+gif_path = fullfile(script_dir, 'data/free_evolution_animation.gif');
 frame_delay = 0.05; % seconds
 
 for ti = 1:Nt
@@ -137,10 +137,24 @@ function fcoeff = force(location, state)
 end
 
 function [u0_fun, ut0_fun] = generate_simple_ic()
-    amp_u = 1.0;
-    amp_v = 1.0;
-    u0_fun = @(location) amp_u * sin(pi * location.x) .* sin(pi * location.y);
-    ut0_fun = @(location) amp_v * sin(pi * location.x) .* sin(pi * location.y);
+    % Use fewer Fourier modes (K=2, L=2) with 10% larger coefficient range
+    K = 2; L = 2;
+    
+    % Set fixed seed for reproducibility
+    rng(42);
+    
+    % Generate coefficients with 10% larger range: [-1.1, 1.1] instead of [-1, 1]
+    raw_u = -1.1 + 2.2 * rand(K, L);
+    raw_v = -1.1 + 2.2 * rand(K, L);
+    
+    [k_idx, l_idx] = ndgrid(1:K, 1:L);
+    decay = 1 ./ (k_idx.^2 + l_idx.^2);
+    
+    u_coeffs = raw_u .* decay;
+    v_coeffs = raw_v .* decay;
+    
+    u0_fun = @(location) fourier_field(location.x, location.y, u_coeffs);
+    ut0_fun = @(location) fourier_field(location.x, location.y, v_coeffs);
 end
 
 function [u0_fun, ut0_fun] = generate_random_ic(K, L)

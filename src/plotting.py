@@ -592,9 +592,12 @@ def plot_deeponet_validation(
     deeponet_checkpoint = output_dir / "deeponet_free_evolution.pth"
     
     if not deeponet_checkpoint.exists():
-        print(f"⚠ Warning: DeepONet checkpoint not found: {deeponet_checkpoint}")
-        print("  Skipping DeepONet validation.")
-        return
+        # Try looking in models_dir
+        deeponet_checkpoint = Path(models_dir) / "deeponet_free_evolution.pth"
+        if not deeponet_checkpoint.exists():
+            print(f"⚠ Warning: DeepONet checkpoint not found in output_dir or models_dir")
+            print("  Skipping DeepONet validation.")
+            return
     
     # Load DeepONet model
     print("Loading DeepONet model...")
@@ -773,17 +776,27 @@ def plot_deeponet_test(
     with h5py.File(mat_file, 'r') as f:
         u_fom = np.array(f['U_data']).T
     
+    # Handle single sample case: MATLAB may save as (Nx, Ny, Nt) instead of (Nx, Ny, Nt, 1)
+    if u_fom.ndim == 3:
+        u_fom = u_fom[..., np.newaxis]  # Add sample dimension
+    
     Nx, Ny, Nt, N_samples = u_fom.shape
+    print(f"  Test data shape: {u_fom.shape}")
+    
     if N_samples != 1:
-        print(f"  Warning: Expected a single test sample, got {N_samples}.")
+        print(f"  Warning: Expected a single test sample, got {N_samples}. Using first sample only.")
+        u_fom = u_fom[..., :1]
     
     # Load DeepONet model
     output_dir = Path(output_dir)
     deeponet_checkpoint = output_dir / "deeponet_free_evolution.pth"
     if not deeponet_checkpoint.exists():
-        print(f"⚠ Warning: DeepONet checkpoint not found: {deeponet_checkpoint}")
-        print("  Skipping DeepONet test.")
-        return
+        # Try looking in models_dir
+        deeponet_checkpoint = Path(models_dir) / "deeponet_free_evolution.pth"
+        if not deeponet_checkpoint.exists():
+            print(f"⚠ Warning: DeepONet checkpoint not found in output_dir or models_dir")
+            print("  Skipping DeepONet validation.")
+            return
     
     print("Loading DeepONet model...")
     deeponet_ckpt = torch.load(deeponet_checkpoint, map_location=device, weights_only=False)
