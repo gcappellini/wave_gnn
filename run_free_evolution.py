@@ -228,12 +228,14 @@ def main(cfg: DictConfig):
         deeponet_config['branch_n_layers'] = cfg.networks.branch.n_layers
         deeponet_config['n_sensors'] = cfg.sensors.n_sensors
         
-        trunk_pretrained = models_dir / "trunk_svd_free_evolution.pth"
+        trunk_pretrained = output_dir / "trunk_svd_free_evolution.pth"
+        branch_pretrained = output_dir / "branch_svd_free_evolution.pth"
         deeponet_result = train_deeponet_joint(
             config=deeponet_config,
             u_fom=u_fom,
             svd_data=svd_data,
             trunk_pretrained_path=str(trunk_pretrained),
+            branch_pretrained_path=str(branch_pretrained),
             device=device,
             output_dir=str(output_dir),
             models_dir=str(models_dir),

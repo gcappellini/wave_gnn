@@ -94,7 +94,7 @@ def train_trunk(
     
     print(f"Training: {len(train_idx)} samples, Testing: {len(test_idx)} samples")
     
-    for epoch in range(config['n_epochs']):
+    for epoch in range(config['trunk_n_epochs']):
         trunk.train()
         train_loss_epoch = 0.0
         for coords_batch, targets_batch in train_loader:
@@ -120,15 +120,14 @@ def train_trunk(
             best_state = {k: v.cpu().clone() for k, v in trunk.state_dict().items()}
         
         if (epoch + 1) % 50 == 0:
-            print(f"Epoch {epoch+1:3d}/{config['n_epochs']} | Train: {train_loss_epoch:.6e} | Test: {test_loss:.6e}")
+            print(f"Epoch {epoch+1:3d}/{config['trunk_n_epochs']} | Train: {train_loss_epoch:.6e} | Test: {test_loss:.6e}")
     
     trunk.load_state_dict(best_state)
     trunk.eval()
     
-    # Save checkpoint
-    save_dir = models_dir if models_dir else os.path.join(os.path.dirname(output_dir or '.'), 'models')
-    os.makedirs(save_dir, exist_ok=True)
-    ckpt_path = os.path.join(save_dir, 'trunk_svd_free_evolution.pth')
+    # Save checkpoint to output directory
+    os.makedirs(output_dir, exist_ok=True)
+    ckpt_path = os.path.join(output_dir, 'trunk_svd_free_evolution.pth')
     torch.save({
         'model_state_dict': best_state,
         'config': config,
@@ -244,7 +243,7 @@ def train_branch(
     
     print(f"Training: {len(train_idx)} samples, Testing: {len(test_idx)} samples")
     
-    for epoch in range(config['n_epochs']):
+    for epoch in range(config['branch_n_epochs']):
         branch.train()
         train_loss_epoch = 0.0
         for ic_batch, target_batch in train_loader:
@@ -270,15 +269,14 @@ def train_branch(
             best_state = {k: v.cpu().clone() for k, v in branch.state_dict().items()}
         
         if (epoch + 1) % 50 == 0:
-            print(f"Epoch {epoch+1:3d}/{config['n_epochs']} | Train: {train_loss_epoch:.6e} | Test: {test_loss:.6e}")
+            print(f"Epoch {epoch+1:3d}/{config['branch_n_epochs']} | Train: {train_loss_epoch:.6e} | Test: {test_loss:.6e}")
     
     branch.load_state_dict(best_state)
     branch.eval()
     
-    # Save checkpoint
-    save_dir = models_dir if models_dir else os.path.join(os.path.dirname(output_dir or '.'), 'models')
-    os.makedirs(save_dir, exist_ok=True)
-    ckpt_path = os.path.join(save_dir, 'branch_svd_free_evolution.pth')
+    # Save checkpoint to output directory
+    os.makedirs(output_dir, exist_ok=True)
+    ckpt_path = os.path.join(output_dir, 'branch_svd_free_evolution.pth')
     torch.save({
         'model_state_dict': best_state,
         'config': config,
@@ -476,7 +474,7 @@ def train_deeponet_joint(
     print(f"\nTraining: {len(train_idx)} points, Testing: {len(test_idx)} points")
     print("Starting training...\n")
     
-    for epoch in range(config['n_epochs']):
+    for epoch in range(config['deeponet_n_epochs']):
         deeponet.train()
         train_loss_epoch = 0.0
         
@@ -504,16 +502,15 @@ def train_deeponet_joint(
             best_state = {k: v.cpu().clone() for k, v in deeponet.state_dict().items()}
         
         if (epoch + 1) % 50 == 0:
-            print(f"Epoch {epoch+1:3d}/{config['n_epochs']} | Train: {train_loss_epoch:.6e} | Test: {test_loss:.6e}")
+            print(f"Epoch {epoch+1:3d}/{config['deeponet_n_epochs']} | Train: {train_loss_epoch:.6e} | Test: {test_loss:.6e}")
     
     # Load best model
     deeponet.load_state_dict(best_state)
     deeponet.eval()
     
-    # Save checkpoint
-    save_dir = models_dir if models_dir else os.path.join(os.path.dirname(output_dir or '.'), 'models')
-    os.makedirs(save_dir, exist_ok=True)
-    ckpt_path = os.path.join(save_dir, 'deeponet_free_evolution.pth')
+    # Save checkpoint to output directory
+    os.makedirs(output_dir, exist_ok=True)
+    ckpt_path = os.path.join(output_dir, 'deeponet_free_evolution.pth')
     torch.save({
         'model_state_dict': best_state,
         'trunk_state_dict': {k: v for k, v in best_state.items() if k.startswith('trunk.')},

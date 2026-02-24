@@ -41,8 +41,12 @@ networks:
 training:
   batch_size: 256
   learning_rate: 1.0e-3
-  n_epochs: 500
   train_test_split: 0.8
+  
+  # Stage-specific training epochs
+  trunk_n_epochs: 500
+  branch_n_epochs: 500
+  deeponet_n_epochs: 500
   
   # Data sampling (for large problems)
   max_trunk_points: 10000           # Max space-time points for trunk training (null = use all)
