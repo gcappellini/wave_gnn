@@ -22,6 +22,7 @@ def plot_validation_basic(
     models_dir: str = None,
     device: torch.device = None,
     n_samples_plot: int = 3,
+    cfg: dict = None,
 ):
     """
     Generate comprehensive validation plots.
@@ -106,70 +107,80 @@ def plot_validation_basic(
     # ========================================================================
     print("\n2. Generating plots...")
     
-    # Plot 1: SVD Reconstruction Comparison
-    fig, axes = plt.subplots(n_samples_plot, 4, figsize=(16, 4*n_samples_plot))
-    if n_samples_plot == 1:
-        axes = axes[np.newaxis, :]
-    
-    t_indices = [0, Nt//2, Nt-1]
-    t_labels = ['t=0', f't={Nt//2}', f't={Nt-1}']
-    
-    for i in range(min(n_samples_plot, N_samples)):
-        for j, (t_idx, t_label) in enumerate(zip(t_indices, t_labels)):
-            ax = axes[i, j]
-            
-            if j == 0:
-                # Ground truth
-                im = ax.imshow(u_fom[:, :, t_idx, i], cmap='seismic', 
-                              vmin=-1, vmax=1, aspect='auto')
-                ax.set_ylabel(f'Sample {i}', fontsize=10)
-                ax.set_title(f'{t_label} - Ground Truth', fontsize=9)
-            elif j == 1:
-                # SVD reconstruction
-                im = ax.imshow(u_svd[:, :, t_idx, i], cmap='seismic',
-                              vmin=-1, vmax=1, aspect='auto')
-                ax.set_title(f'{t_label} - SVD Recon', fontsize=9)
-            elif j == 2:
-                # Error
-                error = u_fom[:, :, t_idx, i] - u_svd[:, :, t_idx, i]
-                im = ax.imshow(error, cmap='viridis', aspect='auto')
-                ax.set_title(f'{t_label} - Error', fontsize=9)
-            
-            ax.set_xticks([])
-            ax.set_yticks([])
-            plt.colorbar(im, ax=ax, fraction=0.046)
+    if cfg.svd.visualize:
+        # Plot: GT vs SVD Reconstruction vs Error
+        # Rows: different (time, sample) combinations
+        # Columns: GT, SVD Recon, Error
+        t_indices = [0, Nt//2, Nt-1]
+        t_labels = ['t=0', f't={Nt//2}', f't={Nt-1}']
         
-        # Temporal evolution
-        ax = axes[i, 3]
-        gt_norm = np.linalg.norm(u_fom[:, :, :, i].reshape(-1, Nt), axis=0)
-        svd_norm = np.linalg.norm(u_svd[:, :, :, i].reshape(-1, Nt), axis=0)
-        ax.plot(gt_norm, 'k-', label='GT', linewidth=2)
-        ax.plot(svd_norm, 'r--', label='SVD', linewidth=2)
-        ax.set_xlabel('Time step')
-        ax.set_ylabel('||u||')
-        ax.legend(fontsize=8)
-        ax.grid(True, alpha=0.3)
-        ax.set_title('Temporal Evolution', fontsize=9)
-    
-    plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, 'validation_svd_reconstruction.png'), dpi=150, bbox_inches='tight')
-    plt.close()
-    print(f"  ✓ Saved: validation_svd_reconstruction.png")
+        n_rows = len(t_indices) * n_samples_plot
+        n_cols = 3
+        
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(12, 4*n_rows))
+        if n_rows == 1:
+            axes = axes[np.newaxis, :]
+        
+        row_idx = 0
+        for t_i, (t_idx, t_label) in enumerate(zip(t_indices, t_labels)):
+            for s_i in range(min(n_samples_plot, N_samples)):
+                # Get data for this (time, sample) pair
+                gt = u_fom[:, :, t_idx, s_i]
+                svd = u_svd[:, :, t_idx, s_i]
+                error = np.abs(gt - svd)
+                
+                # Find common vmin/vmax for GT and SVD
+                vmin = min(gt.min(), svd.min())
+                vmax = max(gt.max(), svd.max())
+                
+                # Column 0: Ground Truth
+                im0 = axes[row_idx, 0].imshow(gt, cmap='seismic', origin='lower', vmin=vmin, vmax=vmax)
+                axes[row_idx, 0].set_title(f'{t_label} Sample {s_i} - GT', fontsize=10)
+                axes[row_idx, 0].set_xticks([])
+                axes[row_idx, 0].set_yticks([])
+                plt.colorbar(im0, ax=axes[row_idx, 0], fraction=0.046)
+                
+                # Column 1: SVD Reconstruction
+                im1 = axes[row_idx, 1].imshow(svd, cmap='seismic', origin='lower', vmin=vmin, vmax=vmax)
+                axes[row_idx, 1].set_title(f'{t_label} Sample {s_i} - SVD', fontsize=10)
+                axes[row_idx, 1].set_xticks([])
+                axes[row_idx, 1].set_yticks([])
+                plt.colorbar(im1, ax=axes[row_idx, 1], fraction=0.046)
+                
+                # Column 2: Error
+                im2 = axes[row_idx, 2].imshow(error, cmap='hot', origin='lower')
+                axes[row_idx, 2].set_title(f'{t_label} Sample {s_i} - Error', fontsize=10)
+                axes[row_idx, 2].set_xticks([])
+                axes[row_idx, 2].set_yticks([])
+                cbar = plt.colorbar(im2, ax=axes[row_idx, 2], fraction=0.046)
+                cbar.set_label('|Error|', fontsize=8)
+                
+                row_idx += 1
+        
+        plt.suptitle('SVD Reconstruction Validation\n(Rows: time instant × sample, Columns: GT | SVD | Error)', 
+                    fontsize=12, y=0.995)
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, 'validation_svd_reconstruction.png'), dpi=150, bbox_inches='tight')
+        plt.close()
+        print(f"  ✓ Saved: validation_svd_reconstruction.png")
     
     # ========================================================================
     # SECTION 3: BRANCH VALIDATION
     # ========================================================================
-    plot_branch_validation(output_dir, u_fom, svd_data, models_dir, device)
+    if cfg.training.branch_n_epochs > 0:
+        plot_branch_validation(output_dir, u_fom, svd_data, models_dir, device)
     
     # ========================================================================
     # SECTION 4: TRUNK VALIDATION
     # ========================================================================
-    plot_trunk_validation(output_dir, svd_data, models_dir, device)
+    if cfg.training.trunk_n_epochs > 0:
+        plot_trunk_validation(output_dir, svd_data, models_dir, device)
     
     # ========================================================================
     # SECTION 5: DEEPONET VALIDATION
     # ========================================================================
-    plot_deeponet_validation(output_dir, u_fom, svd_data, models_dir, device)
+    if cfg.training.deeponet_n_epochs > 0:
+        plot_deeponet_validation(output_dir, u_fom, svd_data, models_dir, device)
     
     # ========================================================================
     # SUMMARY
@@ -208,8 +219,8 @@ def plot_branch_validation(
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
-    models_dir = Path(models_dir)
-    branch_checkpoint = models_dir / "branch_svd_free_evolution.pth"
+    output_dir = Path(output_dir)
+    branch_checkpoint = output_dir / "branch_svd_free_evolution.pth"
     
     if not branch_checkpoint.exists():
         print(f"⚠ Warning: Branch checkpoint not found: {branch_checkpoint}")
@@ -375,8 +386,8 @@ def plot_trunk_validation(
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
-    models_dir = Path(models_dir)
-    trunk_checkpoint = models_dir / "trunk_svd_free_evolution.pth"
+    output_dir = Path(output_dir)
+    trunk_checkpoint = output_dir / "trunk_svd_free_evolution.pth"
     
     if not trunk_checkpoint.exists():
         print(f"⚠ Warning: Trunk checkpoint not found: {trunk_checkpoint}")
@@ -576,50 +587,41 @@ def plot_deeponet_validation(
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
-    models_dir = Path(models_dir)
-    trunk_checkpoint = models_dir / "trunk_svd_free_evolution.pth"
-    branch_checkpoint = models_dir / "branch_svd_free_evolution.pth"
+    output_dir = Path(output_dir)
+    deeponet_checkpoint = output_dir / "deeponet_free_evolution.pth"
     
-    if not trunk_checkpoint.exists() or not branch_checkpoint.exists():
-        print(f"⚠ Warning: Model checkpoints not found")
-        print(f"  Trunk: {trunk_checkpoint.exists()}")
-        print(f"  Branch: {branch_checkpoint.exists()}")
+    if not deeponet_checkpoint.exists():
+        print(f"⚠ Warning: DeepONet checkpoint not found: {deeponet_checkpoint}")
         print("  Skipping DeepONet validation.")
         return
     
-    # Load models
-    print("Loading DeepONet models...")
-    trunk_ckpt = torch.load(trunk_checkpoint, map_location=device, weights_only=False)
-    branch_ckpt = torch.load(branch_checkpoint, map_location=device, weights_only=False)
-    
-    # Handle both old and new checkpoint formats
-    trunk_state = trunk_ckpt.get('model_state_dict', trunk_ckpt)
-    branch_state = branch_ckpt.get('model_state_dict', branch_ckpt)
+    # Load DeepONet model
+    print("Loading DeepONet model...")
+    deeponet_ckpt = torch.load(deeponet_checkpoint, map_location=device, weights_only=False)
+    deeponet_state = deeponet_ckpt.get('model_state_dict', deeponet_ckpt)
     
     # Infer trunk dimensions from state dict
-    trunk_first_layer = trunk_state['net.0.weight']
+    trunk_first_layer = deeponet_state['trunk.net.0.weight']
     trunk_hidden_dim = trunk_first_layer.shape[0]
-    trunk_last_keys = [k for k in trunk_state.keys() if k.endswith('.weight')]
-    n_modes = trunk_state[trunk_last_keys[-1]].shape[0]
+    trunk_last_keys = [k for k in deeponet_state.keys() if k.startswith('trunk.') and k.endswith('.weight')]
+    n_modes = deeponet_state[trunk_last_keys[-1]].shape[0]
     trunk_n_layers = len(trunk_last_keys)
     
     # Infer branch dimensions from state dict
-    branch_first_layer = branch_state['net.0.weight']
+    branch_first_layer = deeponet_state['branch.net.0.weight']
     branch_input_dim = branch_first_layer.shape[1]
     branch_hidden_dim = branch_first_layer.shape[0]
-    branch_last_keys = [k for k in branch_state.keys() if k.endswith('.weight')]
-    branch_output_dim = branch_state[branch_last_keys[-1]].shape[0]
+    branch_last_keys = [k for k in deeponet_state.keys() if k.startswith('branch.') and k.endswith('.weight')]
+    branch_output_dim = deeponet_state[branch_last_keys[-1]].shape[0]
     branch_n_layers = len(branch_last_keys)
     
     # Create trunk and branch networks
     trunk_net = MLP(3, trunk_hidden_dim, n_modes, trunk_n_layers).to(device)
     branch_net = MLP(branch_input_dim, branch_hidden_dim, branch_output_dim, branch_n_layers).to(device)
     
-    trunk_net.load_state_dict(trunk_state)
-    branch_net.load_state_dict(branch_state)
-    
     # Create DeepONet model
     deeponet = DeepONet(trunk_net, branch_net).to(device)
+    deeponet.load_state_dict(deeponet_state)
     deeponet.eval()
     
     print(f"  DeepONet loaded: {n_modes} modes")

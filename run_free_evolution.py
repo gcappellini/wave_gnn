@@ -64,10 +64,10 @@ def main(cfg: DictConfig):
     data_dir = script_dir / "data"
     models_dir = script_dir / "models"
     hydra_cfg = HydraConfig.get()
-    output_dir = hydra_cfg.runtime.output_dir
+    output_dir = Path(hydra_cfg.runtime.output_dir)
     
     # Setup logging to both file and console
-    log_file = Path(output_dir) / "run_free_evolution.log"
+    log_file = output_dir / "run_free_evolution.log"
     tee = TeeLogger(log_file)
     sys.stdout = tee
     
@@ -161,7 +161,7 @@ def main(cfg: DictConfig):
     
     trunk_checkpoint = models_dir / "trunk_svd_free_evolution.pth"
     
-    if not trunk_checkpoint.exists():
+    if cfg.training.trunk_n_epochs > 0 and not trunk_checkpoint.exists():
         # Build config with all required fields
         trunk_config = OmegaConf.to_container(cfg.training)
         trunk_config['n_modes'] = cfg.svd.n_modes
@@ -188,7 +188,7 @@ def main(cfg: DictConfig):
     
     branch_checkpoint = models_dir / "branch_svd_free_evolution.pth"
     
-    if not branch_checkpoint.exists():
+    if cfg.training.branch_n_epochs > 0 and not branch_checkpoint.exists():
         # Build config with all required fields
         branch_config = OmegaConf.to_container(cfg.training)
         branch_config['n_modes'] = cfg.svd.n_modes
@@ -218,7 +218,7 @@ def main(cfg: DictConfig):
     
     deeponet_checkpoint = models_dir / "deeponet_free_evolution.pth"
     
-    if not deeponet_checkpoint.exists():
+    if cfg.training.deeponet_n_epochs > 0 and not deeponet_checkpoint.exists():
         # Build config with all required fields
         deeponet_config = OmegaConf.to_container(cfg.training)
         deeponet_config['n_modes'] = cfg.svd.n_modes
@@ -258,7 +258,8 @@ def main(cfg: DictConfig):
         data_dir=str(data_dir),
         models_dir=str(models_dir),
         device=device,
-        n_samples_plot=3
+        n_samples_plot=3,
+        cfg=cfg
     )
     
     # ====================================================================
