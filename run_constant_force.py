@@ -122,19 +122,24 @@ def main(cfg: DictConfig):
         with h5py.File(output_mat, 'r') as f:
             u_fom = np.array(f['U_data']).T
             v_fom = np.array(f['V_data']).T
+            f_data = np.array(f['F_data']).T if 'F_data' in f else None
         
         Nx, Ny, Nt, N_samples = u_fom.shape
         gt_data = {
             'u_fom': u_fom,
             'v_fom': v_fom,
+            'f_data': f_data,
             'metadata': {
                 'Nx': Nx, 'Ny': Ny, 'Nt': Nt, 'N_samples': N_samples
             }
         }
         print(f"✓ Loaded: {output_mat}")
-        print(f"  Shape: {u_fom.shape}")
+        print(f"  u_fom shape: {u_fom.shape}")
+        if f_data is not None:
+            print(f"  f_data shape: {f_data.shape}")
     
     u_fom = gt_data['u_fom']
+    f_data = gt_data.get('f_data', None)
     
     # ====================================================================
     # 2. SVD BASIS EXTRACTION
@@ -253,6 +258,8 @@ def main(cfg: DictConfig):
             device=device,
             output_dir=str(output_dir),
             models_dir=str(models_dir),
+            problem_type='constant_force',
+            f_data=f_data,
         )
     else:
         print("Loading pre-trained DeepONet model...")
@@ -273,7 +280,8 @@ def main(cfg: DictConfig):
         models_dir=str(models_dir),
         device=device,
         n_samples_plot=3,
-        cfg=cfg
+        cfg=cfg,
+        problem_type='constant_force'
     )
     
     # ====================================================================

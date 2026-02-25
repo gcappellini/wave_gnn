@@ -253,6 +253,7 @@ def main(cfg: DictConfig):
             device=device,
             output_dir=str(output_dir),
             models_dir=str(models_dir),
+            problem_type='free_evolution',
         )
     else:
         print("Loading pre-trained DeepONet model...")
@@ -273,7 +274,8 @@ def main(cfg: DictConfig):
         models_dir=str(models_dir),
         device=device,
         n_samples_plot=3,
-        cfg=cfg
+        cfg=cfg,
+        problem_type='free_evolution'
     )
     
     # ====================================================================

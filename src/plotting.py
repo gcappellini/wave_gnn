@@ -23,6 +23,7 @@ def plot_validation_basic(
     device: torch.device = None,
     n_samples_plot: int = 3,
     cfg: dict = None,
+    problem_type: str = 'free_evolution',
 ):
     """
     Generate comprehensive validation plots.
@@ -35,6 +36,7 @@ def plot_validation_basic(
         models_dir: Path to models directory
         device: Torch device
         n_samples_plot: Number of samples to plot
+        problem_type: 'free_evolution' or 'constant_force'
     """
     
     print("\n" + "=" * 70)
@@ -179,8 +181,9 @@ def plot_validation_basic(
     # ========================================================================
     # SECTION 5: DEEPONET VALIDATION
     # ========================================================================
-    plot_deeponet_validation(output_dir, u_fom, svd_data, models_dir, device)
-    plot_deeponet_test(output_dir, data_dir, models_dir, device)
+    plot_deeponet_validation(output_dir, u_fom, svd_data, models_dir, device, 
+                            problem_type=problem_type)
+    plot_deeponet_test(output_dir, data_dir, models_dir, device, problem_type=problem_type)
         
     
     # ========================================================================
@@ -567,6 +570,7 @@ def plot_deeponet_validation(
     device: torch.device = None,
     sample_idx: int = 0,
     time_instants: list = [0.0, 0.5, 1.0],
+    problem_type: str = 'free_evolution',
 ):
     """
     Validate full DeepONet predictions against ground truth.
@@ -579,6 +583,7 @@ def plot_deeponet_validation(
         device: Torch device
         sample_idx: Sample index to validate
         time_instants: List of time instants (0.0 to 1.0)
+        problem_type: 'free_evolution' or 'constant_force'
     """
     
     print("\\n" + "=" * 70)
@@ -604,6 +609,19 @@ def plot_deeponet_validation(
     deeponet_ckpt = torch.load(deeponet_checkpoint, map_location=device, weights_only=False)
     deeponet_state = deeponet_ckpt.get('model_state_dict', deeponet_ckpt)
     
+    # Map old 'branch.*' keys to new problem-specific keys if needed
+    if 'branch.net.0.weight' in deeponet_state:
+        print("  Mapping legacy 'branch' keys to problem-specific branch...")
+        branch_prefix = 'branch_ic' if problem_type == 'free_evolution' else 'branch_force'
+        new_state = {}
+        for key, value in deeponet_state.items():
+            if key.startswith('branch.'):
+                new_key = key.replace('branch.', f'{branch_prefix}.', 1)
+                new_state[new_key] = value
+            else:
+                new_state[key] = value
+        deeponet_state = new_state
+    
     # Infer trunk dimensions from state dict
     trunk_first_layer = deeponet_state['trunk.net.0.weight']
     trunk_hidden_dim = trunk_first_layer.shape[0]
@@ -612,10 +630,12 @@ def plot_deeponet_validation(
     trunk_n_layers = len(trunk_last_keys)
     
     # Infer branch dimensions from state dict
-    branch_first_layer = deeponet_state['branch.net.0.weight']
+    branch_prefix = 'branch_ic' if problem_type == 'free_evolution' else 'branch_force'
+    branch_first_key = [k for k in deeponet_state.keys() if k.startswith(f'{branch_prefix}.net.0.weight')][0]
+    branch_first_layer = deeponet_state[branch_first_key]
     branch_input_dim = branch_first_layer.shape[1]
     branch_hidden_dim = branch_first_layer.shape[0]
-    branch_last_keys = [k for k in deeponet_state.keys() if k.startswith('branch.') and k.endswith('.weight')]
+    branch_last_keys = [k for k in deeponet_state.keys() if k.startswith(f'{branch_prefix}.') and k.endswith('.weight')]
     branch_output_dim = deeponet_state[branch_last_keys[-1]].shape[0]
     branch_n_layers = len(branch_last_keys)
     
@@ -623,12 +643,16 @@ def plot_deeponet_validation(
     trunk_net = MLP(3, trunk_hidden_dim, n_modes, trunk_n_layers).to(device)
     branch_net = MLP(branch_input_dim, branch_hidden_dim, branch_output_dim, branch_n_layers).to(device)
     
-    # Create DeepONet model
-    deeponet = DeepONet(trunk_net, branch_net).to(device)
+    # Create DeepONet model with correct branch assignment
+    if problem_type == 'free_evolution':
+        deeponet = DeepONet(trunk_net, branch_ic=branch_net, problem_type='free_evolution').to(device)
+    else:
+        deeponet = DeepONet(trunk_net, branch_force=branch_net, problem_type='constant_force').to(device)
+    
     deeponet.load_state_dict(deeponet_state)
     deeponet.eval()
     
-    print(f"  DeepONet loaded: {n_modes} modes")
+    print(f"  DeepONet loaded: {n_modes} modes, problem_type={problem_type}")
     
     # Get grid dimensions
     grid_info = svd_data['grid_info']
@@ -721,7 +745,7 @@ def plot_deeponet_validation(
         max_error = err.max()
         print(f"  t={t_val:.2f}: L2 Error = {l2_error:.6e}, Max Error = {max_error:.6e}")
     
-    plt.suptitle(f'DeepONet Validation (Sample {sample_idx})', fontsize=14, y=0.995)
+    plt.suptitle(f'DeepONet Validation (Sample {sample_idx}, {problem_type})', fontsize=14, y=0.995)
     plt.tight_layout()
     
     save_path = os.path.join(output_dir, f'validation_deeponet_sample{sample_idx}.png')
@@ -737,20 +761,22 @@ def plot_deeponet_test(
     models_dir: str = None,
     device: torch.device = None,
     time_instants: list = [0.0, 0.5, 1.0],
+    problem_type: str = 'free_evolution',
 ):
     """
     Test DeepONet predictions against the out-of-range single-sample dataset.
     
     Args:
         output_dir: Directory to save plots
-        data_dir: Path to data directory (contains free_evolution_test.mat)
+        data_dir: Path to data directory
         models_dir: Path to models directory
         device: Torch device
         time_instants: List of time instants (0.0 to 1.0)
+        problem_type: 'free_evolution' or 'constant_force'
     """
     
     print("\n" + "=" * 70)
-    print("DEEPONET TEST: Out-of-Range Single Sample")
+    print(f"DEEPONET TEST: Out-of-Range Single Sample ({problem_type})")
     print("=" * 70)
     
     if device is None:
@@ -767,13 +793,13 @@ def plot_deeponet_test(
     
     # Load test data
     import h5py
-    mat_file = data_dir / "free_evolution_test.mat"
-    if not mat_file.exists():
-        print(f"⚠ Warning: Test file not found: {mat_file}")
+    test_file = data_dir / f"{problem_type}_test.mat"
+    if not test_file.exists():
+        print(f"⚠ Warning: Test file not found: {test_file}")
         print("  Skipping DeepONet test.")
         return
     
-    with h5py.File(mat_file, 'r') as f:
+    with h5py.File(test_file, 'r') as f:
         u_fom = np.array(f['U_data']).T
     
     # Handle single sample case: MATLAB may save as (Nx, Ny, Nt) instead of (Nx, Ny, Nt, 1)
@@ -789,18 +815,32 @@ def plot_deeponet_test(
     
     # Load DeepONet model
     output_dir = Path(output_dir)
-    deeponet_checkpoint = output_dir / "deeponet_free_evolution.pth"
+    ckpt_name = f"deeponet_{problem_type}.pth"
+    deeponet_checkpoint = output_dir / ckpt_name
     if not deeponet_checkpoint.exists():
         # Try looking in models_dir
-        deeponet_checkpoint = Path(models_dir) / "deeponet_free_evolution.pth"
+        deeponet_checkpoint = Path(models_dir) / ckpt_name
         if not deeponet_checkpoint.exists():
-            print(f"⚠ Warning: DeepONet checkpoint not found in output_dir or models_dir")
-            print("  Skipping DeepONet validation.")
+            print(f"⚠ Warning: DeepONet checkpoint not found: {ckpt_name}")
+            print("  Skipping DeepONet test.")
             return
     
     print("Loading DeepONet model...")
     deeponet_ckpt = torch.load(deeponet_checkpoint, map_location=device, weights_only=False)
     deeponet_state = deeponet_ckpt.get('model_state_dict', deeponet_ckpt)
+    
+    # Map old 'branch.*' keys to new problem-specific keys if needed
+    if 'branch.net.0.weight' in deeponet_state:
+        print("  Mapping legacy 'branch' keys to problem-specific branch...")
+        branch_prefix = 'branch_ic' if problem_type == 'free_evolution' else 'branch_force'
+        new_state = {}
+        for key, value in deeponet_state.items():
+            if key.startswith('branch.'):
+                new_key = key.replace('branch.', f'{branch_prefix}.', 1)
+                new_state[new_key] = value
+            else:
+                new_state[key] = value
+        deeponet_state = new_state
     
     # Infer trunk dimensions from state dict
     trunk_first_layer = deeponet_state['trunk.net.0.weight']
@@ -810,10 +850,12 @@ def plot_deeponet_test(
     trunk_n_layers = len(trunk_last_keys)
     
     # Infer branch dimensions from state dict
-    branch_first_layer = deeponet_state['branch.net.0.weight']
+    branch_prefix = 'branch_ic' if problem_type == 'free_evolution' else 'branch_force'
+    branch_first_key = [k for k in deeponet_state.keys() if k.startswith(f'{branch_prefix}.net.0.weight')][0]
+    branch_first_layer = deeponet_state[branch_first_key]
     branch_input_dim = branch_first_layer.shape[1]
     branch_hidden_dim = branch_first_layer.shape[0]
-    branch_last_keys = [k for k in deeponet_state.keys() if k.startswith('branch.') and k.endswith('.weight')]
+    branch_last_keys = [k for k in deeponet_state.keys() if k.startswith(f'{branch_prefix}.') and k.endswith('.weight')]
     branch_output_dim = deeponet_state[branch_last_keys[-1]].shape[0]
     branch_n_layers = len(branch_last_keys)
     
@@ -821,14 +863,18 @@ def plot_deeponet_test(
     trunk_net = MLP(3, trunk_hidden_dim, n_modes, trunk_n_layers).to(device)
     branch_net = MLP(branch_input_dim, branch_hidden_dim, branch_output_dim, branch_n_layers).to(device)
     
-    # Create DeepONet model
-    deeponet = DeepONet(trunk_net, branch_net).to(device)
+    # Create DeepONet model with correct branch assignment
+    if problem_type == 'free_evolution':
+        deeponet = DeepONet(trunk_net, branch_ic=branch_net, problem_type='free_evolution').to(device)
+    else:
+        deeponet = DeepONet(trunk_net, branch_force=branch_net, problem_type='constant_force').to(device)
+    
     deeponet.load_state_dict(deeponet_state)
     deeponet.eval()
     
     print(f"  DeepONet loaded: {n_modes} modes")
     
-    # Extract IC sensors
+    # Extract IC/force sensors
     n_sensors_inferred = int(np.sqrt(branch_input_dim))
     sensor_x_indices = np.linspace(0, Nx - 1, n_sensors_inferred, dtype=int)
     sensor_y_indices = np.linspace(0, Ny - 1, n_sensors_inferred, dtype=int)
@@ -913,11 +959,11 @@ def plot_deeponet_test(
         max_error = err.max()
         print(f"  t={t_val:.2f}: L2 Error = {l2_error:.6e}, Max Error = {max_error:.6e}")
     
-    plt.suptitle('DeepONet Test: Out-of-Range Sample', fontsize=14, y=0.995)
+    plt.suptitle(f'DeepONet Test: Out-of-Range Sample ({problem_type})', fontsize=14, y=0.995)
     plt.tight_layout()
     
-    save_path = os.path.join(output_dir, 'validation_deeponet_test.png')
+    save_path = os.path.join(output_dir, f'validation_deeponet_test_{problem_type}.png')
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
     plt.close()
-    print("  ✓ Saved: validation_deeponet_test.png")
+    print(f"  ✓ Saved: validation_deeponet_test_{problem_type}.png")
     print("  ✓ DeepONet test complete")

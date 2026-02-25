@@ -311,19 +311,29 @@ def train_deeponet_joint(
     device: torch.device = None,
     output_dir: str = None,
     models_dir: str = None,
+    problem_type: str = 'free_evolution',
+    f_data: np.ndarray = None,
 ) -> dict:
     """Joint training of DeepONet on ground truth data.
     
     Trains the complete DeepONet (trunk + branch) on raw field data,
     optionally initializing from pretrained trunk and branch networks.
+    
+    Args:
+        problem_type: 'free_evolution' or 'constant_force'
+        f_data: Force field data (Nx, Ny, N_samples), required only for 'constant_force'
     """
     
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     print("\n" + "=" * 70)
-    print("TRAINING DEEPONET (Joint Trunk + Branch on Ground Truth)")
+    print(f"TRAINING DEEPONET (Joint Trunk + Branch - {problem_type.upper()})")
     print("=" * 70)
+    
+    # Validate inputs
+    if problem_type == 'constant_force' and f_data is None:
+        raise ValueError("f_data must be provided for 'constant_force' problem")
     
     # Extract data dimensions
     Nx, Ny, Nt, N_samples = u_fom.shape
@@ -336,6 +346,8 @@ def train_deeponet_joint(
         print(f"Sampling {max_deeponet_samples} samples from {N_samples} total samples")
         sample_indices = np.random.choice(N_samples, max_deeponet_samples, replace=False)
         u_fom = u_fom[:, :, :, sample_indices]
+        if f_data is not None:
+            f_data = f_data[:, :, sample_indices]
         N_samples = max_deeponet_samples
     else:
         if max_deeponet_samples:
@@ -355,8 +367,8 @@ def train_deeponet_joint(
         print("  Initializing trunk from scratch")
     
     # Initialize branch network
-    ic_dim = n_sensors * n_sensors
-    branch = MLP(ic_dim, config['branch_hidden_dim'], n_modes, config['branch_n_layers']).to(device)
+    measurement_dim = n_sensors * n_sensors
+    branch = MLP(measurement_dim, config['branch_hidden_dim'], n_modes, config['branch_n_layers']).to(device)
     if branch_pretrained_path and os.path.exists(branch_pretrained_path):
         print(f"Loading pretrained branch from: {branch_pretrained_path}")
         branch_ckpt = torch.load(branch_pretrained_path, map_location=device, weights_only=False)
@@ -366,37 +378,60 @@ def train_deeponet_joint(
     else:
         print("  Initializing branch from scratch")
     
-    # Create DeepONet
-    deeponet = DeepONet(
-        trunk=trunk,
-        branch=branch,
-        wave_speed=config.get('wave_speed', 1.0),
-        damping=config.get('damping', 1.0)
-    ).to(device)
+    # Create DeepONet with problem-specific branch
+    if problem_type == 'free_evolution':
+        deeponet = DeepONet(
+            trunk=trunk,
+            branch_ic=branch,
+            problem_type='free_evolution',
+            wave_speed=config.get('wave_speed', 1.0),
+            damping=config.get('damping', 1.0)
+        ).to(device)
+    else:  # constant_force
+        deeponet = DeepONet(
+            trunk=trunk,
+            branch_force=branch,
+            problem_type='constant_force',
+            wave_speed=config.get('wave_speed', 1.0),
+            damping=config.get('damping', 1.0)
+        ).to(device)
     
     print(f"\nDeepONet architecture:")
     print(f"  Trunk: 3 → {config['trunk_hidden_dim']} ({config['trunk_n_layers']} layers) → {n_modes}")
-    print(f"  Branch: {ic_dim} → {config['branch_hidden_dim']} ({config['branch_n_layers']} layers) → {n_modes}")
+    print(f"  Branch: {measurement_dim} → {config['branch_hidden_dim']} ({config['branch_n_layers']} layers) → {n_modes}")
+    print(f"  Problem type: {problem_type}")
     
     # Prepare training data
     print("\nPreparing training data...")
     
-    # Extract IC sensors for all samples
+    # Extract measurements based on problem type
     sensor_x_indices = np.linspace(0, Nx - 1, n_sensors, dtype=int)
     sensor_y_indices = np.linspace(0, Ny - 1, n_sensors, dtype=int)
     
-    ic_sensors = []
-    for s in range(N_samples):
-        u_ic = u_fom[:, :, 0, s]
-        sensors = [u_ic[si, sj] for si in sensor_x_indices for sj in sensor_y_indices]
-        ic_sensors.append(sensors)
-    ic_sensors = np.array(ic_sensors)  # (N_samples, n_sensors^2)
+    if problem_type == 'free_evolution':
+        # Extract IC measurements from initial condition
+        measurements = []
+        for s in range(N_samples):
+            u_ic = u_fom[:, :, 0, s]
+            sensors = [u_ic[si, sj] for si in sensor_x_indices for sj in sensor_y_indices]
+            measurements.append(sensors)
+        measurements = np.array(measurements)  # (N_samples, n_sensors^2)
+        measurements_min = measurements.min()
+        measurements_max = measurements.max()
+    else:  # constant_force
+        # Extract force measurements
+        measurements = []
+        for s in range(N_samples):
+            f_field = f_data[:, :, s]
+            sensors = [f_field[si, sj] for si in sensor_x_indices for sj in sensor_y_indices]
+            measurements.append(sensors)
+        measurements = np.array(measurements)  # (N_samples, n_sensors^2)
+        measurements_min = measurements.min()
+        measurements_max = measurements.max()
     
-    # Normalize IC sensors
-    ic_min = ic_sensors.min()
-    ic_max = ic_sensors.max()
-    ic_range = ic_max - ic_min
-    ic_sensors_norm = 2 * (ic_sensors - ic_min) / (ic_range + 1e-10) - 1
+    # Normalize measurements
+    measurements_range = measurements_max - measurements_min
+    measurements_norm = 2 * (measurements - measurements_min) / (measurements_range + 1e-10) - 1
     
     # Generate coordinate grid
     x = np.linspace(0, 1, Nx)
@@ -418,7 +453,7 @@ def train_deeponet_joint(
     
     # Create training dataset
     coords_list = []
-    ic_list = []
+    meas_list = []
     targets_list = []
     
     for s in range(N_samples):
@@ -427,24 +462,24 @@ def train_deeponet_joint(
         pt_indices = np.random.choice(coords_all.shape[0], n_pts, replace=False)
         
         coords_sample = coords_all[pt_indices]  # (n_pts, 3)
-        ic_sample = np.tile(ic_sensors_norm[s], (n_pts, 1))  # (n_pts, n_sensors^2)
+        meas_sample = np.tile(measurements_norm[s], (n_pts, 1))  # (n_pts, n_sensors^2)
         targets_sample = u_targets_all[pt_indices, s]  # (n_pts,)
         
         coords_list.append(coords_sample)
-        ic_list.append(ic_sample)
+        meas_list.append(meas_sample)
         targets_list.append(targets_sample)
     
     coords_train = np.vstack(coords_list)
-    ic_train = np.vstack(ic_list)
+    meas_train = np.vstack(meas_list)
     targets_train = np.hstack(targets_list)
     
     print(f"  Training points: {len(targets_train)}")
-    print(f"  IC range: [{ic_sensors.min():.6f}, {ic_sensors.max():.6f}]")
+    print(f"  Measurement range: [{measurements.min():.6f}, {measurements.max():.6f}]")
     print(f"  Target range: [{u_fom.min():.6f}, {u_fom.max():.6f}]")
     
     # Convert to tensors
     coords_tensor = torch.from_numpy(coords_train).float().to(device)
-    ic_tensor = torch.from_numpy(ic_train).float().to(device)
+    meas_tensor = torch.from_numpy(meas_train).float().to(device)
     targets_tensor = torch.from_numpy(targets_train).float().unsqueeze(1).to(device)
     
     # Train/test split
@@ -454,8 +489,8 @@ def train_deeponet_joint(
     train_idx = indices[:n_train]
     test_idx = indices[n_train:]
     
-    train_dataset = TensorDataset(ic_tensor[train_idx], coords_tensor[train_idx], targets_tensor[train_idx])
-    test_ic = ic_tensor[test_idx]
+    train_dataset = TensorDataset(meas_tensor[train_idx], coords_tensor[train_idx], targets_tensor[train_idx])
+    test_meas = meas_tensor[test_idx]
     test_coords = coords_tensor[test_idx]
     test_targets = targets_tensor[test_idx]
     
@@ -478,9 +513,9 @@ def train_deeponet_joint(
         deeponet.train()
         train_loss_epoch = 0.0
         
-        for ic_batch, coords_batch, targets_batch in train_loader:
+        for meas_batch, coords_batch, targets_batch in train_loader:
             optimizer.zero_grad()
-            pred = deeponet(ic_batch, coords_batch).unsqueeze(1)  # (batch, 1)
+            pred = deeponet(meas_batch, coords_batch).unsqueeze(1)  # (batch, 1)
             loss = criterion(pred, targets_batch)
             loss.backward()
             optimizer.step()
@@ -492,7 +527,7 @@ def train_deeponet_joint(
         # Validation
         deeponet.eval()
         with torch.no_grad():
-            pred_test = deeponet(test_ic, test_coords).unsqueeze(1)
+            pred_test = deeponet(test_meas, test_coords).unsqueeze(1)
             test_loss = criterion(pred_test, test_targets).item()
         test_losses.append(test_loss)
         scheduler.step(test_loss)
@@ -510,15 +545,16 @@ def train_deeponet_joint(
     
     # Save checkpoint to output directory
     os.makedirs(output_dir, exist_ok=True)
-    ckpt_path = os.path.join(output_dir, 'deeponet_free_evolution.pth')
+    problem_suffix = 'free_evolution' if problem_type == 'free_evolution' else 'constant_force'
+    ckpt_path = os.path.join(output_dir, f'deeponet_{problem_suffix}.pth')
     torch.save({
         'model_state_dict': best_state,
         'trunk_state_dict': {k: v for k, v in best_state.items() if k.startswith('trunk.')},
         'branch_state_dict': {k: v for k, v in best_state.items() if k.startswith('branch.')},
         'config': config,
         'normalization': {
-            'ic_min': ic_min,
-            'ic_max': ic_max,
+            'measurements_min': measurements_min,
+            'measurements_max': measurements_max,
             'u_min': u_min,
             'u_max': u_max,
         }
@@ -532,7 +568,7 @@ def train_deeponet_joint(
         plt.semilogy(test_losses, label='Test')
         plt.xlabel('Epoch')
         plt.ylabel('MSE Loss')
-        plt.title('DeepONet Joint Training Loss')
+        plt.title(f'DeepONet Joint Training Loss ({problem_type})')
         plt.legend()
         plt.grid(True, alpha=0.3)
         plt.savefig(os.path.join(output_dir, 'deeponet_training_curves.png'), dpi=150)
