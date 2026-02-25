@@ -13,8 +13,9 @@ import torch.nn as nn
 class MLP(nn.Module):
     """Simple feedforward MLP network."""
     
-    def __init__(self, input_dim: int, hidden_dim: int, output_dim: int, n_layers: int):
+    def __init__(self, input_dim: int, hidden_dim: int, output_dim: int, n_layers: int, input_scale: float = 1.0):
         super().__init__()
+        self.input_scale = input_scale
         # n_layers = total number of Linear layers
         layers = [nn.Linear(input_dim, hidden_dim), nn.Tanh()]
         for _ in range(n_layers - 2):  # n_layers - 2 because we have 1 input + 1 output
@@ -23,6 +24,7 @@ class MLP(nn.Module):
         self.net = nn.Sequential(*layers)
     
     def forward(self, x):
+        x = x * self.input_scale
         return self.net(x)
 
 

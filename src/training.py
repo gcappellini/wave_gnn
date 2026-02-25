@@ -25,6 +25,7 @@ def train_trunk(
     device: torch.device,
     output_dir: str = None,
     models_dir: str = None,
+    problem_type: str = 'free_evolution',
 ) -> dict:
     """Train trunk network on SVD basis functions."""
     
@@ -127,7 +128,7 @@ def train_trunk(
     
     # Save checkpoint to output directory
     os.makedirs(output_dir, exist_ok=True)
-    ckpt_path = os.path.join(output_dir, 'trunk_svd_free_evolution.pth')
+    ckpt_path = os.path.join(output_dir, f'trunk_svd_{problem_type}.pth')
     torch.save({
         'model_state_dict': best_state,
         'config': config,
@@ -160,6 +161,7 @@ def train_branch(
     device: torch.device,
     output_dir: str = None,
     models_dir: str = None,
+    problem_type: str = 'free_evolution',
 ) -> dict:
     """Train branch network on IC → SVD coefficients mapping."""
     
@@ -228,7 +230,8 @@ def train_branch(
     
     # Build model
     ic_dim = n_sensors * n_sensors
-    branch = MLP(ic_dim, config['branch_hidden_dim'], n_modes, config['branch_n_layers']).to(device)
+    input_scale = 0.2 if problem_type == 'constant_force' else 1.0
+    branch = MLP(ic_dim, config['branch_hidden_dim'], n_modes, config['branch_n_layers'], input_scale=input_scale).to(device)
     optimizer = optim.Adam(branch.parameters(), lr=config['learning_rate'])
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=50, verbose=False)
     criterion = nn.MSELoss()
@@ -276,10 +279,11 @@ def train_branch(
     
     # Save checkpoint to output directory
     os.makedirs(output_dir, exist_ok=True)
-    ckpt_path = os.path.join(output_dir, 'branch_svd_free_evolution.pth')
+    ckpt_path = os.path.join(output_dir, f'branch_svd_{problem_type}.pth')
     torch.save({
         'model_state_dict': best_state,
         'config': config,
+        'input_scale': input_scale,
     }, ckpt_path)
     print(f"\n✓ Saved: {ckpt_path}")
     
@@ -368,7 +372,8 @@ def train_deeponet_joint(
     
     # Initialize branch network
     measurement_dim = n_sensors * n_sensors
-    branch = MLP(measurement_dim, config['branch_hidden_dim'], n_modes, config['branch_n_layers']).to(device)
+    input_scale = 0.2 if problem_type == 'constant_force' else 1.0
+    branch = MLP(measurement_dim, config['branch_hidden_dim'], n_modes, config['branch_n_layers'], input_scale=input_scale).to(device)
     if branch_pretrained_path and os.path.exists(branch_pretrained_path):
         print(f"Loading pretrained branch from: {branch_pretrained_path}")
         branch_ckpt = torch.load(branch_pretrained_path, map_location=device, weights_only=False)
@@ -552,6 +557,7 @@ def train_deeponet_joint(
         'trunk_state_dict': {k: v for k, v in best_state.items() if k.startswith('trunk.')},
         'branch_state_dict': {k: v for k, v in best_state.items() if k.startswith('branch.')},
         'config': config,
+        'input_scale': input_scale,
         'normalization': {
             'measurements_min': measurements_min,
             'measurements_max': measurements_max,

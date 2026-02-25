@@ -170,13 +170,15 @@ def plot_validation_basic(
     # SECTION 3: BRANCH VALIDATION
     # ========================================================================
     if cfg.training.branch_n_epochs > 0:
-        plot_branch_validation(output_dir, u_fom, svd_data, models_dir, device)
+        plot_branch_validation(output_dir, u_fom, svd_data, models_dir, device, 
+                              problem_type=problem_type)
     
     # ========================================================================
     # SECTION 4: TRUNK VALIDATION
     # ========================================================================
     if cfg.training.trunk_n_epochs > 0:
-        plot_trunk_validation(output_dir, svd_data, models_dir, device)
+        plot_trunk_validation(output_dir, svd_data, models_dir, device, 
+                             problem_type=problem_type)
     
     # ========================================================================
     # SECTION 5: DEEPONET VALIDATION
@@ -204,6 +206,7 @@ def plot_branch_validation(
     svd_data: dict,
     models_dir: str,
     device: torch.device = None,
+    problem_type: str = 'free_evolution',
 ):
     """
     Compare branch network coefficient predictions with SVD coefficients.
@@ -214,6 +217,7 @@ def plot_branch_validation(
         svd_data: SVD decomposition dict
         models_dir: Path to models directory
         device: Torch device
+        problem_type: 'free_evolution' or 'constant_force'
     """
     
     print("\n" + "=" * 70)
@@ -224,7 +228,7 @@ def plot_branch_validation(
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     output_dir = Path(output_dir)
-    branch_checkpoint = output_dir / "branch_svd_free_evolution.pth"
+    branch_checkpoint = output_dir / f"branch_svd_{problem_type}.pth"
     
     if not branch_checkpoint.exists():
         print(f"⚠ Warning: Branch checkpoint not found: {branch_checkpoint}")
@@ -236,6 +240,7 @@ def plot_branch_validation(
     ckpt = torch.load(branch_checkpoint, map_location=device, weights_only=False)
     config = ckpt['config']
     state_dict = ckpt['model_state_dict']
+    input_scale = ckpt.get('input_scale', 1.0)  # Default to 1.0 for backward compatibility
     
     # Infer dimensions from state_dict
     first_layer_weight = state_dict['net.0.weight']
@@ -253,13 +258,15 @@ def plot_branch_validation(
     print(f"    Hidden dim: {hidden_dim}")
     print(f"    Output dim (n_modes): {output_dim}")
     print(f"    N layers: {n_layers}")
+    print(f"    Input scale: {input_scale}")
     
     # Reconstruct branch model
     branch = MLP(
         input_dim=input_dim,
         hidden_dim=hidden_dim,
         output_dim=output_dim,
-        n_layers=n_layers
+        n_layers=n_layers,
+        input_scale=input_scale
     ).to(device)
     
     branch.load_state_dict(state_dict)
@@ -371,6 +378,7 @@ def plot_trunk_validation(
     models_dir: str,
     device: torch.device = None,
     time_instant: float = 0.33,
+    problem_type: str = 'free_evolution',
 ):
     """
     Compare trunk network predictions with SVD modes at a given time instant.
@@ -381,6 +389,7 @@ def plot_trunk_validation(
         models_dir: Path to models directory
         device: Torch device
         time_instant: Time instant for comparison (0.0 to 1.0)
+        problem_type: 'free_evolution' or 'constant_force'
     """
     
     print("\n" + "=" * 70)
@@ -391,7 +400,7 @@ def plot_trunk_validation(
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     output_dir = Path(output_dir)
-    trunk_checkpoint = output_dir / "trunk_svd_free_evolution.pth"
+    trunk_checkpoint = output_dir / f"trunk_svd_{problem_type}.pth"
     
     if not trunk_checkpoint.exists():
         print(f"⚠ Warning: Trunk checkpoint not found: {trunk_checkpoint}")
@@ -608,6 +617,7 @@ def plot_deeponet_validation(
     print("Loading DeepONet model...")
     deeponet_ckpt = torch.load(deeponet_checkpoint, map_location=device, weights_only=False)
     deeponet_state = deeponet_ckpt.get('model_state_dict', deeponet_ckpt)
+    input_scale = deeponet_ckpt.get('input_scale', 1.0)  # Default to 1.0 for backward compatibility
     
     # Map old 'branch.*' keys to new problem-specific keys if needed
     if 'branch.net.0.weight' in deeponet_state:
@@ -641,7 +651,7 @@ def plot_deeponet_validation(
     
     # Create trunk and branch networks
     trunk_net = MLP(3, trunk_hidden_dim, n_modes, trunk_n_layers).to(device)
-    branch_net = MLP(branch_input_dim, branch_hidden_dim, branch_output_dim, branch_n_layers).to(device)
+    branch_net = MLP(branch_input_dim, branch_hidden_dim, branch_output_dim, branch_n_layers, input_scale=input_scale).to(device)
     
     # Create DeepONet model with correct branch assignment
     if problem_type == 'free_evolution':
@@ -828,6 +838,7 @@ def plot_deeponet_test(
     print("Loading DeepONet model...")
     deeponet_ckpt = torch.load(deeponet_checkpoint, map_location=device, weights_only=False)
     deeponet_state = deeponet_ckpt.get('model_state_dict', deeponet_ckpt)
+    input_scale = deeponet_ckpt.get('input_scale', 1.0)  # Default to 1.0 for backward compatibility
     
     # Map old 'branch.*' keys to new problem-specific keys if needed
     if 'branch.net.0.weight' in deeponet_state:
@@ -861,7 +872,7 @@ def plot_deeponet_test(
     
     # Create trunk and branch networks
     trunk_net = MLP(3, trunk_hidden_dim, n_modes, trunk_n_layers).to(device)
-    branch_net = MLP(branch_input_dim, branch_hidden_dim, branch_output_dim, branch_n_layers).to(device)
+    branch_net = MLP(branch_input_dim, branch_hidden_dim, branch_output_dim, branch_n_layers, input_scale=input_scale).to(device)
     
     # Create DeepONet model with correct branch assignment
     if problem_type == 'free_evolution':
