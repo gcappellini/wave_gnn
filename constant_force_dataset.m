@@ -24,6 +24,10 @@ a = 0;
 m = 1;
 source_width = 0.3;
 source_amp = 5.0;
+% Defaults so coefficient evaluation works before per-sample overrides
+source_center_x = 0.5;
+source_center_y = 0.5;
+source_sign = 1;
 
 % Build geometry and mesh once
 model = createpde(1);
