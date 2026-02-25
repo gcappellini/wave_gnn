@@ -1,15 +1,13 @@
 """
 Complete Pipeline for Constant Force Problem
 
-Orchestrates the full workflow for 2D wave equation WITH forcing:
-1. Ground truth generation (MATLAB with forcing)
+Orchestrates the full workflow:
+1. Ground truth generation (MATLAB)
 2. SVD basis extraction
 3. Train trunk network
 4. Train branch network
 5. Optionally: Fine-tune DeepONet jointly
 6. Validation and visualization
-
-STRUCTURE: Identical to run_free_evolution.py, only config differs
 """
 
 import os
@@ -32,14 +30,28 @@ from src.plotting import plot_validation_basic
 
 
 class TeeLogger:
-    """Redirect stdout to both console and file."""
+    """Redirect stdout to both console and file with timestamps."""
     def __init__(self, log_file):
         self.terminal = sys.stdout
         self.log = open(log_file, 'w')
     
     def write(self, message):
-        self.terminal.write(message)
-        self.log.write(message)
+        # Add timestamp to non-empty lines
+        lines = message.split('\n')
+        timestamped_lines = []
+        
+        for line in lines:
+            if line.strip():  # Non-empty line
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                timestamped_line = f"[{timestamp}] {line}"
+            else:  # Empty line
+                timestamped_line = line
+            timestamped_lines.append(timestamped_line)
+        
+        timestamped_message = '\n'.join(timestamped_lines)
+        
+        self.terminal.write(timestamped_message)
+        self.log.write(timestamped_message)
         self.log.flush()
     
     def flush(self):
@@ -66,10 +78,10 @@ def main(cfg: DictConfig):
     data_dir = script_dir / "data"
     models_dir = script_dir / "models"
     hydra_cfg = HydraConfig.get()
-    output_dir = hydra_cfg.runtime.output_dir
+    output_dir = Path(hydra_cfg.runtime.output_dir)
     
     # Setup logging to both file and console
-    log_file = Path(output_dir) / "run_constant_force.log"
+    log_file = output_dir / "run_constant_force.log"
     tee = TeeLogger(log_file)
     sys.stdout = tee
     
@@ -85,7 +97,6 @@ def main(cfg: DictConfig):
     print(f"Data directory: {data_dir}")
     print(f"Models directory: {models_dir}")
     print(f"Log file: {log_file}")
-    print(f"Models directory: {models_dir}")
     
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Device: {device}\n")
@@ -94,10 +105,10 @@ def main(cfg: DictConfig):
     # 1. GROUND TRUTH GENERATION
     # ====================================================================
     matlab_script = script_dir / cfg.problem.matlab.script
-    output_mat = data_dir / "test_cases_constant_force.mat"  # Different filename
+    output_mat = data_dir / "constant_force.mat"
     
     if not output_mat.exists():
-        print("Step 1: Ground Truth Generation (MATLAB with forcing)")
+        print("Step 1: Ground Truth Generation (MATLAB)")
         print("-" * 70)
         gt_data = generate_ground_truth(
             matlab_script_path=str(matlab_script),
@@ -106,7 +117,7 @@ def main(cfg: DictConfig):
             config=OmegaConf.to_container(cfg.problem.matlab)
         )
     else:
-        print("Step 1: Loading pre-computed ground truth (constant force)")
+        print("Step 1: Loading pre-computed ground truth")
         print("-" * 70)
         with h5py.File(output_mat, 'r') as f:
             u_fom = np.array(f['U_data']).T
@@ -126,14 +137,12 @@ def main(cfg: DictConfig):
     u_fom = gt_data['u_fom']
     
     # ====================================================================
-    # 2-6: IDENTICAL TO FREE EVOLUTION
+    # 2. SVD BASIS EXTRACTION
     # ====================================================================
-    # (See run_free_evolution.py for full documentation)
-    
     print("\nStep 2: SVD Basis Extraction")
     print("-" * 70)
     
-    svd_output = data_dir / "svd_basis_data_constant_force.npy"  # Different filename
+    svd_output = data_dir / "svd_constant_force.npy"
     
     if not svd_output.exists():
         svd_data = extract_svd_basis(
@@ -143,6 +152,7 @@ def main(cfg: DictConfig):
             output_dir=str(output_dir)
         )
         
+        # Save SVD data
         output_dict = {
             'basis': svd_data['basis'],
             'singular_values': svd_data['singular_values'],
@@ -157,43 +167,120 @@ def main(cfg: DictConfig):
         svd_data = svd_output_dict
         print(f"✓ Loaded: {svd_output}")
     
+    # ====================================================================
+    # 3. TRAIN TRUNK NETWORK
+    # ====================================================================
     print("\nStep 3: Train Trunk Network")
     print("-" * 70)
     
-    trunk_result = train_trunk(
-        config=OmegaConf.to_container(cfg.training),
-        svd_data=svd_data,
-        device=device,
-        output_dir=str(output_dir),
-            models_dir=str(models_dir),
-    branch_config = OmegaConf.to_container(cfg.training)
-    branch_config['n_modes'] = cfg.networks.branch.output_dim
-    branch_config['n_sensors'] = cfg.sensors.n_sensors
-    branch_config['batch_size'] = cfg.training.batch_size
-    branch_config['branch_hidden_dim'] = cfg.networks.branch.hidden_dim
-    branch_config['branch_n_layers'] = cfg.networks.branch.n_layers
+    trunk_checkpoint = models_dir / "trunk_svd_constant_force.pth"
     
-    branch_result = train_branch(
-        config=branch_config,
-        u_fom=u_fom,
-        svd_data=svd_data,
-        device=device,
-        output_dir=str(output_dir),
+    if cfg.training.trunk_n_epochs > 0 and not trunk_checkpoint.exists():
+        # Build config with all required fields
+        trunk_config = OmegaConf.to_container(cfg.training)
+        trunk_config['n_modes'] = cfg.svd.n_modes
+        trunk_config['trunk_hidden_dim'] = cfg.networks.trunk.hidden_dim
+        trunk_config['trunk_n_layers'] = cfg.networks.trunk.n_layers
+        
+        trunk_result = train_trunk(
+            config=trunk_config,
+            svd_data=svd_data,
+            device=device,
+            output_dir=str(output_dir),
             models_dir=str(models_dir),
+        )
+    else:
+        print("Loading pre-trained trunk model...")
+        print(f"✓ Loaded: {trunk_checkpoint}")
+        trunk_result = {'status': 'loaded_from_checkpoint'}
+    
+    # ====================================================================
+    # 4. TRAIN BRANCH NETWORK
+    # ====================================================================
+    print("\nStep 4: Train Branch Network")
+    print("-" * 70)
+    
+    branch_checkpoint = models_dir / "branch_svd_constant_force.pth"
+    
+    if cfg.training.branch_n_epochs > 0 and not branch_checkpoint.exists():
+        # Build config with all required fields
+        branch_config = OmegaConf.to_container(cfg.training)
+        branch_config['n_modes'] = cfg.svd.n_modes
+        branch_config['n_sensors'] = cfg.sensors.n_sensors
+        branch_config['branch_hidden_dim'] = cfg.networks.branch.hidden_dim
+        branch_config['branch_n_layers'] = cfg.networks.branch.n_layers
+        
+        branch_result = train_branch(
+            config=branch_config,
+            u_fom=u_fom,
+            svd_data=svd_data,
+            device=device,
+            output_dir=str(output_dir),
+            models_dir=str(models_dir),
+        )
+    else:
+        print("Loading pre-trained branch model...")
+        print(f"✓ Loaded: {branch_checkpoint}")
+        branch_result = {'status': 'loaded_from_checkpoint'}
+    
+    # ====================================================================
+    # 5. OPTIONAL: JOINT DEEPONET TRAINING
+    # ====================================================================
+    # if False:  # Toggle to enable
+    print("\nStep 5: Joint DeepONet Training")
+    print("-" * 70)
+    
+    deeponet_checkpoint = models_dir / "deeponet_constant_force.pth"
+    
+    if cfg.training.deeponet_n_epochs > 0 and not deeponet_checkpoint.exists():
+        # Build config with all required fields
+        deeponet_config = OmegaConf.to_container(cfg.training)
+        deeponet_config['n_modes'] = cfg.svd.n_modes
+        deeponet_config['trunk_hidden_dim'] = cfg.networks.trunk.hidden_dim
+        deeponet_config['trunk_n_layers'] = cfg.networks.trunk.n_layers
+        deeponet_config['branch_hidden_dim'] = cfg.networks.branch.hidden_dim
+        deeponet_config['branch_n_layers'] = cfg.networks.branch.n_layers
+        deeponet_config['n_sensors'] = cfg.sensors.n_sensors
+        
+        trunk_pretrained = output_dir / "trunk_svd_constant_force.pth"
+        branch_pretrained = output_dir / "branch_svd_constant_force.pth"
+        deeponet_result = train_deeponet_joint(
+            config=deeponet_config,
+            u_fom=u_fom,
+            svd_data=svd_data,
+            trunk_pretrained_path=str(trunk_pretrained),
+            branch_pretrained_path=str(branch_pretrained),
+            device=device,
+            output_dir=str(output_dir),
+            models_dir=str(models_dir),
+        )
+    else:
+        print("Loading pre-trained DeepONet model...")
+        print(f"✓ Loaded: {deeponet_checkpoint}")
+        deeponet_result = {'status': 'loaded_from_checkpoint'}
+    
+    # ====================================================================
+    # 6. VALIDATION & VISUALIZATION
+    # ====================================================================
+    print("\nStep 6: Validation & Visualization")
+    print("-" * 70)
+    
+    plot_validation_basic(
         output_dir=str(output_dir),
         u_fom=u_fom,
         svd_data=svd_data,
         data_dir=str(data_dir),
         models_dir=str(models_dir),
         device=device,
-        n_samples_plot=3
+        n_samples_plot=3,
+        cfg=cfg
     )
     
     # ====================================================================
     # COMPLETE
     # ====================================================================
     print("\n" + "=" * 70)
-    print("✓ CONSTANT FORCE PIPELINE COMPLETE")
+    print("✓ PIPELINE COMPLETE")
     print("=" * 70)
     print(f"Output directory: {output_dir}")
     print("=" * 70 + "\n")
