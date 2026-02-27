@@ -8,9 +8,8 @@ tlist = linspace(0, t_f, 100);   % Nt time steps
 Nt = numel(tlist);
 
 % Dataset parameters
-N_samples = 1;                    % single validation sample
+N_samples = 128;                  % randomized force location
 Nx = 100; Ny = 100;               % uniform query grid
-K = 4; L = 4;                     % kept for compatibility (unused)
 
 % Grids for storage and visualization
 x_grid = linspace(0, 1, Nx);
@@ -18,15 +17,17 @@ y_grid = linspace(0, 1, Ny);
 [Xq, Yq] = meshgrid(x_grid, y_grid);
 
 % PDE coefficients
-global source_width source_amp source_center_x source_center_y
+global source_width source_amp source_center_x source_center_y source_sign
 wave_speed = 1;
 d = 1;
 a = 0;
 m = 1;
-source_center_x = 0.35;
-source_center_y = 0.65;
 source_width = 0.3;
-source_amp = 5.0;                 
+source_amp = 5.0;
+% Defaults so coefficient evaluation works before per-sample overrides
+source_center_x = 0.5;
+source_center_y = 0.5;
+source_sign = 1;
 
 % Build geometry and mesh once
 model = createpde(1);
@@ -51,18 +52,23 @@ F_data = zeros(Nx, Ny, N_samples);  % Force field (constant in time)
 
 cpu_time_start = cputime;
 for sample_id = 1:N_samples
+    % Random force location (range [0.2, 0.8] in both x and y)
+    source_center_x = 0.2 + 0.6 * rand();
+    source_center_y = 0.2 + 0.6 * rand();
+    source_sign = 2 * randi([0,1]) - 1;  % Random sign: +1 or -1
+    
     % Compute and store force field for this sample
     for xi = 1:Nx
         for yi = 1:Ny
             x_val = x_grid(xi);
             y_val = y_grid(yi);
-            F_data(xi, yi, sample_id) = source_amp * ...
+            F_data(xi, yi, sample_id) = source_sign * source_amp * ...
                 exp(-((x_val - source_center_x)^2 + (y_val - source_center_y)^2) / source_width^2);
         end
     end
 
-    % Deterministic, simple IC (slightly out of training amplitude range)
-    [u0_fun, ut0_fun] = generate_simple_ic();
+    % Zero ICs 
+    [u0_fun, ut0_fun] = generate_zero_ic();
     setInitialConditions(model, u0_fun, ut0_fun);
 
     % Solve PDE for this IC
@@ -101,99 +107,39 @@ cpu_time_end = cputime - cpu_time_start
 
 % Save dataset to script directory
 script_dir = fileparts(mfilename('fullpath'));
-save(fullfile(script_dir, 'data', 'constant_force_test.mat'), 'U_data', 'V_data', 'F_data', 'x_grid', 'y_grid', 'tlist', '-v7.3');
+save(fullfile(script_dir, 'data', 'constant_force.mat'), 'U_data', 'V_data', 'F_data', 'x_grid', 'y_grid', 'tlist', '-v7.3');
 
-% Compute zlim ranges from full data
-u_min = min(U_data(:));
-u_max = max(U_data(:));
-v_min = min(V_data(:));
-v_max = max(V_data(:));
+% Visualize three random samples at mid time (displacement and force field)
+mid_idx = round(Nt / 2);
+pick_ids = randperm(N_samples, 3);
+figure('Position', [100, 100, 1400, 800]);
+tiledlayout(2, 3);
 
-% Add small buffer if min==max to avoid degenerate limits
-if u_min == u_max
-    u_min = u_min - 0.1;
-    u_max = u_max + 0.1;
+% Row 1: Displacement at mid time
+for k = 1:3
+    nexttile;
+    surf(Xq, Yq, U_data(:, :, mid_idx, pick_ids(k))');
+    shading interp;
+    xlabel('x'); ylabel('y'); zlabel('u');
+    title(sprintf('Sample %d: Displacement at t=%.3f', pick_ids(k), tlist(mid_idx)));
 end
-if v_min == v_max
-    v_min = v_min - 0.1;
-    v_max = v_max + 0.1;
-end
 
-% Animate the single sample over time (displacement and velocity)
-figure;
-tiledlayout(1, 2);
-
-nexttile;
-hU = surf(Xq, Yq, U_data(:, :, 1, 1)');
-shading interp;
-xlabel('x'); ylabel('y'); zlabel('u');
-title(sprintf('Displacement at t=%.3f', tlist(1)));
-zlim([u_min u_max]);
-
-nexttile;
-hV = surf(Xq, Yq, V_data(:, :, 1, 1)');
-shading interp;
-xlabel('x'); ylabel('y'); zlabel('v');
-title(sprintf('Velocity at t=%.3f', tlist(1)));
-zlim([v_min v_max]);
-
-% GIF output settings
-gif_path = fullfile(script_dir, 'data/constant_force_animation.gif');
-frame_delay = 0.05; % seconds
-
-for ti = 1:Nt
-    set(hU, 'ZData', U_data(:, :, ti, 1)');
-    set(hV, 'ZData', V_data(:, :, ti, 1)');
-    title(hU.Parent, sprintf('Displacement at t=%.3f', tlist(ti)));
-    title(hV.Parent, sprintf('Velocity at t=%.3f', tlist(ti)));
-    drawnow;
-
-    frame = getframe(gcf);
-    [im, cmap] = rgb2ind(frame2im(frame), 256);
-    if ti == 1
-        imwrite(im, cmap, gif_path, 'gif', 'LoopCount', inf, 'DelayTime', frame_delay);
-    else
-        imwrite(im, cmap, gif_path, 'gif', 'WriteMode', 'append', 'DelayTime', frame_delay);
-    end
+% Row 2: Force field
+for k = 1:3
+    nexttile;
+    surf(Xq, Yq, F_data(:, :, pick_ids(k))');
+    shading interp;
+    xlabel('x'); ylabel('y'); zlabel('f');
+    title(sprintf('Sample %d: Force Field', pick_ids(k)));
 end
 
 % ------ Helper functions ------
 function fcoeff = force(location, state)
-    global source_width source_amp source_center_x source_center_y %#ok<NUSED>
-    fcoeff = source_amp * exp(-(((location.x - source_center_x).^2) + ((location.y - source_center_y).^2)) / source_width^2);
+    global source_sign source_width source_amp source_center_x source_center_y %#ok<NUSED>
+    fcoeff = source_sign * source_amp * exp(-(((location.x - source_center_x).^2) + ((location.y - source_center_y).^2)) / source_width^2);
 end
 
-function [u0_fun, ut0_fun] = generate_simple_ic()
-    % Zero initial conditions - dynamics driven purely by constant force
+function [u0_fun, ut0_fun] = generate_zero_ic()
     u0_fun = @(location) 0 * location.x;
     ut0_fun = @(location) 0 * location.x;
-end
-
-function [u0_fun, ut0_fun] = generate_random_ic(K, L)
-    if nargin < 1
-        K = 4; L = 4;
-    end
-
-    u_coeffs = make_coeffs(K, L);
-    v_coeffs = make_coeffs(K, L);
-
-    u0_fun = @(location) fourier_field(location.x, location.y, u_coeffs);
-    ut0_fun = @(location) fourier_field(location.x, location.y, v_coeffs);
-end
-
-function coeffs = make_coeffs(K, L)
-    raw = -1 + 2 * rand(K, L);
-    [k_idx, l_idx] = ndgrid(1:K, 1:L);
-    decay = 1 ./ (k_idx.^2 + l_idx.^2);
-    coeffs = raw .* decay;
-end
-
-function val = fourier_field(x, y, coeffs)
-    [K, L] = size(coeffs);
-    val = zeros(size(x));
-    for k = 1:K
-        for l = 1:L
-            val = val + coeffs(k, l) .* sin(k * pi * x) .* sin(l * pi * y);
-        end
-    end
 end

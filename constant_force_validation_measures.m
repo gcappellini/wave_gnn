@@ -47,20 +47,9 @@ mesh = model.Mesh;
 % Preallocate storage for displacement and velocity over space-time for all samples
 U_data = zeros(Nx, Ny, Nt, N_samples);
 V_data = zeros(Nx, Ny, Nt, N_samples);
-F_data = zeros(Nx, Ny, N_samples);  % Force field (constant in time)
 
 cpu_time_start = cputime;
 for sample_id = 1:N_samples
-    % Compute and store force field for this sample
-    for xi = 1:Nx
-        for yi = 1:Ny
-            x_val = x_grid(xi);
-            y_val = y_grid(yi);
-            F_data(xi, yi, sample_id) = source_amp * ...
-                exp(-((x_val - source_center_x)^2 + (y_val - source_center_y)^2) / source_width^2);
-        end
-    end
-
     % Deterministic, simple IC (slightly out of training amplitude range)
     [u0_fun, ut0_fun] = generate_simple_ic();
     setInitialConditions(model, u0_fun, ut0_fun);
@@ -101,7 +90,7 @@ cpu_time_end = cputime - cpu_time_start
 
 % Save dataset to script directory
 script_dir = fileparts(mfilename('fullpath'));
-save(fullfile(script_dir, 'data', 'constant_force_test.mat'), 'U_data', 'V_data', 'F_data', 'x_grid', 'y_grid', 'tlist', '-v7.3');
+save(fullfile(script_dir, 'data', 'constant_force_test.mat'), 'U_data', 'V_data', 'x_grid', 'y_grid', 'tlist', '-v7.3');
 
 % Compute zlim ranges from full data
 u_min = min(U_data(:));
