@@ -50,7 +50,7 @@ training:
   # Stage-specific training epochs
   trunk_n_epochs: 500
   branch_n_epochs: 500
-  deeponet_n_epochs: 400
+  deeponet_n_epochs: 500
   
   # Data sampling (for large problems)
   max_trunk_points: 10000           # Max space-time points for trunk training (null = use all)
