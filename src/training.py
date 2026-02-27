@@ -230,7 +230,7 @@ def train_branch(
     
     # Build model
     ic_dim = n_sensors * n_sensors
-    input_scale = 0.2 if problem_type == 'constant_force' else 1.0
+    input_scale = 0.1 if problem_type == 'constant_force' else 1.0
     branch = MLP(ic_dim, config['branch_hidden_dim'], n_modes, config['branch_n_layers'], input_scale=input_scale).to(device)
     optimizer = optim.Adam(branch.parameters(), lr=config['learning_rate'])
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=50, verbose=False)
@@ -372,7 +372,7 @@ def train_deeponet_joint(
     
     # Initialize branch network
     measurement_dim = n_sensors * n_sensors
-    input_scale = 0.2 if problem_type == 'constant_force' else 1.0
+    input_scale = 0.1 if problem_type == 'constant_force' else 1.0
     branch = MLP(measurement_dim, config['branch_hidden_dim'], n_modes, config['branch_n_layers'], input_scale=input_scale).to(device)
     if branch_pretrained_path and os.path.exists(branch_pretrained_path):
         print(f"Loading pretrained branch from: {branch_pretrained_path}")

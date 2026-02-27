@@ -20,13 +20,13 @@ y_grid = linspace(0, 1, Ny);
 % PDE coefficients
 global source_width source_amp source_center_x source_center_y
 wave_speed = 1;
-d = 1;
+d = 20;
 a = 0;
-m = 1;
+m = 0.1;
 source_center_x = 0.35;
 source_center_y = 0.65;
 source_width = 0.3;
-source_amp = 5.0;                 
+source_amp = 10.0;                 
 
 % Build geometry and mesh once
 model = createpde(1);
@@ -101,7 +101,7 @@ cpu_time_end = cputime - cpu_time_start
 
 % Save dataset to script directory
 script_dir = fileparts(mfilename('fullpath'));
-save(fullfile(script_dir, 'data', 'constant_force_test.mat'), 'U_data', 'V_data', 'F_data', 'x_grid', 'y_grid', 'tlist', '-v7.3');
+% save(fullfile(script_dir, 'data', 'constant_force_test.mat'), 'U_data', 'V_data', 'F_data', 'x_grid', 'y_grid', 'tlist', '-v7.3');
 
 % Compute zlim ranges from full data
 u_min = min(U_data(:));

@@ -19,11 +19,11 @@ y_grid = linspace(0, 1, Ny);
 % PDE coefficients
 global source_width source_amp source_center_x source_center_y source_sign
 wave_speed = 1;
-d = 1;
+d = 20;
 a = 0;
-m = 1;
+m = 0.1;
 source_width = 0.3;
-source_amp = 5.0;
+source_amp = 10.0;
 % Defaults so coefficient evaluation works before per-sample overrides
 source_center_x = 0.5;
 source_center_y = 0.5;
