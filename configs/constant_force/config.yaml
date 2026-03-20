@@ -25,7 +25,7 @@ problem:
 # SVD basis extraction
 svd:
   n_modes: 18
-  visualize: false
+  visualize: true
 
 # Neural network architecture
 networks:

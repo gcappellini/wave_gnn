@@ -77,7 +77,7 @@ def extract_svd_basis(
     if visualize and output_dir:
         os.makedirs(output_dir, exist_ok=True)
         _visualize_svd_basis(
-            U_basis, Sigma, VT, Nx, Ny, Nt, actual_modes, output_dir
+            U_basis, Sigma, VT, U_matrix, Nx, Ny, Nt, actual_modes, output_dir
         )
     
     print("\n✓ SVD analysis complete")
@@ -95,6 +95,7 @@ def _visualize_svd_basis(
     U_basis: np.ndarray,
     Sigma: np.ndarray,
     VT: np.ndarray,
+    U_matrix: np.ndarray,
     Nx: int,
     Ny: int,
     Nt: int,
@@ -107,7 +108,7 @@ def _visualize_svd_basis(
     
     # Reshape basis for visualization
     modes_reshaped = U_basis.reshape(Nx, Ny, Nt, actual_modes, order='F')
-    t_idx = Nt // 3
+    t_idx = Nt // 20
     n_modes_to_plot = min(18, actual_modes)
     
     # Plot 1: Basis functions
@@ -204,3 +205,55 @@ def _visualize_svd_basis(
     plt.savefig(os.path.join(output_dir, 'svd_coefficients_analysis.png'), dpi=150)
     plt.close()
     print(f"  ✓ {os.path.join(output_dir, 'svd_coefficients_analysis.png')}")
+
+    # Plot 4: Reconstruction vs ground truth
+    U_recon = (U_basis * Sigma) @ VT  # equivalent to U @ diag(Sigma) @ VT
+    n_samples_to_compare = min(3, VT.shape[1])
+    n_times_to_compare = min(3, Nt)
+    time_indices = [Nt * k // (n_times_to_compare + 1) for k in range(1, n_times_to_compare + 1)]
+
+    fig, axes = plt.subplots(
+        n_samples_to_compare * 3,
+        n_times_to_compare,
+        figsize=(5 * n_times_to_compare, 5 * n_samples_to_compare * 3),
+    )
+    # Ensure axes is always 2D
+    if axes.ndim == 1:
+        axes = axes[:, np.newaxis]
+
+    for s in range(n_samples_to_compare):
+        orig_s = U_matrix[:, s].reshape(Nx, Ny, Nt, order='F')
+        recon_s = U_recon[:, s].reshape(Nx, Ny, Nt, order='F')
+        for t_col, t_idx_r in enumerate(time_indices):
+            orig_slice = orig_s[:, :, t_idx_r]
+            recon_slice = recon_s[:, :, t_idx_r]
+            err_slice = orig_slice - recon_slice
+
+            vmin, vmax = orig_slice.min(), orig_slice.max()
+            row_orig = s * 3
+            row_recon = s * 3 + 1
+            row_err = s * 3 + 2
+
+            im0 = axes[row_orig, t_col].imshow(orig_slice, cmap='seismic', origin='lower', vmin=vmin, vmax=vmax)
+            axes[row_orig, t_col].set_title(f"GT  s={s} t={t_idx_r}")
+            plt.colorbar(im0, ax=axes[row_orig, t_col])
+
+            im1 = axes[row_recon, t_col].imshow(recon_slice, cmap='seismic', origin='lower', vmin=vmin, vmax=vmax)
+            axes[row_recon, t_col].set_title(f"Recon  s={s} t={t_idx_r}")
+            plt.colorbar(im1, ax=axes[row_recon, t_col])
+
+            abs_err = np.abs(err_slice)
+            im2 = axes[row_err, t_col].imshow(abs_err, cmap='hot', origin='lower')
+            rel_err = abs_err.max() / (np.abs(orig_slice).max() + 1e-12)
+            axes[row_err, t_col].set_title(f"|Error|  max_rel={rel_err:.2e}")
+            plt.colorbar(im2, ax=axes[row_err, t_col])
+
+    plt.suptitle(
+        f"Reconstruction vs Ground Truth ({actual_modes} modes)\n"
+        "Rows: [GT, Recon, |Error|] per sample",
+        fontsize=14,
+    )
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, 'svd_reconstruction_check.png'), dpi=150)
+    plt.close()
+    print(f"  ✓ {os.path.join(output_dir, 'svd_reconstruction_check.png')}")
