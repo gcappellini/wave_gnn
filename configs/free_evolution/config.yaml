@@ -21,7 +21,7 @@ problem:
 # SVD basis extraction
 svd:
   n_modes: 18
-  visualize: true
+  visualize: false
 
 # Neural network architecture
 networks:
@@ -44,7 +44,7 @@ training:
   train_test_split: 0.8
   
   # Stage-specific training epochs
-  trunk_n_epochs: 400 #500
+  trunk_n_epochs: 2000 #500
   branch_n_epochs: 400 #500
   deeponet_n_epochs: 400
   

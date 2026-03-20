@@ -135,6 +135,7 @@ def main(cfg: DictConfig):
         print(f"  Shape: {u_fom.shape}")
     
     u_fom = gt_data['u_fom']
+    v_fom = gt_data.get('v_fom', None)
     
     # ====================================================================
     # 2. SVD BASIS EXTRACTION
@@ -149,17 +150,10 @@ def main(cfg: DictConfig):
             u_fom=u_fom,
             n_modes=cfg.svd.n_modes,
             visualize=cfg.svd.visualize,
-            output_dir=str(output_dir)
+            output_dir=str(output_dir),
+            v_fom=v_fom,
         )
-        
-        # Save SVD data
-        output_dict = {
-            'basis': svd_data['basis'],
-            'singular_values': svd_data['singular_values'],
-            'coefficients': svd_data['coefficients'],
-            'grid_info': svd_data['grid_info'],
-        }
-        np.save(svd_output, output_dict)
+        np.save(svd_output, svd_data)
         print(f"✓ Saved: {svd_output}")
     else:
         print("Loading pre-computed SVD data...")
@@ -219,6 +213,7 @@ def main(cfg: DictConfig):
             output_dir=str(output_dir),
             models_dir=str(models_dir),
             problem_type='free_evolution',
+            v_fom=v_fom,
         )
     else:
         print("Loading pre-trained branch model...")
@@ -256,6 +251,7 @@ def main(cfg: DictConfig):
             output_dir=str(output_dir),
             models_dir=str(models_dir),
             problem_type='free_evolution',
+            v_fom=v_fom,
         )
     else:
         print("Loading pre-trained DeepONet model...")
@@ -271,6 +267,7 @@ def main(cfg: DictConfig):
     plot_validation_basic(
         output_dir=str(output_dir),
         u_fom=u_fom,
+        v_fom=v_fom,
         svd_data=svd_data,
         data_dir=str(data_dir),
         models_dir=str(models_dir),

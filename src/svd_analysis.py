@@ -17,18 +17,27 @@ def extract_svd_basis(
     n_modes: int = 128,
     visualize: bool = True,
     output_dir: str = None,
+    v_fom: np.ndarray = None,
 ) -> dict:
     """
     Extract SVD basis from ground truth solutions via randomized SVD.
+
+    When v_fom is provided the function runs a second SVD on the velocity field
+    and returns additional keys: 'basis_v', 'singular_values_v', 'coefficients_v'.
+    The displacement keys ('basis', 'singular_values', 'coefficients') always
+    contain the u results for backward compatibility.
     
     Args:
-        u_fom: Displacement field (Nx, Ny, Nt, N_samples)
-        n_modes: Number of modes to extract
-        visualize: Generate visualization plots
+        u_fom:      Displacement field (Nx, Ny, Nt, N_samples)
+        n_modes:    Number of modes to extract (same for u and v)
+        visualize:  Generate visualization plots
         output_dir: Directory for saving plots (if None, no plots saved)
+        v_fom:      Velocity field (Nx, Ny, Nt, N_samples), optional
     
     Returns:
-        dict with keys: {'basis', 'singular_values', 'coefficients', 'grid_info'}
+        dict with keys:
+          always:           {'basis', 'singular_values', 'coefficients', 'grid_info'}
+          when v_fom given: additionally {'basis_v', 'singular_values_v', 'coefficients_v'}
     """
     
     print("=" * 70)
@@ -73,22 +82,46 @@ def extract_svd_basis(
     print(f"Energy by first 50 modes: {cumulative_energy[min(49, actual_modes-1)]*100:.2f}%")
     print(f"Energy by first 100 modes: {cumulative_energy[min(99, actual_modes-1)]*100:.2f}%")
     
-    # Visualization
+    # Visualization (u only)
     if visualize and output_dir:
         os.makedirs(output_dir, exist_ok=True)
         _visualize_svd_basis(
             U_basis, Sigma, VT, U_matrix, Nx, Ny, Nt, actual_modes, output_dir
         )
-    
-    print("\n✓ SVD analysis complete")
-    print("=" * 70)
-    
-    return {
+
+    result = {
         'basis': U_basis,
         'singular_values': Sigma,
         'coefficients': VT,
         'grid_info': np.array([Nx, Ny, Nt]),
     }
+
+    # Optional: SVD on velocity field
+    if v_fom is not None:
+        print("\n" + "-" * 50)
+        print("Computing SVD for velocity field (v_fom)...")
+        V_matrix = v_fom.reshape(features_dim, N_samples, order='F')
+
+        V_basis, Sigma_v, VT_v = randomized_svd(
+            V_matrix,
+            n_components=n_modes_to_compute,
+            random_state=42
+        )
+        actual_modes_v = V_basis.shape[1]
+
+        cumulative_energy_v = np.cumsum(Sigma_v**2) / np.sum(Sigma_v**2)
+        print(f"✓ v SVD: {actual_modes_v} modes, "
+              f"energy={cumulative_energy_v[-1]*100:.2f}%  "
+              f"(50 modes: {cumulative_energy_v[min(49, actual_modes_v-1)]*100:.2f}%)")
+
+        result['basis_v'] = V_basis
+        result['singular_values_v'] = Sigma_v
+        result['coefficients_v'] = VT_v
+
+    print("\n✓ SVD analysis complete")
+    print("=" * 70)
+
+    return result
 
 
 def _visualize_svd_basis(
