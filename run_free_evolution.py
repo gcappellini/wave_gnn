@@ -20,13 +20,35 @@ from pathlib import Path
 
 import hydra
 from hydra.core.hydra_config import HydraConfig
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig, OmegaConf, open_dict
 
 # Import modules
 from src.ground_truth_generation import generate_ground_truth
-from src.svd_analysis import extract_svd_basis
+from src.svd_analysis import (
+    extract_svd_basis,
+    visualize_svd_analysis,
+    compute_svd_magnitude_summary,
+)
 from src.training import train_trunk, train_branch, train_deeponet_joint
-from src.plotting import plot_validation_basic
+from src.plotting import plot_validation_basic, plot_trunk_validation, plot_branch_validation
+
+
+def _round_to_significant(value: float, significant_digits: int = 6) -> float:
+    """Round a float to a fixed number of significant digits."""
+
+    return float(f"{value:.{significant_digits}g}")
+
+
+def _round_magnitude_summary(summary: dict, significant_digits: int = 6) -> dict:
+    """Round nested magnitude summary dictionary values."""
+
+    rounded = {}
+    for quantity_name, metrics in summary.items():
+        rounded[quantity_name] = {
+            metric_name: _round_to_significant(metric_value, significant_digits)
+            for metric_name, metric_value in metrics.items()
+        }
+    return rounded
 
 
 class TeeLogger:
@@ -79,6 +101,8 @@ def main(cfg: DictConfig):
     models_dir = script_dir / "models"
     hydra_cfg = HydraConfig.get()
     output_dir = Path(hydra_cfg.runtime.output_dir)
+
+    problem_type = cfg.problem.name
     
     # Setup logging to both file and console
     log_file = output_dir / "run_free_evolution.log"
@@ -149,7 +173,7 @@ def main(cfg: DictConfig):
         svd_data = extract_svd_basis(
             u_fom=u_fom,
             n_modes=cfg.svd.n_modes,
-            visualize=cfg.svd.visualize,
+            visualize=False,
             output_dir=str(output_dir),
             v_fom=v_fom,
         )
@@ -160,6 +184,42 @@ def main(cfg: DictConfig):
         svd_output_dict = np.load(svd_output, allow_pickle=True).item()
         svd_data = svd_output_dict
         print(f"✓ Loaded: {svd_output}")
+
+    svd_magnitude_summary = None
+    if cfg.svd.visualize:
+        svd_magnitude_summary = visualize_svd_analysis(
+            svd_data=svd_data,
+            output_dir=str(output_dir),
+            n_modes=cfg.svd.n_modes,
+            u_fom=u_fom,
+            v_fom=v_fom,
+        )
+
+    if not svd_magnitude_summary:
+        svd_magnitude_summary = compute_svd_magnitude_summary(
+            svd_data=svd_data,
+            n_modes=cfg.svd.n_modes,
+            u_fom=u_fom,
+            v_fom=v_fom,
+        )
+
+    if svd_magnitude_summary:
+        svd_magnitude_summary = _round_magnitude_summary(svd_magnitude_summary, significant_digits=6)
+
+        with open_dict(cfg):
+            cfg.svd.magnitude_summary = svd_magnitude_summary
+
+        hydra_cfg_path = output_dir / ".hydra" / "config.yaml"
+        OmegaConf.save(cfg, str(hydra_cfg_path))
+
+        default_cfg_path = script_dir / "configs" / "free_evolution" / "config.yaml"
+        default_cfg = OmegaConf.load(str(default_cfg_path))
+        with open_dict(default_cfg):
+            default_cfg.svd.magnitude_summary = svd_magnitude_summary
+        OmegaConf.save(default_cfg, str(default_cfg_path))
+
+        print(f"✓ Stored SVD magnitude summary in cfg: {hydra_cfg_path}")
+        print(f"✓ Updated default config with SVD magnitude summary: {default_cfg_path}")
     
     # ====================================================================
     # 3. TRAIN TRUNK NETWORK
@@ -170,11 +230,21 @@ def main(cfg: DictConfig):
     trunk_checkpoint = models_dir / "trunk_svd_free_evolution.pth"
     
     if cfg.training.trunk_n_epochs > 0 and not trunk_checkpoint.exists():
+        if 'magnitude_summary' not in cfg.svd:
+            raise ValueError(
+                "cfg.svd.magnitude_summary is missing. "
+                "Run Step 2 (SVD) first to populate scaling parameters."
+            )
+
         # Build config with all required fields
         trunk_config = OmegaConf.to_container(cfg.training)
         trunk_config['n_modes'] = cfg.svd.n_modes
         trunk_config['trunk_hidden_dim'] = cfg.networks.trunk.hidden_dim
         trunk_config['trunk_n_layers'] = cfg.networks.trunk.n_layers
+        trunk_config['svd_magnitude_summary'] = OmegaConf.to_container(
+            cfg.svd.magnitude_summary,
+            resolve=True,
+        )
         
         trunk_result = train_trunk(
             config=trunk_config,
@@ -182,12 +252,15 @@ def main(cfg: DictConfig):
             device=device,
             output_dir=str(output_dir),
             models_dir=str(models_dir),
-            problem_type='free_evolution',
+            problem_type=problem_type,
         )
     else:
         print("Loading pre-trained trunk model...")
         print(f"✓ Loaded: {trunk_checkpoint}")
         trunk_result = {'status': 'loaded_from_checkpoint'}
+    if cfg.networks.trunk.visualize:
+        plot_trunk_validation(output_dir, svd_data, models_dir, device, 
+                            problem_type=problem_type)
     
     # ====================================================================
     # 4. TRAIN BRANCH NETWORK
@@ -198,12 +271,22 @@ def main(cfg: DictConfig):
     branch_checkpoint = models_dir / "branch_svd_free_evolution.pth"
     
     if cfg.training.branch_n_epochs > 0 and not branch_checkpoint.exists():
+        if 'magnitude_summary' not in cfg.svd:
+            raise ValueError(
+                "cfg.svd.magnitude_summary is missing. "
+                "Run Step 2 (SVD) first to populate branch scaling parameters."
+            )
+
         # Build config with all required fields
         branch_config = OmegaConf.to_container(cfg.training)
         branch_config['n_modes'] = cfg.svd.n_modes
         branch_config['n_sensors'] = cfg.sensors.n_sensors
         branch_config['branch_hidden_dim'] = cfg.networks.branch.hidden_dim
         branch_config['branch_n_layers'] = cfg.networks.branch.n_layers
+        branch_config['svd_magnitude_summary'] = OmegaConf.to_container(
+            cfg.svd.magnitude_summary,
+            resolve=True,
+        )
         
         branch_result = train_branch(
             config=branch_config,
@@ -220,75 +303,86 @@ def main(cfg: DictConfig):
         print(f"✓ Loaded: {branch_checkpoint}")
         branch_result = {'status': 'loaded_from_checkpoint'}
     
-    # ====================================================================
-    # 5. OPTIONAL: JOINT DEEPONET TRAINING
-    # ====================================================================
-    # if False:  # Toggle to enable
-    print("\nStep 5: Joint DeepONet Training")
-    print("-" * 70)
-    
-    deeponet_checkpoint = models_dir / "deeponet_free_evolution.pth"
-    
-    if cfg.training.deeponet_n_epochs > 0 and not deeponet_checkpoint.exists():
-        # Build config with all required fields
-        deeponet_config = OmegaConf.to_container(cfg.training)
-        deeponet_config['n_modes'] = cfg.svd.n_modes
-        deeponet_config['trunk_hidden_dim'] = cfg.networks.trunk.hidden_dim
-        deeponet_config['trunk_n_layers'] = cfg.networks.trunk.n_layers
-        deeponet_config['branch_hidden_dim'] = cfg.networks.branch.hidden_dim
-        deeponet_config['branch_n_layers'] = cfg.networks.branch.n_layers
-        deeponet_config['n_sensors'] = cfg.sensors.n_sensors
-        
-        trunk_pretrained = output_dir / "trunk_svd_free_evolution.pth"
-        branch_pretrained = output_dir / "branch_svd_free_evolution.pth"
-        deeponet_result = train_deeponet_joint(
-            config=deeponet_config,
+    if cfg.networks.branch.visualize:
+        plot_branch_validation(
+            output_dir=output_dir,
             u_fom=u_fom,
-            svd_data=svd_data,
-            trunk_pretrained_path=str(trunk_pretrained),
-            branch_pretrained_path=str(branch_pretrained),
-            device=device,
-            output_dir=str(output_dir),
-            models_dir=str(models_dir),
-            problem_type='free_evolution',
             v_fom=v_fom,
+            svd_data=svd_data,
+            models_dir=models_dir,
+            device=device,
+            problem_type=problem_type,
         )
-    else:
-        print("Loading pre-trained DeepONet model...")
-        print(f"✓ Loaded: {deeponet_checkpoint}")
-        deeponet_result = {'status': 'loaded_from_checkpoint'}
     
-    # ====================================================================
-    # 6. VALIDATION & VISUALIZATION
-    # ====================================================================
-    print("\nStep 6: Validation & Visualization")
-    print("-" * 70)
+    # # ====================================================================
+    # # 5. OPTIONAL: JOINT DEEPONET TRAINING
+    # # ====================================================================
+    # # if False:  # Toggle to enable
+    # print("\nStep 5: Joint DeepONet Training")
+    # print("-" * 70)
     
-    plot_validation_basic(
-        output_dir=str(output_dir),
-        u_fom=u_fom,
-        v_fom=v_fom,
-        svd_data=svd_data,
-        data_dir=str(data_dir),
-        models_dir=str(models_dir),
-        device=device,
-        n_samples_plot=3,
-        cfg=cfg,
-        problem_type='free_evolution'
-    )
+    # deeponet_checkpoint = models_dir / "deeponet_free_evolution.pth"
     
-    # ====================================================================
-    # COMPLETE
-    # ====================================================================
-    print("\n" + "=" * 70)
-    print("✓ PIPELINE COMPLETE")
-    print("=" * 70)
-    print(f"Output directory: {output_dir}")
-    print("=" * 70 + "\n")
+    # if cfg.training.deeponet_n_epochs > 0 and not deeponet_checkpoint.exists():
+    #     # Build config with all required fields
+    #     deeponet_config = OmegaConf.to_container(cfg.training)
+    #     deeponet_config['n_modes'] = cfg.svd.n_modes
+    #     deeponet_config['trunk_hidden_dim'] = cfg.networks.trunk.hidden_dim
+    #     deeponet_config['trunk_n_layers'] = cfg.networks.trunk.n_layers
+    #     deeponet_config['branch_hidden_dim'] = cfg.networks.branch.hidden_dim
+    #     deeponet_config['branch_n_layers'] = cfg.networks.branch.n_layers
+    #     deeponet_config['n_sensors'] = cfg.sensors.n_sensors
+        
+    #     trunk_pretrained = output_dir / "trunk_svd_free_evolution.pth"
+    #     branch_pretrained = output_dir / "branch_svd_free_evolution.pth"
+    #     deeponet_result = train_deeponet_joint(
+    #         config=deeponet_config,
+    #         u_fom=u_fom,
+    #         svd_data=svd_data,
+    #         trunk_pretrained_path=str(trunk_pretrained),
+    #         branch_pretrained_path=str(branch_pretrained),
+    #         device=device,
+    #         output_dir=str(output_dir),
+    #         models_dir=str(models_dir),
+    #         problem_type='free_evolution',
+    #         v_fom=v_fom,
+    #     )
+    # else:
+    #     print("Loading pre-trained DeepONet model...")
+    #     print(f"✓ Loaded: {deeponet_checkpoint}")
+    #     deeponet_result = {'status': 'loaded_from_checkpoint'}
     
-    # Close log file
-    sys.stdout = tee.terminal
-    tee.close()
+    # # ====================================================================
+    # # 6. VALIDATION & VISUALIZATION
+    # # ====================================================================
+    # print("\nStep 6: Validation & Visualization")
+    # print("-" * 70)
+    
+    # plot_validation_basic(
+    #     output_dir=str(output_dir),
+    #     u_fom=u_fom,
+    #     v_fom=v_fom,
+    #     svd_data=svd_data,
+    #     data_dir=str(data_dir),
+    #     models_dir=str(models_dir),
+    #     device=device,
+    #     n_samples_plot=3,
+    #     cfg=cfg,
+    #     problem_type='free_evolution'
+    # )
+    
+    # # ====================================================================
+    # # COMPLETE
+    # # ====================================================================
+    # print("\n" + "=" * 70)
+    # print("✓ PIPELINE COMPLETE")
+    # print("=" * 70)
+    # print(f"Output directory: {output_dir}")
+    # print("=" * 70 + "\n")
+    
+    # # Close log file
+    # sys.stdout = tee.terminal
+    # tee.close()
 
 
 if __name__ == "__main__":

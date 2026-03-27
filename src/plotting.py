@@ -11,7 +11,7 @@ import torch
 import torch.nn as nn
 from pathlib import Path
 
-from .models import MLP, DualHeadMLP, DeepONet
+from .models import MLP, DualHeadMLP, DualHeadSensorBranch, DeepONet
 
 
 def plot_validation_basic(
@@ -177,9 +177,9 @@ def plot_validation_basic(
     # ========================================================================
     # SECTION 4: TRUNK VALIDATION
     # ========================================================================
-    if cfg.training.trunk_n_epochs > 0:
-        plot_trunk_validation(output_dir, svd_data, models_dir, device, 
-                             problem_type=problem_type)
+    # if cfg.training.trunk_n_epochs > 0:
+    #     plot_trunk_validation(output_dir, svd_data, models_dir, device, 
+    #                          problem_type=problem_type)
     
     # ========================================================================
     # SECTION 5: DEEPONET VALIDATION
@@ -208,6 +208,7 @@ def plot_branch_validation(
     models_dir: str,
     device: torch.device = None,
     problem_type: str = 'free_evolution',
+    v_fom: np.ndarray = None,
 ):
     """
     Compare branch network coefficient predictions with SVD coefficients.
@@ -229,7 +230,14 @@ def plot_branch_validation(
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     output_dir = Path(output_dir)
-    branch_checkpoint = output_dir / f"branch_svd_{problem_type}.pth"
+    models_dir = Path(models_dir)
+    branch_checkpoint = models_dir / f"branch_svd_{problem_type}.pth"
+
+    # Backward compatibility: older runs may have branch checkpoint in output_dir
+    if not branch_checkpoint.exists():
+        fallback_ckpt = output_dir / f"branch_svd_{problem_type}.pth"
+        if fallback_ckpt.exists():
+            branch_checkpoint = fallback_ckpt
     
     if not branch_checkpoint.exists():
         print(f"⚠ Warning: Branch checkpoint not found: {branch_checkpoint}")
@@ -239,45 +247,125 @@ def plot_branch_validation(
     # Load branch model
     print("Loading branch model...")
     ckpt = torch.load(branch_checkpoint, map_location=device, weights_only=False)
-    config = ckpt['config']
-    state_dict = ckpt['model_state_dict']
+    config = ckpt.get('config', {})
+    state_dict = ckpt.get('model_state_dict', ckpt)
     input_scale = ckpt.get('input_scale', 1.0)  # Default to 1.0 for backward compatibility
+    dual = bool(ckpt.get('dual', False))
+    uses_sensor_encoder = bool(ckpt.get('uses_sensor_encoder', False))
+    u_output_scale = float(ckpt.get('u_output_scale', 1.0) or 1.0)
+    v_output_scale = float(ckpt.get('v_output_scale', 1.0) or 1.0)
+    input_normalization = ckpt.get('input_normalization', {})
+
+    def _resolve_raw_range(field_name):
+        if field_name == 'raw_u':
+            min_key, max_key = 'raw_u_min', 'raw_u_max'
+        else:
+            min_key, max_key = 'raw_v_min', 'raw_v_max'
+
+        if min_key in input_normalization and max_key in input_normalization:
+            min_value = float(input_normalization[min_key])
+            max_value = float(input_normalization[max_key])
+        else:
+            summary = config.get('svd_magnitude_summary', {})
+            try:
+                min_value = float(summary[field_name]['min'])
+                max_value = float(summary[field_name]['max'])
+            except (KeyError, TypeError) as exc:
+                raise ValueError(
+                    f"Branch checkpoint is missing {field_name}.min/max for input normalization"
+                ) from exc
+
+        if max_value <= min_value:
+            raise ValueError(
+                f"Invalid branch input normalization for {field_name}: "
+                f"min={min_value}, max={max_value}"
+            )
+        return min_value, max_value
     
-    # Infer dimensions from state_dict
-    first_layer_weight = state_dict['net.0.weight']
-    input_dim = first_layer_weight.shape[1]
-    hidden_dim = first_layer_weight.shape[0]
-    
-    last_layer_key = [k for k in state_dict.keys() if k.startswith('net.') and k.endswith('.weight')][-1]
-    last_layer_weight = state_dict[last_layer_key]
-    output_dim = last_layer_weight.shape[0]
-    
-    n_layers = len([k for k in state_dict.keys() if k.endswith('.weight')])
-    
-    print(f"  Detected model architecture:")
-    print(f"    Input dim: {input_dim}")
-    print(f"    Hidden dim: {hidden_dim}")
-    print(f"    Output dim (n_modes): {output_dim}")
-    print(f"    N layers: {n_layers}")
-    print(f"    Input scale: {input_scale}")
-    
-    # Reconstruct branch model
-    branch = MLP(
-        input_dim=input_dim,
-        hidden_dim=hidden_dim,
-        output_dim=output_dim,
-        n_layers=n_layers,
-        input_scale=input_scale
-    ).to(device)
+    # Infer architecture from checkpoint keys
+    if dual and uses_sensor_encoder and any(k.startswith('encoder.') for k in state_dict.keys()):
+        n_sensors_inferred = int(ckpt.get('n_sensors', config.get('n_sensors', 8)))
+        hidden_dim = state_dict['mlp.backbone.0.weight'].shape[0]
+        output_dim = state_dict['mlp.head_u.weight'].shape[0]
+        n_layers = len([k for k in state_dict.keys() if k.startswith('mlp.backbone.') and k.endswith('.weight')]) + 1
+
+        print("  Detected model architecture:")
+        print(f"    Type: DualHeadSensorBranch")
+        print(f"    Sensors: {n_sensors_inferred}x{n_sensors_inferred}")
+        print(f"    Hidden dim: {hidden_dim}")
+        print(f"    Output dim (n_modes): {output_dim}")
+        print(f"    N layers: {n_layers}")
+        print(f"    Input scale: {input_scale}")
+        print(f"    Output scales: u={u_output_scale:.3e}, v={v_output_scale:.3e}")
+
+        branch = DualHeadSensorBranch(
+            n_sensors=n_sensors_inferred,
+            hidden_dim=hidden_dim,
+            n_modes=output_dim,
+            n_layers=n_layers,
+            input_scale=input_scale,
+            u_output_scale=u_output_scale,
+            v_output_scale=v_output_scale,
+        ).to(device)
+    elif dual and any(k.startswith('backbone.') for k in state_dict.keys()):
+        # Legacy dual-head MLP branch with flattened concatenated sensors
+        first_layer_weight = state_dict['backbone.0.weight']
+        input_dim = first_layer_weight.shape[1]
+        hidden_dim = first_layer_weight.shape[0]
+        output_dim = state_dict['head_u.weight'].shape[0]
+        n_layers = len([k for k in state_dict.keys() if k.startswith('backbone.') and k.endswith('.weight')]) + 1
+
+        print("  Detected model architecture:")
+        print("    Type: DualHeadMLP (legacy)")
+        print(f"    Input dim: {input_dim}")
+        print(f"    Hidden dim: {hidden_dim}")
+        print(f"    Output dim (n_modes): {output_dim}")
+        print(f"    N layers: {n_layers}")
+
+        branch = DualHeadMLP(
+            input_dim=input_dim,
+            hidden_dim=hidden_dim,
+            n_modes=output_dim,
+            n_layers=n_layers,
+            input_scale=input_scale,
+            u_output_scale=u_output_scale,
+            v_output_scale=v_output_scale,
+        ).to(device)
+        n_sensors_inferred = int(np.sqrt(input_dim // 2))
+    else:
+        # Single-head fallback
+        first_layer_weight = state_dict['net.0.weight']
+        input_dim = first_layer_weight.shape[1]
+        hidden_dim = first_layer_weight.shape[0]
+        last_layer_key = [k for k in state_dict.keys() if k.startswith('net.') and k.endswith('.weight')][-1]
+        last_layer_weight = state_dict[last_layer_key]
+        output_dim = last_layer_weight.shape[0]
+        n_layers = len([k for k in state_dict.keys() if k.endswith('.weight')])
+
+        print("  Detected model architecture:")
+        print("    Type: MLP (single-head)")
+        print(f"    Input dim: {input_dim}")
+        print(f"    Hidden dim: {hidden_dim}")
+        print(f"    Output dim (n_modes): {output_dim}")
+        print(f"    N layers: {n_layers}")
+        print(f"    Input scale: {input_scale}")
+
+        branch = MLP(
+            input_dim=input_dim,
+            hidden_dim=hidden_dim,
+            output_dim=output_dim,
+            n_layers=n_layers,
+            input_scale=input_scale,
+        ).to(device)
+        n_sensors_inferred = int(np.sqrt(input_dim))
     
     branch.load_state_dict(state_dict)
     branch.eval()
     
     # Extract initial conditions from u_fom
     Nx, Ny, Nt, N_samples = u_fom.shape
-    
+
     # Extract sensors matching training procedure
-    n_sensors_inferred = int(np.sqrt(input_dim))
     sensor_x_indices = np.linspace(0, Nx - 1, n_sensors_inferred, dtype=int)
     sensor_y_indices = np.linspace(0, Ny - 1, n_sensors_inferred, dtype=int)
     
@@ -288,83 +376,125 @@ def plot_branch_validation(
         ic_sensors.append(sensors)
     
     ic_sensors = np.array(ic_sensors)
-    
-    # Normalize (same as training)
-    ic_min = ic_sensors.min(axis=0, keepdims=True)
-    ic_max = ic_sensors.max(axis=0, keepdims=True)
-    ic_range = ic_max - ic_min
-    ic_norm = 2 * (ic_sensors - ic_min) / (ic_range + 1e-10) - 1
-    
-    ic_tensor = torch.tensor(ic_norm, dtype=torch.float32).to(device)
+
+    raw_u_min, raw_u_max = _resolve_raw_range('raw_u')
+    ic_norm = 2 * (ic_sensors - raw_u_min) / (raw_u_max - raw_u_min + 1e-10) - 1
+
+    if dual:
+        if v_fom is None:
+            print("⚠ Warning: v_fom not provided; skipping dual branch validation.")
+            return
+
+        v_sensors = []
+        for s in range(N_samples):
+            v_ic = v_fom[:, :, 0, s]
+            sensors = [v_ic[si, sj] for si in sensor_x_indices for sj in sensor_y_indices]
+            v_sensors.append(sensors)
+        v_sensors = np.array(v_sensors)
+
+        raw_v_min, raw_v_max = _resolve_raw_range('raw_v')
+        v_norm = 2 * (v_sensors - raw_v_min) / (raw_v_max - raw_v_min + 1e-10) - 1
+
+        if uses_sensor_encoder:
+            u_grid = ic_norm.reshape(N_samples, n_sensors_inferred, n_sensors_inferred)
+            v_grid = v_norm.reshape(N_samples, n_sensors_inferred, n_sensors_inferred)
+            branch_in = np.stack([u_grid, v_grid], axis=1)
+        else:
+            branch_in = np.concatenate([ic_norm, v_norm], axis=1)
+    else:
+        branch_in = ic_norm
+
+    ic_tensor = torch.tensor(branch_in, dtype=torch.float32).to(device)
     
     # Get predictions
     print("Generating predictions...")
     with torch.no_grad():
-        coeffs_pred_norm = branch(ic_tensor).cpu().numpy()  # (N_samples, n_modes)
-    
-    # Get true coefficients from SVD
-    VT = svd_data['coefficients'][:output_dim, :]  # (n_modes, N_samples)
+        pred_out = branch(ic_tensor)
+
+    VT = svd_data['coefficients'][:output_dim, :]
     Sigma = svd_data['singular_values'][:output_dim]
-    coeffs_true = (Sigma[:, None] * VT).T  # (N_samples, n_modes)
-    
-    # Normalize true coeffs (same as training)
-    coeff_min = coeffs_true.min()
-    coeff_max = coeffs_true.max()
-    coeff_range = coeff_max - coeff_min
-    coeffs_true_norm = 2 * (coeffs_true - coeff_min) / (coeff_range + 1e-10) - 1
-    
-    branch_error = np.mean((coeffs_true_norm - coeffs_pred_norm) ** 2)
-    print(f"  Branch coefficient MSE (normalized): {branch_error:.6e}")
+    coeffs_true_u = (Sigma[:, None] * VT).T
+
+    if dual:
+        coeffs_pred_u = pred_out[0].cpu().numpy()
+        coeffs_pred_v = pred_out[1].cpu().numpy()
+
+        VT_v = svd_data['coefficients_v'][:output_dim, :]
+        Sigma_v = svd_data['singular_values_v'][:output_dim]
+        coeffs_true_v = (Sigma_v[:, None] * VT_v).T
+
+        branch_error_u = np.mean((coeffs_true_u - coeffs_pred_u) ** 2)
+        branch_error_v = np.mean((coeffs_true_v - coeffs_pred_v) ** 2)
+        print(f"  Branch coefficient MSE (u physical): {branch_error_u:.6e}")
+        print(f"  Branch coefficient MSE (v physical): {branch_error_v:.6e}")
+    else:
+        coeffs_pred_u = pred_out.cpu().numpy()
+        branch_error_u = np.mean((coeffs_true_u - coeffs_pred_u) ** 2)
+        print(f"  Branch coefficient MSE (physical): {branch_error_u:.6e}")
     
     # Create comparison plots
     print("  Generating comparison plot...")
-    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
-    
-    # 2a: Coefficient scatter (first few modes)
-    ax = axes[0, 0]
-    modes_to_plot = min(3, output_dim)
-    for mode_idx in range(modes_to_plot):
-        ax.scatter(coeffs_true_norm[:, mode_idx], coeffs_pred_norm[:, mode_idx], 
-                  alpha=0.6, s=30, label=f'Mode {mode_idx}')
-    
-    # Perfect prediction line
-    coeff_range_plot = [coeffs_true_norm[:, :modes_to_plot].min(), coeffs_true_norm[:, :modes_to_plot].max()]
-    ax.plot(coeff_range_plot, coeff_range_plot, 'k--', linewidth=2, label='Perfect')
-    
-    ax.set_xlabel('SVD Coefficients (True, normalized)', fontsize=11)
-    ax.set_ylabel('Branch Predictions (normalized)', fontsize=11)
-    ax.set_title('Branch vs SVD Coefficients', fontsize=12)
-    ax.legend(fontsize=9)
-    ax.grid(True, alpha=0.3)
-    
-    # 2b: Error by mode
-    ax = axes[0, 1]
-    mode_errors = np.mean((coeffs_true_norm - coeffs_pred_norm) ** 2, axis=0)
-    ax.bar(range(output_dim), mode_errors, color='steelblue', alpha=0.7)
-    ax.set_xlabel('Mode Index', fontsize=11)
-    ax.set_ylabel('MSE', fontsize=11)
-    ax.set_title('Branch Error by Mode', fontsize=12)
-    ax.grid(True, alpha=0.3, axis='y')
-    
-    # 2c: Coefficient histogram
-    ax = axes[1, 0]
-    ax.hist(coeffs_true_norm[:, 0], bins=30, alpha=0.6, label='SVD (Mode 0)', color='blue')
-    ax.hist(coeffs_pred_norm[:, 0], bins=30, alpha=0.6, label='Branch (Mode 0)', color='red')
-    ax.set_xlabel('Coefficient Value (normalized)', fontsize=11)
-    ax.set_ylabel('Count', fontsize=11)
-    ax.set_title('Coefficient Distribution (Mode 0)', fontsize=12)
-    ax.legend(fontsize=9)
-    ax.grid(True, alpha=0.3)
-    
-    # 2d: Relative error by sample
-    ax = axes[1, 1]
-    sample_errors = np.mean((coeffs_true_norm - coeffs_pred_norm) ** 2, axis=1)
-    ax.plot(sample_errors, 'o-', color='steelblue', markersize=4, linewidth=1.5)
-    ax.set_xlabel('Sample Index', fontsize=11)
-    ax.set_ylabel('MSE', fontsize=11)
-    ax.set_title('Branch Error by Sample', fontsize=12)
-    ax.grid(True, alpha=0.3)
-    
+
+    def _plot_coeff_panel(panel_axes, coeffs_true, coeffs_pred, label_name):
+        # 1) Coefficient scatter (first few modes)
+        ax = panel_axes[0, 0]
+        modes_to_plot = min(3, output_dim)
+        for mode_idx in range(modes_to_plot):
+            ax.scatter(
+                coeffs_true[:, mode_idx],
+                coeffs_pred[:, mode_idx],
+                alpha=0.6,
+                s=30,
+                label=f'Mode {mode_idx}',
+            )
+        coeff_range_plot = [
+            coeffs_true[:, :modes_to_plot].min(),
+            coeffs_true[:, :modes_to_plot].max(),
+        ]
+        ax.plot(coeff_range_plot, coeff_range_plot, 'k--', linewidth=2, label='Perfect')
+        ax.set_xlabel('SVD Coefficients (True, physical)', fontsize=11)
+        ax.set_ylabel('Branch Predictions (physical)', fontsize=11)
+        ax.set_title(f'{label_name} Branch vs SVD Coefficients', fontsize=12)
+        ax.legend(fontsize=9)
+        ax.grid(True, alpha=0.3)
+
+        # 2) Error by mode
+        ax = panel_axes[0, 1]
+        mode_errors = np.mean((coeffs_true - coeffs_pred) ** 2, axis=0)
+        ax.bar(range(output_dim), mode_errors, color='steelblue', alpha=0.7)
+        ax.set_xlabel('Mode Index', fontsize=11)
+        ax.set_ylabel('MSE', fontsize=11)
+        ax.set_title(f'{label_name} Branch Error by Mode', fontsize=12)
+        ax.grid(True, alpha=0.3, axis='y')
+
+        # 3) Coefficient histogram
+        ax = panel_axes[1, 0]
+        ax.hist(coeffs_true[:, 0], bins=30, alpha=0.6, label=f'SVD {label_name} (Mode 0)', color='blue')
+        ax.hist(coeffs_pred[:, 0], bins=30, alpha=0.6, label=f'Branch {label_name} (Mode 0)', color='red')
+        ax.set_xlabel('Coefficient Value (physical)', fontsize=11)
+        ax.set_ylabel('Count', fontsize=11)
+        ax.set_title(f'{label_name} Coefficient Distribution (Mode 0)', fontsize=12)
+        ax.legend(fontsize=9)
+        ax.grid(True, alpha=0.3)
+
+        # 4) Error by sample
+        ax = panel_axes[1, 1]
+        sample_errors = np.mean((coeffs_true - coeffs_pred) ** 2, axis=1)
+        ax.plot(sample_errors, 'o-', color='steelblue', markersize=4, linewidth=1.5)
+        ax.set_xlabel('Sample Index', fontsize=11)
+        ax.set_ylabel('MSE', fontsize=11)
+        ax.set_title(f'{label_name} Branch Error by Sample', fontsize=12)
+        ax.grid(True, alpha=0.3)
+
+    if dual:
+        fig, axes = plt.subplots(4, 2, figsize=(12, 20))
+        _plot_coeff_panel(axes[0:2, :], coeffs_true_u, coeffs_pred_u, 'Deformation')
+        _plot_coeff_panel(axes[2:4, :], coeffs_true_v, coeffs_pred_v, 'Velocity')
+        fig.suptitle('Branch Validation: Deformation and Velocity Coefficients', fontsize=14, y=0.995)
+    else:
+        fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+        _plot_coeff_panel(axes, coeffs_true_u, coeffs_pred_u, 'Deformation')
+
     plt.tight_layout()
     save_path = os.path.join(output_dir, 'validation_branch_coefficients.png')
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
@@ -401,7 +531,14 @@ def plot_trunk_validation(
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     output_dir = Path(output_dir)
-    trunk_checkpoint = output_dir / f"trunk_svd_{problem_type}.pth"
+    models_dir = Path(models_dir)
+    trunk_checkpoint = models_dir / f"trunk_svd_{problem_type}.pth"
+
+    # Backward compatibility: older runs may have the trunk checkpoint in output_dir
+    if not trunk_checkpoint.exists():
+        fallback_ckpt = output_dir / f"trunk_svd_{problem_type}.pth"
+        if fallback_ckpt.exists():
+            trunk_checkpoint = fallback_ckpt
     
     if not trunk_checkpoint.exists():
         print(f"⚠ Warning: Trunk checkpoint not found: {trunk_checkpoint}")
@@ -413,28 +550,52 @@ def plot_trunk_validation(
     ckpt = torch.load(trunk_checkpoint, map_location=device, weights_only=False)
     state_dict = ckpt.get('model_state_dict', ckpt)
     config = ckpt.get('config', {})
-    
-    # Infer dimensions from state_dict
-    # First layer: input_dim -> hidden_dim
-    first_layer_weight = state_dict['net.0.weight']
-    input_dim = first_layer_weight.shape[1]  # Should be 3 (x, y, t)
-    trunk_hidden_dim = first_layer_weight.shape[0]
-    
-    # Last layer: hidden_dim -> output_dim (n_modes)
-    last_keys = [k for k in state_dict.keys() if k.endswith('.weight')]
-    last_layer_weight = state_dict[last_keys[-1]]
-    n_modes = last_layer_weight.shape[0]
-    
-    # Count layers
-    trunk_n_layers = len([k for k in state_dict.keys() if k.endswith('.weight')])
-    
-    print(f"  Inferred: input_dim={input_dim}, hidden_dim={trunk_hidden_dim}, n_modes={n_modes}, n_layers={trunk_n_layers}")
-    
-    # Create trunk model
-    trunk = MLP(3, trunk_hidden_dim, n_modes, trunk_n_layers).to(device)
+
+    trunk_output_scaled = bool(ckpt.get('trunk_output_scaled', False))
+    u_output_scale = float(ckpt.get('u_output_scale', 1.0) or 1.0)
+    v_output_scale = float(ckpt.get('v_output_scale', 1.0) or 1.0)
+
+    # Infer architecture from checkpoint keys
+    dual = any(k.startswith('backbone.') for k in state_dict.keys()) and 'head_u.weight' in state_dict
+
+    if dual:
+        first_layer_weight = state_dict['backbone.0.weight']
+        input_dim = first_layer_weight.shape[1]
+        trunk_hidden_dim = first_layer_weight.shape[0]
+        n_modes = state_dict['head_u.weight'].shape[0]
+        n_backbone_linears = len([k for k in state_dict.keys() if k.startswith('backbone.') and k.endswith('.weight')])
+        trunk_n_layers = n_backbone_linears + 1
+
+        print(
+            f"  Inferred dual trunk: input_dim={input_dim}, hidden_dim={trunk_hidden_dim}, "
+            f"n_modes={n_modes}, n_layers={trunk_n_layers}, "
+            f"scaled={trunk_output_scaled}, u_scale={u_output_scale:.3e}, v_scale={v_output_scale:.3e}"
+        )
+
+        trunk = DualHeadMLP(
+            input_dim,
+            trunk_hidden_dim,
+            n_modes,
+            trunk_n_layers,
+            u_output_scale=u_output_scale,
+            v_output_scale=v_output_scale,
+        ).to(device)
+    else:
+        # Legacy single-head trunk
+        first_layer_weight = state_dict['net.0.weight']
+        input_dim = first_layer_weight.shape[1]
+        trunk_hidden_dim = first_layer_weight.shape[0]
+        trunk_net_keys = [k for k in state_dict.keys() if k.startswith('net.') and k.endswith('.weight')]
+        n_modes = state_dict[trunk_net_keys[-1]].shape[0]
+        trunk_n_layers = len(trunk_net_keys)
+
+        print(f"  Inferred single trunk: input_dim={input_dim}, hidden_dim={trunk_hidden_dim}, n_modes={n_modes}, n_layers={trunk_n_layers}")
+
+        trunk = MLP(input_dim, trunk_hidden_dim, n_modes, trunk_n_layers).to(device)
+
     trunk.load_state_dict(state_dict)
     trunk.eval()
-    
+
     print(f"  Trunk loaded: {n_modes} modes, hidden_dim={trunk_hidden_dim}, n_layers={trunk_n_layers}")
     
     # Get SVD modes from basis
@@ -449,9 +610,14 @@ def plot_trunk_validation(
     # The SVD basis modes are already in original scale (not normalized)
     # Reshape to (Nx, Ny, Nt, n_modes)
     modes_svd = U_basis_spatial.reshape(Nx, Ny, Nt, n_modes, order='F')
+
+    modes_svd_v = None
+    if dual and ('basis_v' in svd_data):
+        V_basis = svd_data['basis_v']
+        V_basis_spatial = V_basis[:spatial_size, :n_modes]
+        modes_svd_v = V_basis_spatial.reshape(Nx, Ny, Nt, n_modes, order='F')
     
-    # Normalization used during training: targets were normalized to [-1, 1]
-    # We need to compute the actual range of the SVD basis that was used during training
+    # Legacy normalization parameters (used only for older unscaled checkpoints)
     targets_min = U_basis_spatial.min()
     targets_max = U_basis_spatial.max()
     targets_range = targets_max - targets_min
@@ -477,13 +643,25 @@ def plot_trunk_validation(
     coords_tensor = torch.from_numpy(coords_t).float().to(device)
     
     with torch.no_grad():
-        trunk_out_norm = trunk(coords_tensor).cpu().numpy()  # (Nx*Ny, n_modes)
-    
-    # Reshape to spatial: (Nx, Ny, n_modes)
-    trunk_modes_norm = trunk_out_norm.reshape(Nx, Ny, n_modes, order='F')
-    
-    # Denormalize trunk outputs
-    trunk_modes = (trunk_modes_norm + 1) * targets_range / 2 + targets_min
+        trunk_out = trunk(coords_tensor)
+
+    trunk_modes_v = None
+    if dual:
+        # For dual trunk validation we compare displacement head with displacement SVD basis.
+        trunk_out_u = trunk_out[0].cpu().numpy()
+        trunk_out_v = trunk_out[1].cpu().numpy()
+        if trunk_output_scaled:
+            trunk_modes = trunk_out_u.reshape(Nx, Ny, n_modes, order='F')
+            trunk_modes_v = trunk_out_v.reshape(Nx, Ny, n_modes, order='F')
+        else:
+            # Backward compatibility for older dual checkpoints trained on normalized targets.
+            trunk_modes_norm = trunk_out_u.reshape(Nx, Ny, n_modes, order='F')
+            trunk_modes = (trunk_modes_norm + 1) * targets_range / 2 + targets_min
+            trunk_modes_v = None
+    else:
+        trunk_out_np = trunk_out.cpu().numpy()
+        trunk_modes_norm = trunk_out_np.reshape(Nx, Ny, n_modes, order='F')
+        trunk_modes = (trunk_modes_norm + 1) * targets_range / 2 + targets_min
     
     print(f"  Trunk predictions shape: {trunk_modes.shape}")
     print(f"  Trunk value range: [{trunk_modes.min():.6f}, {trunk_modes.max():.6f}]")
@@ -569,6 +747,98 @@ def plot_trunk_validation(
     
     print(f"  Average Relative L2 Error: {total_l2 / n_modes:.6e}")
     print(f"  Average Max Abs Error: {total_max / n_modes:.6e}")
+
+    if dual:
+        if modes_svd_v is None or trunk_modes_v is None:
+            print("\n  ⚠ Velocity validation skipped (missing basis_v or incompatible legacy trunk scaling).")
+            print("  ✓ Trunk validation complete")
+            return
+
+        print("\n  Generating velocity comparison plot...")
+
+        # Calculate global vmin/vmax for velocity panel
+        all_trunk_v = trunk_modes_v.flatten()
+        all_svd_v = modes_svd_v[:, :, t_idx, :n_modes].flatten()
+        all_values_v = np.concatenate([all_trunk_v, all_svd_v])
+        vmin_global_v = all_values_v.min()
+        vmax_global_v = all_values_v.max()
+
+        fig_v, axes_v = plt.subplots(n_rows, n_cols, figsize=(16, 4 * n_rows))
+        if n_rows == 1:
+            axes_v = axes_v[np.newaxis, :]
+
+        mode_idx = 0
+        for row in range(n_rows):
+            for pair in range(2):
+                if mode_idx >= n_modes:
+                    axes_v[row, 2 * pair].axis('off')
+                    axes_v[row, 2 * pair + 1].axis('off')
+                    continue
+
+                trunk_mode_v = trunk_modes_v[:, :, mode_idx]
+                ax_trunk_v = axes_v[row, 2 * pair]
+                im_v = ax_trunk_v.imshow(
+                    trunk_mode_v,
+                    cmap='seismic',
+                    origin='lower',
+                    vmin=vmin_global_v,
+                    vmax=vmax_global_v,
+                )
+                ax_trunk_v.set_title(f'Trunk V Mode {mode_idx}', fontsize=9)
+                ax_trunk_v.set_xticks([])
+                ax_trunk_v.set_yticks([])
+
+                svd_mode_v = modes_svd_v[:, :, t_idx, mode_idx]
+                ax_svd_v = axes_v[row, 2 * pair + 1]
+                ax_svd_v.imshow(
+                    svd_mode_v,
+                    cmap='seismic',
+                    origin='lower',
+                    vmin=vmin_global_v,
+                    vmax=vmax_global_v,
+                )
+                ax_svd_v.set_title(f'SVD V Mode {mode_idx}', fontsize=9)
+                ax_svd_v.set_xticks([])
+                ax_svd_v.set_yticks([])
+
+                mode_idx += 1
+
+        fig_v.subplots_adjust(right=0.92, hspace=0.3, wspace=0.2)
+        cbar_ax_v = fig_v.add_axes([0.94, 0.15, 0.015, 0.7])
+        fig_v.colorbar(im_v, cax=cbar_ax_v, label='Mode Value')
+
+        plt.suptitle(
+            f'Velocity Trunk Network vs SVD Modes Comparison (t={t_actual:.2f})\n'
+            f'Left: Trunk Prediction | Right: SVD Ground Truth',
+            fontsize=14,
+            y=0.995,
+        )
+
+        save_path_v = os.path.join(output_dir, 'validation_trunk_vs_svd_modes_velocity.png')
+        plt.savefig(save_path_v, dpi=150, bbox_inches='tight')
+        plt.close()
+        print("  ✓ Saved: validation_trunk_vs_svd_modes_velocity.png")
+
+        print("\n  Velocity error metrics for each mode:")
+        total_l2_v = 0.0
+        total_max_v = 0.0
+
+        for mode_idx in range(n_modes):
+            trunk_mode_v = trunk_modes_v[:, :, mode_idx]
+            svd_mode_v = modes_svd_v[:, :, t_idx, mode_idx]
+
+            l2_error_v = np.linalg.norm(trunk_mode_v - svd_mode_v) / (np.linalg.norm(svd_mode_v) + 1e-10)
+            max_error_v = np.abs(trunk_mode_v - svd_mode_v).max()
+
+            total_l2_v += l2_error_v
+            total_max_v += max_error_v
+
+            if mode_idx < 5:
+                print(f"    V Mode {mode_idx:2d}: Relative L2 = {l2_error_v:.6e}, Max Abs = {max_error_v:.6e}")
+
+        print(f"  Velocity Average Relative L2 Error: {total_l2_v / n_modes:.6e}")
+        print(f"  Velocity Average Max Abs Error: {total_max_v / n_modes:.6e}")
+
     print("  ✓ Trunk validation complete")
 
 
@@ -587,6 +857,8 @@ def _load_deeponet_from_checkpoint(ckpt_path, device, problem_type):
     state = ckpt.get('model_state_dict', ckpt)
     input_scale = ckpt.get('input_scale', 1.0)
     dual = ckpt.get('dual', False)
+    u_output_scale = float(ckpt.get('u_output_scale', 1.0) or 1.0)
+    v_output_scale = float(ckpt.get('v_output_scale', 1.0) or 1.0)
 
     # Infer trunk architecture
     trunk_backbone_keys = [k for k in state if k.startswith('trunk.backbone.') and k.endswith('.weight')]
@@ -600,7 +872,14 @@ def _load_deeponet_from_checkpoint(ckpt_path, device, problem_type):
         n_modes = state['trunk.head_u.weight'].shape[0]
         n_backbone_linears = len(trunk_backbone_keys)
         trunk_n_layers = n_backbone_linears + 1   # +1 for the head
-        trunk_net = DualHeadMLP(3, trunk_hidden_dim, n_modes, trunk_n_layers).to(device)
+        trunk_net = DualHeadMLP(
+            3,
+            trunk_hidden_dim,
+            n_modes,
+            trunk_n_layers,
+            u_output_scale=u_output_scale,
+            v_output_scale=v_output_scale,
+        ).to(device)
     else:
         # MLP trunk
         trunk_first = state['trunk.net.0.weight']

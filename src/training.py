@@ -16,7 +16,33 @@ from torch.utils.data import TensorDataset, DataLoader
 import matplotlib.pyplot as plt
 from datetime import datetime
 
-from .models import MLP, DualHeadMLP, DeepONet
+from .models import MLP, DualHeadMLP, DualHeadSensorBranch, DeepONet
+
+
+def _scale_to_ominus1_1(values: np.ndarray, min_value: float, max_value: float) -> np.ndarray:
+    """Scale values into [-1, 1] using externally supplied bounds."""
+
+    return 2 * (values - min_value) / (max_value - min_value + 1e-10) - 1
+
+
+def _get_summary_range(summary: dict, field_name: str) -> tuple[float, float]:
+    """Read a min/max range from cfg.svd.magnitude_summary."""
+
+    try:
+        min_value = float(summary[field_name]['min'])
+        max_value = float(summary[field_name]['max'])
+    except (KeyError, TypeError) as exc:
+        raise ValueError(
+            f"svd_magnitude_summary must include {field_name}.min and {field_name}.max"
+        ) from exc
+
+    if max_value <= min_value:
+        raise ValueError(
+            f"Invalid range in svd_magnitude_summary for {field_name}: "
+            f"min={min_value}, max={max_value}"
+        )
+
+    return min_value, max_value
 
 
 def train_trunk(
@@ -30,7 +56,7 @@ def train_trunk(
     """Train trunk network on SVD basis functions.
 
     For free_evolution the trunk is a DualHeadMLP trained jointly on u-basis
-    and v-basis (both must be present in svd_data).
+    and v-basis (both required in svd_data).
     For constant_force the trunk remains a single-output MLP trained on u-basis.
     """
     
@@ -46,7 +72,12 @@ def train_trunk(
     n_modes = config['n_modes']
     targets_u_raw = U_basis[:, :n_modes]
 
-    dual = (problem_type == 'free_evolution') and ('basis_v' in svd_data)
+    dual = (problem_type == 'free_evolution')
+    if dual and ('basis_v' not in svd_data):
+        raise ValueError(
+            "free_evolution trunk training requires 'basis_v' in svd_data. "
+            "Re-run SVD extraction with velocity enabled."
+        )
     if dual:
         V_basis = svd_data['basis_v']
         targets_v_raw = V_basis[:, :n_modes]
@@ -73,18 +104,16 @@ def train_trunk(
         else:
             print(f"Using all {n_space_time} space-time points")
 
-    # Normalize u targets
-    u_min = targets_u_raw.min()
-    u_max = targets_u_raw.max()
-    u_range = u_max - u_min
-    targets_u_norm = 2 * (targets_u_raw - u_min) / u_range - 1
-
-    # Normalize v targets independently
     if dual:
-        v_min = targets_v_raw.min()
-        v_max = targets_v_raw.max()
-        v_range = v_max - v_min
-        targets_v_norm = 2 * (targets_v_raw - v_min) / v_range - 1
+        # Physical target training for both fields
+        targets_u = targets_u_raw
+        targets_v = targets_v_raw
+    else:
+        # Keep legacy normalization for non-dual trunk paths
+        u_min = targets_u_raw.min()
+        u_max = targets_u_raw.max()
+        u_range = u_max - u_min
+        targets_u = 2 * (targets_u_raw - u_min) / u_range - 1
     
     # Train/test split
     n_total = coords.shape[0]
@@ -94,15 +123,52 @@ def train_trunk(
     
     coords_train = torch.from_numpy(coords[train_idx]).float().to(device)
     coords_test  = torch.from_numpy(coords[test_idx]).float().to(device)
-    tu_train = torch.from_numpy(targets_u_norm[train_idx]).float().to(device)
-    tu_test  = torch.from_numpy(targets_u_norm[test_idx]).float().to(device)
+    tu_train = torch.from_numpy(targets_u[train_idx]).float().to(device)
+    tu_test  = torch.from_numpy(targets_u[test_idx]).float().to(device)
     if dual:
-        tv_train = torch.from_numpy(targets_v_norm[train_idx]).float().to(device)
-        tv_test  = torch.from_numpy(targets_v_norm[test_idx]).float().to(device)
+        tv_train = torch.from_numpy(targets_v[train_idx]).float().to(device)
+        tv_test  = torch.from_numpy(targets_v[test_idx]).float().to(device)
+
+    u_output_scale = 1.0
+    v_output_scale = 1.0
+    if dual:
+        summary = config.get('svd_magnitude_summary', None)
+        if summary is None:
+            raise ValueError(
+                "Missing 'svd_magnitude_summary' in trunk config. "
+                "Run SVD analysis and propagate cfg.svd.magnitude_summary into trunk config."
+            )
+        try:
+            u_output_scale = float(summary['svd_basis_u']['max'])
+            v_output_scale = float(summary['svd_basis_v']['max'])
+        except (KeyError, TypeError) as exc:
+            raise ValueError(
+                "svd_magnitude_summary must include svd_basis_u.max and svd_basis_v.max"
+            ) from exc
+
+        if u_output_scale <= 0 or v_output_scale <= 0:
+            raise ValueError(
+                f"Invalid output scales from svd_magnitude_summary: "
+                f"u={u_output_scale}, v={v_output_scale}. Expected positive values."
+            )
+
+        print(f"  Trunk output scales from SVD summary: u={u_output_scale:.6e}, v={v_output_scale:.6e}")
+        print(
+            f"  Physical target ranges: "
+            f"u=[{targets_u.min():.6e}, {targets_u.max():.6e}], "
+            f"v=[{targets_v.min():.6e}, {targets_v.max():.6e}]"
+        )
     
     # Build model
     if dual:
-        trunk = DualHeadMLP(3, config['trunk_hidden_dim'], n_modes, config['trunk_n_layers']).to(device)
+        trunk = DualHeadMLP(
+            3,
+            config['trunk_hidden_dim'],
+            n_modes,
+            config['trunk_n_layers'],
+            u_output_scale=u_output_scale,
+            v_output_scale=v_output_scale,
+        ).to(device)
         print(f"  Using DualHeadMLP trunk (shared backbone, two heads of size {n_modes})")
     else:
         trunk = MLP(3, config['trunk_hidden_dim'], n_modes, config['trunk_n_layers']).to(device)
@@ -170,13 +236,17 @@ def train_trunk(
     trunk.load_state_dict(best_state)
     trunk.eval()
     
-    # Save checkpoint to output directory
-    os.makedirs(output_dir, exist_ok=True)
-    ckpt_path = os.path.join(output_dir, f'trunk_svd_{problem_type}.pth')
+    # Save checkpoint to models directory (fallback to output directory)
+    ckpt_dir = models_dir if models_dir is not None else output_dir
+    os.makedirs(ckpt_dir, exist_ok=True)
+    ckpt_path = os.path.join(ckpt_dir, f'trunk_svd_{problem_type}.pth')
     torch.save({
         'model_state_dict': best_state,
         'config': config,
         'dual': dual,
+        'u_output_scale': float(u_output_scale) if dual else None,
+        'v_output_scale': float(v_output_scale) if dual else None,
+        'trunk_output_scaled': bool(dual),
     }, ckpt_path)
     print(f"\n✓ Saved: {ckpt_path}")
     
@@ -209,19 +279,7 @@ def train_branch(
     problem_type: str = 'free_evolution',
     v_fom: np.ndarray = None,
 ) -> dict:
-    """Train branch network on IC → SVD coefficients mapping.
-
-    For free_evolution (when v_fom is provided):
-      - Input:  [u0_sensors ∥ v0_sensors]  (2 * n_sensors^2 values)
-      - Model:  DualHeadMLP (shared backbone, two heads)
-      - Output: (coeffs_u, coeffs_v)  each (N_samples, n_modes)
-      - Loss:   MSE_u + MSE_v
-
-    For constant_force or when v_fom is absent:
-      - Input:  u0_sensors or force_sensors  (n_sensors^2 values)
-      - Model:  MLP (single head)
-      - Output: coeffs_u  (N_samples, n_modes)
-    """
+    """Train the dual branch network on (u0, v0) -> (sigma*coeff_u, sigma*coeff_v)."""
     
     print("\n" + "=" * 70)
     print("TRAINING BRANCH NETWORK (IC → SVD Coefficients)")
@@ -232,7 +290,26 @@ def train_branch(
     n_modes = config['n_modes']
     n_sensors = config['n_sensors']
 
-    dual = (problem_type == 'free_evolution') and (v_fom is not None) and ('coefficients_v' in svd_data)
+    if problem_type != 'free_evolution':
+        raise ValueError(
+            "train_branch only supports the dual free_evolution branch architecture."
+        )
+
+    if v_fom is None or 'coefficients_v' not in svd_data:
+        raise ValueError(
+            "free_evolution branch training requires both v_fom and coefficients_v in svd_data"
+        )
+
+    summary = config.get('svd_magnitude_summary', None)
+    if summary is None:
+        raise ValueError("Missing svd_magnitude_summary in branch config")
+
+    raw_u_min, raw_u_max = _get_summary_range(summary, 'raw_u')
+    raw_v_min, raw_v_max = _get_summary_range(summary, 'raw_v')
+    u_output_scale = float(summary['sigma_coeff_u']['max'])
+    v_output_scale = float(summary['sigma_coeff_v']['max'])
+    if u_output_scale <= 0 or v_output_scale <= 0:
+        raise ValueError(f"Invalid branch output scales u={u_output_scale}, v={v_output_scale}")
     
     # Sample training samples if max_branch_samples specified
     max_branch_samples = config.get('max_branch_samples', None)
@@ -240,7 +317,7 @@ def train_branch(
         print(f"Sampling {max_branch_samples} samples from {N_samples} total samples")
         sample_indices = np.random.choice(N_samples, max_branch_samples, replace=False)
         u_fom_subset = u_fom[:, :, :, sample_indices]
-        v_fom_subset = v_fom[:, :, :, sample_indices] if dual else None
+        v_fom_subset = v_fom[:, :, :, sample_indices]
         N_samples_train = max_branch_samples
     else:
         if max_branch_samples:
@@ -248,7 +325,7 @@ def train_branch(
         else:
             print(f"Using all {N_samples} samples")
         u_fom_subset = u_fom
-        v_fom_subset = v_fom if dual else None
+        v_fom_subset = v_fom
         N_samples_train = N_samples
         sample_indices = None
     
@@ -263,31 +340,29 @@ def train_branch(
         u_sensors.append(sensors)
     u_sensors = np.array(u_sensors)  # (N_samples_train, n_sensors^2)
 
-    # Normalize u sensors
-    u_s_min = u_sensors.min(axis=0, keepdims=True)
-    u_s_max = u_sensors.max(axis=0, keepdims=True)
-    u_s_norm = 2 * (u_sensors - u_s_min) / (u_s_max - u_s_min + 1e-10) - 1
+    # Build v0 sensor measurements
+    v_sensors = []
+    for s in range(N_samples_train):
+        v_ic = v_fom_subset[:, :, 0, s]
+        sensors = [v_ic[si, sj] for si in sensor_x_indices for sj in sensor_y_indices]
+        v_sensors.append(sensors)
+    v_sensors = np.array(v_sensors)  # (N_samples_train, n_sensors^2)
 
-    if dual:
-        # Build v0 sensor measurements
-        v_sensors = []
-        for s in range(N_samples_train):
-            v_ic = v_fom_subset[:, :, 0, s]
-            sensors = [v_ic[si, sj] for si in sensor_x_indices for sj in sensor_y_indices]
-            v_sensors.append(sensors)
-        v_sensors = np.array(v_sensors)  # (N_samples_train, n_sensors^2)
+    # Normalize sensors with global raw field bounds from cfg.svd.magnitude_summary
+    u_s_norm = _scale_to_ominus1_1(u_sensors, raw_u_min, raw_u_max)
+    v_s_norm = _scale_to_ominus1_1(v_sensors, raw_v_min, raw_v_max)
 
-        # Normalize v sensors independently
-        v_s_min = v_sensors.min(axis=0, keepdims=True)
-        v_s_max = v_sensors.max(axis=0, keepdims=True)
-        v_s_norm = 2 * (v_sensors - v_s_min) / (v_s_max - v_s_min + 1e-10) - 1
-
-        # Concatenate: input = [u0_norm ∥ v0_norm]
-        ic_norm = np.concatenate([u_s_norm, v_s_norm], axis=1)  # (N_train, 2*n_sensors^2)
-        print(f"  Dual-field branch: input dim = {ic_norm.shape[1]} (2 × {n_sensors}²)")
-    else:
-        ic_norm = u_s_norm
-        print(f"  Single-field branch: input dim = {ic_norm.shape[1]} ({n_sensors}²)")
+    # Two-channel sensor grid: (N, 2, S, S)
+    u_grid = u_s_norm.reshape(N_samples_train, n_sensors, n_sensors)
+    v_grid = v_s_norm.reshape(N_samples_train, n_sensors, n_sensors)
+    ic_norm = np.stack([u_grid, v_grid], axis=1)
+    print(f"  Branch input raw ranges from cfg: u=[{raw_u_min:.6e}, {raw_u_max:.6e}], v=[{raw_v_min:.6e}, {raw_v_max:.6e}]")
+    print(
+        f"  Branch normalized input ranges: "
+        f"u=[{u_s_norm.min():.6e}, {u_s_norm.max():.6e}], "
+        f"v=[{v_s_norm.min():.6e}, {v_s_norm.max():.6e}]"
+    )
+    print(f"  Dual-field branch: input tensor = {ic_norm.shape} (N, 2, {n_sensors}, {n_sensors})")
     
     # SVD coefficients as targets (u)
     VT_u = svd_data['coefficients'][:n_modes, :]
@@ -295,17 +370,14 @@ def train_branch(
         VT_u = VT_u[:, sample_indices]
     Sigma_u = svd_data['singular_values'][:n_modes]
     target_u = (Sigma_u[:, None] * VT_u).T  # (N_samples_train, n_modes)
-    u_c_min, u_c_max = target_u.min(), target_u.max()
-    target_u_norm = 2 * (target_u - u_c_min) / (u_c_max - u_c_min + 1e-10) - 1
+    target_u_norm = target_u
 
-    if dual:
-        VT_v = svd_data['coefficients_v'][:n_modes, :]
-        if sample_indices is not None:
-            VT_v = VT_v[:, sample_indices]
-        Sigma_v = svd_data['singular_values_v'][:n_modes]
-        target_v = (Sigma_v[:, None] * VT_v).T  # (N_samples_train, n_modes)
-        v_c_min, v_c_max = target_v.min(), target_v.max()
-        target_v_norm = 2 * (target_v - v_c_min) / (v_c_max - v_c_min + 1e-10) - 1
+    VT_v = svd_data['coefficients_v'][:n_modes, :]
+    if sample_indices is not None:
+        VT_v = VT_v[:, sample_indices]
+    Sigma_v = svd_data['singular_values_v'][:n_modes]
+    target_v = (Sigma_v[:, None] * VT_v).T  # (N_samples_train, n_modes)
+    target_v_norm = target_v
     
     # Train/test split
     indices = np.random.permutation(N_samples_train)
@@ -317,29 +389,34 @@ def train_branch(
     ic_test    = torch.from_numpy(ic_norm[test_idx]).float().to(device)
     tu_train   = torch.from_numpy(target_u_norm[train_idx]).float().to(device)
     tu_test    = torch.from_numpy(target_u_norm[test_idx]).float().to(device)
-    if dual:
-        tv_train = torch.from_numpy(target_v_norm[train_idx]).float().to(device)
-        tv_test  = torch.from_numpy(target_v_norm[test_idx]).float().to(device)
+    tv_train = torch.from_numpy(target_v_norm[train_idx]).float().to(device)
+    tv_test  = torch.from_numpy(target_v_norm[test_idx]).float().to(device)
+
+    print(f"  Branch output scales from SVD summary: u={u_output_scale:.6e}, v={v_output_scale:.6e}")
+    print(
+        f"  Physical target ranges: "
+        f"u=[{target_u_norm.min():.6e}, {target_u_norm.max():.6e}], "
+        f"v=[{target_v_norm.min():.6e}, {target_v_norm.max():.6e}]"
+    )
     
     # Build model
-    ic_dim = ic_norm.shape[1]
-    input_scale = 0.1 if problem_type == 'constant_force' else 1.0
-    if dual:
-        branch = DualHeadMLP(ic_dim, config['branch_hidden_dim'], n_modes,
-                             config['branch_n_layers'], input_scale=input_scale).to(device)
-    else:
-        branch = MLP(ic_dim, config['branch_hidden_dim'], n_modes,
-                     config['branch_n_layers'], input_scale=input_scale).to(device)
+    input_scale = 1.0
+    branch = DualHeadSensorBranch(
+        n_sensors=n_sensors,
+        hidden_dim=config['branch_hidden_dim'],
+        n_modes=n_modes,
+        n_layers=config['branch_n_layers'],
+        input_scale=input_scale,
+        u_output_scale=u_output_scale,
+        v_output_scale=v_output_scale,
+    ).to(device)
 
     optimizer = optim.Adam(branch.parameters(), lr=config['learning_rate'])
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=50, verbose=False)
     criterion = nn.MSELoss()
     
     # Training loop
-    if dual:
-        train_dataset = TensorDataset(ic_train, tu_train, tv_train)
-    else:
-        train_dataset = TensorDataset(ic_train, tu_train)
+    train_dataset = TensorDataset(ic_train, tu_train, tv_train)
     train_loader = DataLoader(train_dataset, batch_size=config['batch_size'], shuffle=True)
     
     train_losses, test_losses = [], []
@@ -352,34 +429,21 @@ def train_branch(
         branch.train()
         train_loss_epoch = 0.0
 
-        if dual:
-            for ic_batch, tu_batch, tv_batch in train_loader:
-                optimizer.zero_grad()
-                pred_u, pred_v = branch(ic_batch)
-                loss = criterion(pred_u, tu_batch) + criterion(pred_v, tv_batch)
-                loss.backward()
-                optimizer.step()
-                train_loss_epoch += loss.item()
-        else:
-            for ic_batch, tu_batch in train_loader:
-                optimizer.zero_grad()
-                pred = branch(ic_batch)
-                loss = criterion(pred, tu_batch)
-                loss.backward()
-                optimizer.step()
-                train_loss_epoch += loss.item()
+        for ic_batch, tu_batch, tv_batch in train_loader:
+            optimizer.zero_grad()
+            pred_u, pred_v = branch(ic_batch)
+            loss = criterion(pred_u, tu_batch) + criterion(pred_v, tv_batch)
+            loss.backward()
+            optimizer.step()
+            train_loss_epoch += loss.item()
         
         train_loss_epoch /= len(train_loader)
         train_losses.append(train_loss_epoch)
         
         branch.eval()
         with torch.no_grad():
-            if dual:
-                pu_test, pv_test = branch(ic_test)
-                test_loss = (criterion(pu_test, tu_test) + criterion(pv_test, tv_test)).item()
-            else:
-                pred_test = branch(ic_test)
-                test_loss = criterion(pred_test, tu_test).item()
+            pu_test, pv_test = branch(ic_test)
+            test_loss = (criterion(pu_test, tu_test) + criterion(pv_test, tv_test)).item()
         test_losses.append(test_loss)
         scheduler.step(test_loss)
         
@@ -393,14 +457,26 @@ def train_branch(
     branch.load_state_dict(best_state)
     branch.eval()
     
-    # Save checkpoint to output directory
-    os.makedirs(output_dir, exist_ok=True)
-    ckpt_path = os.path.join(output_dir, f'branch_svd_{problem_type}.pth')
+    # Save checkpoint to models directory (fallback to output directory)
+    ckpt_dir = models_dir if models_dir is not None else output_dir
+    os.makedirs(ckpt_dir, exist_ok=True)
+    ckpt_path = os.path.join(ckpt_dir, f'branch_svd_{problem_type}.pth')
     torch.save({
         'model_state_dict': best_state,
         'config': config,
         'input_scale': input_scale,
-        'dual': dual,
+        'dual': True,
+        'branch_output_scaled': True,
+        'u_output_scale': float(u_output_scale),
+        'v_output_scale': float(v_output_scale),
+        'n_sensors': int(n_sensors),
+        'uses_sensor_encoder': True,
+        'input_normalization': {
+            'raw_u_min': float(raw_u_min),
+            'raw_u_max': float(raw_u_max),
+            'raw_v_min': float(raw_v_min),
+            'raw_v_max': float(raw_v_max),
+        },
     }, ckpt_path)
     print(f"\n✓ Saved: {ckpt_path}")
     

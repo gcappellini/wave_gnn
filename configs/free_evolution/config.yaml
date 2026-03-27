@@ -1,10 +1,6 @@
-# Main configuration for free evolution problem (2D wave equation, no forcing)
-
 problem:
   name: free_evolution
-  description: "2D wave equation with random Fourier IC, no forcing"
-  
-  # Ground truth generation (MATLAB)
+  description: 2D wave equation with random Fourier IC, no forcing
   matlab:
     script: wave_2D_matlab_reference.m
     t_final: 1.0
@@ -14,51 +10,65 @@ problem:
     n_samples: 128
     wave_speed: 1.0
     damping: 1.0
-    forcing_amplitude: 0.0  # No forcing
+    forcing_amplitude: 0.0
     fourier_modes_k: 4
     fourier_modes_l: 4
-
-# SVD basis extraction
 svd:
   n_modes: 18
   visualize: false
-
-# Neural network architecture
+  magnitude_summary:
+    raw_u:
+      min: -0.671377
+      max: 0.711303
+    raw_v:
+      min: -4.3718
+      max: 4.28506
+    svd_basis_u:
+      min: 0.0
+      max: 0.00577382
+      mean: 0.00071895
+      std: 0.000695062
+    sigma_coeff_u:
+      min: 0.000403327
+      max: 150.295
+      mean: 14.7651
+      std: 21.5093
+    svd_basis_v:
+      min: 0.0
+      max: 0.00539508
+      mean: 0.00072088
+      std: 0.00069306
+    sigma_coeff_v:
+      min: 0.0428712
+      max: 629.967
+      mean: 117.618
+      std: 109.522
 networks:
   trunk:
-    input_dim: 3        # (x, y, t)
-    output_dim: 18      # n_modes
+    input_dim: 3
+    output_dim: 18
     hidden_dim: 128
     n_layers: 4
-  
+    visualize: false
   branch:
-    input_dim: 64       # 8x8 sensor grid
-    output_dim: 18      # n_modes
+    input_dim: 64
+    output_dim: 18
     hidden_dim: 128
     n_layers: 4
-
-# Training configuration
+    visualize: true
 training:
   batch_size: 256
-  learning_rate: 1.0e-3
+  learning_rate: 0.001
   train_test_split: 0.8
-  
-  # Stage-specific training epochs
-  trunk_n_epochs: 2000 #500
-  branch_n_epochs: 400 #500
+  trunk_n_epochs: 2000
+  branch_n_epochs: 2000
   deeponet_n_epochs: 400
-  
-  # Data sampling (for large problems)
-  max_trunk_points: 10000           # Max space-time points for trunk training (null = use all)
-  max_branch_samples: null          # Max samples for branch training (null = use all)
-  max_deeponet_samples: null        # Max samples for DeepONet joint training (null = use all)
-  points_per_sample: 5000           # Random space-time points per sample for DeepONet
-  
-  # Physics-informed loss (optional)
+  max_trunk_points: 10000
+  max_branch_samples: null
+  max_deeponet_samples: null
+  points_per_sample: 5000
   use_pinn_loss: false
   pde_loss_weight: 0.5
   n_collocation_per_batch: 4096
-
-# Sensors for branch network
 sensors:
-  n_sensors: 8  # 8x8 grid on domain [0,1]^2 at t=0
+  n_sensors: 8

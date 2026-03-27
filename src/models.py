@@ -47,7 +47,16 @@ class DualHeadMLP(nn.Module):
         input_scale: Scalar multiplier applied to the input before the backbone.
     """
 
-    def __init__(self, input_dim: int, hidden_dim: int, n_modes: int, n_layers: int, input_scale: float = 1.0):
+    def __init__(
+        self,
+        input_dim: int,
+        hidden_dim: int,
+        n_modes: int,
+        n_layers: int,
+        input_scale: float = 1.0,
+        u_output_scale: float = 1.0,
+        v_output_scale: float = 1.0,
+    ):
         super().__init__()
         self.input_scale = input_scale
 
@@ -61,6 +70,10 @@ class DualHeadMLP(nn.Module):
         self.head_u = nn.Linear(hidden_dim, n_modes)
         self.head_v = nn.Linear(hidden_dim, n_modes)
 
+        # Optional per-head output scaling (defaults preserve prior behavior magnitude)
+        self.register_buffer('u_output_scale', torch.tensor(float(u_output_scale), dtype=torch.float32))
+        self.register_buffer('v_output_scale', torch.tensor(float(v_output_scale), dtype=torch.float32))
+
     def forward(self, x):
         """
         Returns:
@@ -68,7 +81,66 @@ class DualHeadMLP(nn.Module):
         """
         x = x * self.input_scale
         h = self.backbone(x)
-        return self.head_u(h), self.head_v(h)
+        out_u = torch.tanh(self.head_u(h)) * self.u_output_scale
+        out_v = torch.tanh(self.head_v(h)) * self.v_output_scale
+        return out_u, out_v
+
+
+class DualHeadSensorBranch(nn.Module):
+    """Dual-head branch with 2-channel sensor encoder followed by DualHeadMLP."""
+
+    def __init__(
+        self,
+        n_sensors: int,
+        hidden_dim: int,
+        n_modes: int,
+        n_layers: int,
+        input_scale: float = 1.0,
+        encoder_channels: int = 8,
+        pool_kernel: int = 2,
+        pool_stride: int = 2,
+        u_output_scale: float = 1.0,
+        v_output_scale: float = 1.0,
+    ):
+        super().__init__()
+        self.n_sensors = n_sensors
+        self.pool_kernel = pool_kernel
+        self.pool_stride = pool_stride
+
+        self.encoder = nn.Sequential(
+            nn.Conv2d(2, encoder_channels, kernel_size=3, padding=1),
+            nn.Tanh(),
+            nn.Conv2d(encoder_channels, 1, kernel_size=3, padding=1),
+            nn.Tanh(),
+            nn.AvgPool2d(kernel_size=pool_kernel, stride=pool_stride),
+        )
+
+        with torch.no_grad():
+            dummy = torch.zeros(1, 2, n_sensors, n_sensors)
+            encoded = self.encoder(dummy)
+            self.encoded_shape = tuple(encoded.shape[1:])
+            encoded_dim = int(encoded.numel())
+
+        self.mlp = DualHeadMLP(
+            input_dim=encoded_dim,
+            hidden_dim=hidden_dim,
+            n_modes=n_modes,
+            n_layers=n_layers,
+            input_scale=input_scale,
+            u_output_scale=u_output_scale,
+            v_output_scale=v_output_scale,
+        )
+
+    def forward(self, x):
+        """Accepts either (B,2,S,S) sensors or flattened (B,2*S*S) inputs."""
+        if x.dim() == 2:
+            bsz = x.shape[0]
+            x = x.view(bsz, 2, self.n_sensors, self.n_sensors)
+        elif x.dim() != 4:
+            raise ValueError(f"Expected branch input of shape (B,2,S,S) or (B,2*S*S), got {tuple(x.shape)}")
+
+        features = self.encoder(x).flatten(start_dim=1)
+        return self.mlp(features)
 
 
 class DeepONet(nn.Module):
