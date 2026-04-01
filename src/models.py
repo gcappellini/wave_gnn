@@ -81,8 +81,8 @@ class DualHeadMLP(nn.Module):
         """
         x = x * self.input_scale
         h = self.backbone(x)
-        out_u = torch.tanh(self.head_u(h)) * self.u_output_scale
-        out_v = torch.tanh(self.head_v(h)) * self.v_output_scale
+        out_u = self.head_u(h) * self.u_output_scale
+        out_v = self.head_v(h) * self.v_output_scale
         return out_u, out_v
 
 
@@ -111,8 +111,8 @@ class DualHeadSensorBranch(nn.Module):
             nn.Conv2d(2, encoder_channels, kernel_size=3, padding=1),
             nn.Tanh(),
             nn.Conv2d(encoder_channels, 1, kernel_size=3, padding=1),
-            nn.Tanh(),
-            nn.AvgPool2d(kernel_size=pool_kernel, stride=pool_stride),
+            # nn.Tanh(),
+            # nn.AvgPool2d(kernel_size=pool_kernel, stride=pool_stride),
         )
 
         with torch.no_grad():

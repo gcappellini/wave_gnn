@@ -267,14 +267,44 @@ def main(cfg: DictConfig):
     # ====================================================================
     print("\nStep 4: Train Branch Network")
     print("-" * 70)
+
+    branch_reference_name = f"{problem_type}_branch"
+    branch_mat_path = data_dir / f"{branch_reference_name}.mat"
+    branch_svd_path = data_dir / f"svd_{branch_reference_name}.npy"
+
+    if not branch_mat_path.exists():
+        raise FileNotFoundError(
+            f"Branch reference dataset not found: {branch_mat_path}. "
+            f"Expected a .mat file named '{branch_reference_name}.mat'."
+        )
+    if not branch_svd_path.exists():
+        raise FileNotFoundError(
+            f"Branch reference SVD not found: {branch_svd_path}. "
+            f"Expected an .npy file named 'svd_{branch_reference_name}.npy'."
+        )
+
+    print(f"Loading branch reference dataset: {branch_mat_path}")
+    with h5py.File(branch_mat_path, 'r') as f:
+        u_fom_branch = np.array(f['U_data']).T
+        v_fom_branch = np.array(f['V_data']).T if 'V_data' in f else None
+
+    print(f"Loading branch reference SVD: {branch_svd_path}")
+    svd_data_branch = np.load(branch_svd_path, allow_pickle=True).item()
+
+    branch_svd_magnitude_summary = compute_svd_magnitude_summary(
+        svd_data=svd_data_branch,
+        n_modes=cfg.svd.n_modes,
+        u_fom=u_fom_branch,
+        v_fom=v_fom_branch,
+    )
     
     branch_checkpoint = models_dir / "branch_svd_free_evolution.pth"
     
     if cfg.training.branch_n_epochs > 0 and not branch_checkpoint.exists():
-        if 'magnitude_summary' not in cfg.svd:
+        if branch_svd_magnitude_summary is None:
             raise ValueError(
-                "cfg.svd.magnitude_summary is missing. "
-                "Run Step 2 (SVD) first to populate branch scaling parameters."
+                "Branch SVD magnitude summary is missing. "
+                "Provide svd_{problem_type}_branch.npy with the required metadata."
             )
 
         # Build config with all required fields
@@ -283,20 +313,20 @@ def main(cfg: DictConfig):
         branch_config['n_sensors'] = cfg.sensors.n_sensors
         branch_config['branch_hidden_dim'] = cfg.networks.branch.hidden_dim
         branch_config['branch_n_layers'] = cfg.networks.branch.n_layers
-        branch_config['svd_magnitude_summary'] = OmegaConf.to_container(
-            cfg.svd.magnitude_summary,
-            resolve=True,
+        branch_config['svd_magnitude_summary'] = _round_magnitude_summary(
+            branch_svd_magnitude_summary,
+            significant_digits=6,
         )
         
         branch_result = train_branch(
             config=branch_config,
-            u_fom=u_fom,
-            svd_data=svd_data,
+            u_fom=u_fom_branch,
+            svd_data=svd_data_branch,
             device=device,
             output_dir=str(output_dir),
             models_dir=str(models_dir),
             problem_type='free_evolution',
-            v_fom=v_fom,
+            v_fom=v_fom_branch,
         )
     else:
         print("Loading pre-trained branch model...")
@@ -307,9 +337,9 @@ def main(cfg: DictConfig):
         print(output_dir)
         plot_branch_validation(
             output_dir=output_dir,
-            u_fom=u_fom,
-            v_fom=v_fom,
-            svd_data=svd_data,
+            u_fom=u_fom_branch,
+            v_fom=v_fom_branch,
+            svd_data=svd_data_branch,
             models_dir=models_dir,
             device=device,
             problem_type=problem_type,
