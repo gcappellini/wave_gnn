@@ -18,31 +18,31 @@ svd:
   visualize: false
   magnitude_summary:
     raw_u:
-      min: -0.671377
-      max: 0.711303
+      min: -0.839621
+      max: 0.775219
     raw_v:
-      min: -4.3718
-      max: 4.28506
+      min: -3.4379
+      max: 3.63879
     svd_basis_u:
       min: 0.0
-      max: 0.00577382
-      mean: 0.00071895
-      std: 0.000695062
+      max: 0.0148531
+      mean: 0.00221094
+      std: 0.00226091
     sigma_coeff_u:
-      min: 0.000403327
-      max: 150.295
-      mean: 14.7651
-      std: 21.5093
+      min: 7.36489e-05
+      max: 50.3166
+      mean: 4.86045
+      std: 6.68257
     svd_basis_v:
       min: 0.0
-      max: 0.00539508
-      mean: 0.00072088
-      std: 0.00069306
+      max: 0.0136041
+      mean: 0.00224881
+      std: 0.00222325
     sigma_coeff_v:
-      min: 0.0428712
-      max: 629.967
-      mean: 117.618
-      std: 109.522
+      min: 0.0010943
+      max: 190.311
+      mean: 31.2539
+      std: 28.8003
 networks:
   trunk:
     input_dim: 3
@@ -51,9 +51,9 @@ networks:
     n_layers: 4
     visualize: false
   branch:
-    input_dim: 64
+    input_dim: 128
     output_dim: 18
-    hidden_dim: 128
+    hidden_dim: 256
     n_layers: 4
     visualize: true
 training:

@@ -7,6 +7,7 @@ Generates comparison plots and validation metrics for DeepONet models.
 import os
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
 import torch
 import torch.nn as nn
 from pathlib import Path
@@ -436,20 +437,38 @@ def plot_branch_validation(
     print("  Generating comparison plot...")
 
     def _plot_coeff_panel(panel_axes, coeffs_true, coeffs_pred, label_name):
-        # 1) Coefficient scatter (first few modes)
+        mode_errors = np.mean((coeffs_true - coeffs_pred) ** 2, axis=0)
+        sorted_mode_indices = np.argsort(mode_errors)
+
+        selected_modes = []
+        selected_mode_specs = [
+            ('Best', int(sorted_mode_indices[0]), 'tab:green'),
+            ('Worst', int(sorted_mode_indices[-1]), 'tab:red'),
+            ('Median', int(sorted_mode_indices[len(sorted_mode_indices) // 2]), 'tab:orange'),
+        ]
+        for role_name, mode_idx, color in selected_mode_specs:
+            if mode_idx not in {item[1] for item in selected_modes}:
+                selected_modes.append((role_name, mode_idx, color))
+
+        # Keep histogram aligned with the worst-performing mode in this panel.
+        histogram_role_name = 'Worst'
+        histogram_mode_idx = int(sorted_mode_indices[-1])
+
+        # 1) Coefficient scatter (best, worst, and median modes by MSE)
         ax = panel_axes[0, 0]
-        modes_to_plot = min(3, output_dim)
-        for mode_idx in range(modes_to_plot):
+        plotted_indices = [mode_idx for _, mode_idx, _ in selected_modes]
+        for role_name, mode_idx, color in selected_modes:
             ax.scatter(
                 coeffs_true[:, mode_idx],
                 coeffs_pred[:, mode_idx],
                 alpha=0.6,
-                s=30,
-                label=f'Mode {mode_idx}',
+                s=1,
+                color=color,
+                label=f'{role_name} (Mode {mode_idx})',
             )
         coeff_range_plot = [
-            coeffs_true[:, :modes_to_plot].min(),
-            coeffs_true[:, :modes_to_plot].max(),
+            min(coeffs_true[:, plotted_indices].min(), coeffs_pred[:, plotted_indices].min()),
+            max(coeffs_true[:, plotted_indices].max(), coeffs_pred[:, plotted_indices].max()),
         ]
         ax.plot(coeff_range_plot, coeff_range_plot, 'k--', linewidth=2, label='Perfect')
         ax.set_xlabel('SVD Coefficients (True, physical)', fontsize=11)
@@ -460,20 +479,38 @@ def plot_branch_validation(
 
         # 2) Error by mode
         ax = panel_axes[0, 1]
-        mode_errors = np.mean((coeffs_true - coeffs_pred) ** 2, axis=0)
-        ax.bar(range(output_dim), mode_errors, color='steelblue', alpha=0.7)
+        bar_colors = ['lightgray'] * output_dim
+        for _, mode_idx, color in selected_modes:
+            bar_colors[mode_idx] = color
+        ax.bar(range(output_dim), mode_errors, color=bar_colors, alpha=0.8)
+        ax.xaxis.set_major_locator(mticker.MaxNLocator(integer=True))
         ax.set_xlabel('Mode Index', fontsize=11)
         ax.set_ylabel('MSE', fontsize=11)
         ax.set_title(f'{label_name} Branch Error by Mode', fontsize=12)
         ax.grid(True, alpha=0.3, axis='y')
 
-        # 3) Coefficient histogram
+        # 3) Coefficient histogram for one of the selected ranked modes
         ax = panel_axes[1, 0]
-        ax.hist(coeffs_true[:, 0], bins=30, alpha=0.6, label=f'SVD {label_name} (Mode 0)', color='blue')
-        ax.hist(coeffs_pred[:, 0], bins=30, alpha=0.6, label=f'Branch {label_name} (Mode 0)', color='red')
+        ax.hist(
+            coeffs_true[:, histogram_mode_idx],
+            bins=30,
+            alpha=0.6,
+            label=f'SVD {label_name} ({histogram_role_name} Mode {histogram_mode_idx})',
+            color='blue',
+        )
+        ax.hist(
+            coeffs_pred[:, histogram_mode_idx],
+            bins=30,
+            alpha=0.6,
+            label=f'Branch {label_name} ({histogram_role_name} Mode {histogram_mode_idx})',
+            color='red',
+        )
         ax.set_xlabel('Coefficient Value (physical)', fontsize=11)
         ax.set_ylabel('Count', fontsize=11)
-        ax.set_title(f'{label_name} Coefficient Distribution (Mode 0)', fontsize=12)
+        ax.set_title(
+            f'{label_name} Coefficient Distribution ({histogram_role_name} Mode {histogram_mode_idx})',
+            fontsize=12,
+        )
         ax.legend(fontsize=9)
         ax.grid(True, alpha=0.3)
 

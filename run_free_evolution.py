@@ -304,6 +304,7 @@ def main(cfg: DictConfig):
         branch_result = {'status': 'loaded_from_checkpoint'}
     
     if cfg.networks.branch.visualize:
+        print(output_dir)
         plot_branch_validation(
             output_dir=output_dir,
             u_fom=u_fom,

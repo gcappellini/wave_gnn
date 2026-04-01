@@ -36,7 +36,10 @@ z_*/
 checkpoints/
 *.pt
 *.pth
-!models/*.pth
+# !models/*.pth
+models/*.pth
+data/*.mat
+data/*.npy
 best_model.pt
 
 # Figures and data
