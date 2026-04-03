@@ -81,99 +81,99 @@ def plot_validation_basic(
     print(f"Data shape: {u_fom.shape}")
     print(f"SVD modes: {n_modes}")
     
-    # ========================================================================
-    # 1. SVD RECONSTRUCTION ERROR
-    # ========================================================================
-    print("\n1. Computing SVD reconstruction...")
+    # # ========================================================================
+    # # 1. SVD RECONSTRUCTION ERROR
+    # # ========================================================================
+    # print("\n1. Computing SVD reconstruction...")
     
-    U_basis = svd_data['basis']  # (Nx*Ny*Nt, n_modes)
-    Sigma = svd_data['singular_values']  # (n_modes,)
-    VT = svd_data['coefficients']  # (n_modes, N_samples)
+    # U_basis = svd_data['basis']  # (Nx*Ny*Nt, n_modes)
+    # Sigma = svd_data['singular_values']  # (n_modes,)
+    # VT = svd_data['coefficients']  # (n_modes, N_samples)
     
-    print(f"  U_basis shape: {U_basis.shape}")
-    print(f"  Sigma shape: {Sigma.shape}")
-    print(f"  VT shape: {VT.shape}")
+    # print(f"  U_basis shape: {U_basis.shape}")
+    # print(f"  Sigma shape: {Sigma.shape}")
+    # print(f"  VT shape: {VT.shape}")
     
-    # Reconstruct: U_recon = U_basis @ diag(Sigma) @ VT
-    U_recon = U_basis @ np.diag(Sigma) @ VT  # (Nx*Ny*Nt, N_samples)
+    # # Reconstruct: U_recon = U_basis @ diag(Sigma) @ VT
+    # U_recon = U_basis @ np.diag(Sigma) @ VT  # (Nx*Ny*Nt, N_samples)
     
-    # Reshape back to original format
-    u_svd = U_recon.reshape(Nx, Ny, Nt, N_samples, order='F')
+    # # Reshape back to original format
+    # u_svd = U_recon.reshape(Nx, Ny, Nt, N_samples, order='F')
     
-    svd_error = np.mean((u_fom - u_svd) ** 2)
-    print(f"  SVD MSE: {svd_error:.6e}")
+    # svd_error = np.mean((u_fom - u_svd) ** 2)
+    # print(f"  SVD MSE: {svd_error:.6e}")
     
-    # Get number of modes from SVD data
-    n_modes = Sigma.shape[0]
+    # # Get number of modes from SVD data
+    # n_modes = Sigma.shape[0]
     
-    # ========================================================================
-    # 2. PLOT COMPARISONS
-    # ========================================================================
-    print("\n2. Generating plots...")
+    # # ========================================================================
+    # # 2. PLOT COMPARISONS
+    # # ========================================================================
+    # print("\n2. Generating plots...")
     
-    if cfg.svd.visualize:
-        # Plot: GT vs SVD Reconstruction vs Error
-        # Rows: different (time, sample) combinations
-        # Columns: GT, SVD Recon, Error
-        t_indices = [0, Nt//2, Nt-1]
-        t_labels = ['t=0', f't={Nt//2}', f't={Nt-1}']
+    # if cfg.svd.visualize:
+    #     # Plot: GT vs SVD Reconstruction vs Error
+    #     # Rows: different (time, sample) combinations
+    #     # Columns: GT, SVD Recon, Error
+    #     t_indices = [0, Nt//2, Nt-1]
+    #     t_labels = ['t=0', f't={Nt//2}', f't={Nt-1}']
         
-        n_rows = len(t_indices) * n_samples_plot
-        n_cols = 3
+    #     n_rows = len(t_indices) * n_samples_plot
+    #     n_cols = 3
         
-        fig, axes = plt.subplots(n_rows, n_cols, figsize=(12, 4*n_rows))
-        if n_rows == 1:
-            axes = axes[np.newaxis, :]
+    #     fig, axes = plt.subplots(n_rows, n_cols, figsize=(12, 4*n_rows))
+    #     if n_rows == 1:
+    #         axes = axes[np.newaxis, :]
         
-        row_idx = 0
-        for t_i, (t_idx, t_label) in enumerate(zip(t_indices, t_labels)):
-            for s_i in range(min(n_samples_plot, N_samples)):
-                # Get data for this (time, sample) pair
-                gt = u_fom[:, :, t_idx, s_i]
-                svd = u_svd[:, :, t_idx, s_i]
-                error = np.abs(gt - svd)
+    #     row_idx = 0
+    #     for t_i, (t_idx, t_label) in enumerate(zip(t_indices, t_labels)):
+    #         for s_i in range(min(n_samples_plot, N_samples)):
+    #             # Get data for this (time, sample) pair
+    #             gt = u_fom[:, :, t_idx, s_i]
+    #             svd = u_svd[:, :, t_idx, s_i]
+    #             error = np.abs(gt - svd)
                 
-                # Find common vmin/vmax for GT and SVD
-                vmin = min(gt.min(), svd.min())
-                vmax = max(gt.max(), svd.max())
+    #             # Find common vmin/vmax for GT and SVD
+    #             vmin = min(gt.min(), svd.min())
+    #             vmax = max(gt.max(), svd.max())
                 
-                # Column 0: Ground Truth
-                im0 = axes[row_idx, 0].imshow(gt, cmap='seismic', origin='lower', vmin=vmin, vmax=vmax)
-                axes[row_idx, 0].set_title(f'{t_label} Sample {s_i} - GT', fontsize=10)
-                axes[row_idx, 0].set_xticks([])
-                axes[row_idx, 0].set_yticks([])
-                plt.colorbar(im0, ax=axes[row_idx, 0], fraction=0.046)
+    #             # Column 0: Ground Truth
+    #             im0 = axes[row_idx, 0].imshow(gt, cmap='seismic', origin='lower', vmin=vmin, vmax=vmax)
+    #             axes[row_idx, 0].set_title(f'{t_label} Sample {s_i} - GT', fontsize=10)
+    #             axes[row_idx, 0].set_xticks([])
+    #             axes[row_idx, 0].set_yticks([])
+    #             plt.colorbar(im0, ax=axes[row_idx, 0], fraction=0.046)
                 
-                # Column 1: SVD Reconstruction
-                im1 = axes[row_idx, 1].imshow(svd, cmap='seismic', origin='lower', vmin=vmin, vmax=vmax)
-                axes[row_idx, 1].set_title(f'{t_label} Sample {s_i} - SVD', fontsize=10)
-                axes[row_idx, 1].set_xticks([])
-                axes[row_idx, 1].set_yticks([])
-                plt.colorbar(im1, ax=axes[row_idx, 1], fraction=0.046)
+    #             # Column 1: SVD Reconstruction
+    #             im1 = axes[row_idx, 1].imshow(svd, cmap='seismic', origin='lower', vmin=vmin, vmax=vmax)
+    #             axes[row_idx, 1].set_title(f'{t_label} Sample {s_i} - SVD', fontsize=10)
+    #             axes[row_idx, 1].set_xticks([])
+    #             axes[row_idx, 1].set_yticks([])
+    #             plt.colorbar(im1, ax=axes[row_idx, 1], fraction=0.046)
                 
-                # Column 2: Error
-                im2 = axes[row_idx, 2].imshow(error, cmap='hot', origin='lower')
-                axes[row_idx, 2].set_title(f'{t_label} Sample {s_i} - Error', fontsize=10)
-                axes[row_idx, 2].set_xticks([])
-                axes[row_idx, 2].set_yticks([])
-                cbar = plt.colorbar(im2, ax=axes[row_idx, 2], fraction=0.046)
-                cbar.set_label('|Error|', fontsize=8)
+    #             # Column 2: Error
+    #             im2 = axes[row_idx, 2].imshow(error, cmap='hot', origin='lower')
+    #             axes[row_idx, 2].set_title(f'{t_label} Sample {s_i} - Error', fontsize=10)
+    #             axes[row_idx, 2].set_xticks([])
+    #             axes[row_idx, 2].set_yticks([])
+    #             cbar = plt.colorbar(im2, ax=axes[row_idx, 2], fraction=0.046)
+    #             cbar.set_label('|Error|', fontsize=8)
                 
-                row_idx += 1
+    #             row_idx += 1
         
-        plt.suptitle('SVD Reconstruction Validation\n(Rows: time instant × sample, Columns: GT | SVD | Error)', 
-                    fontsize=12, y=0.995)
-        plt.tight_layout()
-        plt.savefig(os.path.join(output_dir, 'validation_svd_reconstruction.png'), dpi=150, bbox_inches='tight')
-        plt.close()
-        print(f"  ✓ Saved: validation_svd_reconstruction.png")
+    #     plt.suptitle('SVD Reconstruction Validation\n(Rows: time instant × sample, Columns: GT | SVD | Error)', 
+    #                 fontsize=12, y=0.995)
+    #     plt.tight_layout()
+    #     plt.savefig(os.path.join(output_dir, 'validation_svd_reconstruction.png'), dpi=150, bbox_inches='tight')
+    #     plt.close()
+    #     print(f"  ✓ Saved: validation_svd_reconstruction.png")
     
     # ========================================================================
     # SECTION 3: BRANCH VALIDATION
     # ========================================================================
-    if cfg.training.branch_n_epochs > 0:
-        plot_branch_validation(output_dir, u_fom, svd_data, models_dir, device, 
-                              problem_type=problem_type)
+    # if cfg.training.branch_n_epochs > 0:
+    #     plot_branch_validation(output_dir, u_fom, svd_data, models_dir, device, 
+    #                           problem_type=problem_type)
     
     # ========================================================================
     # SECTION 4: TRUNK VALIDATION
@@ -879,82 +879,61 @@ def plot_trunk_validation(
     print("  ✓ Trunk validation complete")
 
 
-def _load_deeponet_from_checkpoint(ckpt_path, device, problem_type):
+def _load_deeponet_from_checkpoint(ckpt_path, device, problem_type='free_evolution'):
     """
-    Load a DeepONet (single or dual-head) from a checkpoint file.
+    Load a dual-head free-evolution DeepONet from a checkpoint.
+
+    Expects:
+      - trunk:    DualHeadMLP  (trunk.backbone.* + trunk.head_u/head_v)
+      - branch:   DualHeadSensorBranch (branch_ic.encoder.* + branch_ic.mlp.*)
 
     Returns:
-        deeponet:         loaded and eval-mode model
-        dual:             bool, True if dual-head (u+v) model
-        branch_input_dim: int, total branch input dimension
-        Nx_Ny_grid:       None (grid loaded separately)
-        input_scale:      float
+        deeponet:      loaded, eval-mode model
+        n_sensors:     sensor grid side length  (branch input = 2 * n_sensors^2 flattened)
+        normalization: dict with raw_u_min/max and raw_v_min/max for input scaling
     """
     ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
     state = ckpt.get('model_state_dict', ckpt)
-    input_scale = ckpt.get('input_scale', 1.0)
-    dual = ckpt.get('dual', False)
-    u_output_scale = float(ckpt.get('u_output_scale', 1.0) or 1.0)
-    v_output_scale = float(ckpt.get('v_output_scale', 1.0) or 1.0)
 
-    # Infer trunk architecture
+    # --- Trunk: DualHeadMLP ---
     trunk_backbone_keys = [k for k in state if k.startswith('trunk.backbone.') and k.endswith('.weight')]
-    trunk_head_keys     = [k for k in state if k.startswith('trunk.head_u.') and k.endswith('.weight')]
-    trunk_net_keys      = [k for k in state if k.startswith('trunk.net.')     and k.endswith('.weight')]
+    if not trunk_backbone_keys or 'trunk.head_u.weight' not in state:
+        raise ValueError(f"Expected a DualHeadMLP trunk (backbone.* + head_u) in {ckpt_path}")
+    trunk_hidden_dim = state['trunk.backbone.0.weight'].shape[0]
+    n_modes          = state['trunk.head_u.weight'].shape[0]
+    trunk_n_layers   = len(trunk_backbone_keys) + 1
+    u_output_scale   = float(ckpt.get('u_output_scale', 1.0) or 1.0)
+    v_output_scale   = float(ckpt.get('v_output_scale', 1.0) or 1.0)
+    trunk_net = DualHeadMLP(
+        3, trunk_hidden_dim, n_modes, trunk_n_layers,
+        u_output_scale=u_output_scale, v_output_scale=v_output_scale,
+    ).to(device)
 
-    if dual or trunk_backbone_keys:
-        # DualHeadMLP trunk: backbone + head_u / head_v
-        trunk_first = state['trunk.backbone.0.weight']
-        trunk_hidden_dim = trunk_first.shape[0]
-        n_modes = state['trunk.head_u.weight'].shape[0]
-        n_backbone_linears = len(trunk_backbone_keys)
-        trunk_n_layers = n_backbone_linears + 1   # +1 for the head
-        trunk_net = DualHeadMLP(
-            3,
-            trunk_hidden_dim,
-            n_modes,
-            trunk_n_layers,
-            u_output_scale=u_output_scale,
-            v_output_scale=v_output_scale,
-        ).to(device)
-    else:
-        # MLP trunk
-        trunk_first = state['trunk.net.0.weight']
-        trunk_hidden_dim = trunk_first.shape[0]
-        n_modes = state[trunk_net_keys[-1]].shape[0]
-        trunk_n_layers = len(trunk_net_keys)
-        trunk_net = MLP(3, trunk_hidden_dim, n_modes, trunk_n_layers).to(device)
+    # --- Branch: DualHeadSensorBranch ---
+    enc_key = 'branch_ic.encoder.0.weight'
+    mlp_key = 'branch_ic.mlp.backbone.0.weight'
+    if enc_key not in state or mlp_key not in state:
+        raise ValueError(f"Expected a DualHeadSensorBranch branch_ic (encoder.* + mlp.*) in {ckpt_path}")
+    branch_hidden_dim    = state[mlp_key].shape[0]
+    branch_backbone_count = len([k for k in state if k.startswith('branch_ic.mlp.backbone.') and k.endswith('.weight')])
+    branch_n_layers      = branch_backbone_count + 1
+    encoder_channels     = state[enc_key].shape[0]
+    n_sensors = int(ckpt.get('config', {}).get('n_sensors') or ckpt.get('n_sensors', 0))
+    if n_sensors == 0:
+        raise ValueError(f"n_sensors not found in checkpoint: {ckpt_path}")
+    input_scale = float(ckpt.get('input_scale', 1.0) or 1.0)
+    branch_net = DualHeadSensorBranch(
+        n_sensors=n_sensors, hidden_dim=branch_hidden_dim, n_modes=n_modes,
+        n_layers=branch_n_layers, input_scale=input_scale,
+        encoder_channels=encoder_channels,
+    ).to(device)
 
-    # Infer branch architecture
-    branch_prefix = 'branch_ic' if problem_type == 'free_evolution' else 'branch_force'
-    branch_backbone_keys = [k for k in state if k.startswith(f'{branch_prefix}.backbone.') and k.endswith('.weight')]
-    branch_net_keys      = [k for k in state if k.startswith(f'{branch_prefix}.net.')      and k.endswith('.weight')]
-
-    if dual or branch_backbone_keys:
-        branch_first = state[f'{branch_prefix}.backbone.0.weight']
-        branch_input_dim  = branch_first.shape[1]
-        branch_hidden_dim = branch_first.shape[0]
-        n_branch_backbone = len(branch_backbone_keys)
-        branch_n_layers   = n_branch_backbone + 1
-        branch_net = DualHeadMLP(branch_input_dim, branch_hidden_dim, n_modes,
-                                 branch_n_layers, input_scale=input_scale).to(device)
-    else:
-        branch_first = state[f'{branch_prefix}.net.0.weight']
-        branch_input_dim  = branch_first.shape[1]
-        branch_hidden_dim = branch_first.shape[0]
-        branch_n_layers   = len(branch_net_keys)
-        branch_net = MLP(branch_input_dim, branch_hidden_dim, n_modes,
-                         branch_n_layers, input_scale=input_scale).to(device)
-
-    # Assemble DeepONet
-    if problem_type == 'free_evolution':
-        deeponet = DeepONet(trunk_net, branch_ic=branch_net, problem_type='free_evolution').to(device)
-    else:
-        deeponet = DeepONet(trunk_net, branch_force=branch_net, problem_type='constant_force').to(device)
-
+    deeponet = DeepONet(trunk_net, branch_ic=branch_net, problem_type='free_evolution').to(device)
     deeponet.load_state_dict(state)
     deeponet.eval()
-    return deeponet, dual, branch_input_dim, input_scale
+
+    normalization = ckpt.get('normalization', {})
+    return deeponet, n_sensors, normalization
 
 
 def _run_deeponet_inference(deeponet, measurements_tensor, coords_np, Nx, Ny, device, dual):
@@ -1049,75 +1028,132 @@ def plot_deeponet_validation(
             print("  Skipping DeepONet validation.")
             return
     
-    print("Loading DeepONet model...")
-    deeponet, dual, branch_input_dim, input_scale = _load_deeponet_from_checkpoint(
-        deeponet_checkpoint, device, problem_type
-    )
-    print(f"  DeepONet loaded — dual={dual}, branch_input_dim={branch_input_dim}")
+    print("Loading branch model for debugging (SVD basis reconstruction)...")
+    branch_ckpt_path = Path(models_dir) / "branch_svd_free_evolution.pth"
+    if not branch_ckpt_path.exists():
+        print(f"⚠ Warning: Branch checkpoint not found: {branch_ckpt_path}")
+        print("  Skipping validation.")
+        return
     
+    branch_ckpt = torch.load(str(branch_ckpt_path), map_location=device, weights_only=False)
+    branch_state = branch_ckpt.get('model_state_dict', branch_ckpt)
+    n_sensors = int(branch_ckpt.get('n_sensors', 0) or branch_ckpt.get('config', {}).get('n_sensors', 0))
+    if n_sensors == 0:
+        raise ValueError(f"n_sensors not found in branch checkpoint")
+    input_scale = float(branch_ckpt.get('input_scale', 1.0) or 1.0)
+    u_output_scale = float(branch_ckpt.get('u_output_scale', 1.0) or 1.0)
+    v_output_scale = float(branch_ckpt.get('v_output_scale', 1.0) or 1.0)
+
+    if any(k.startswith('encoder.') for k in branch_state.keys()):
+        branch = DualHeadSensorBranch(
+            n_sensors=n_sensors,
+            hidden_dim=branch_state['mlp.backbone.0.weight'].shape[0],
+            n_modes=branch_state['mlp.head_u.weight'].shape[0],
+            n_layers=len([k for k in branch_state.keys() if k.startswith('mlp.backbone.') and k.endswith('.weight')]) + 1,
+            input_scale=input_scale,
+            encoder_channels=branch_state['encoder.0.weight'].shape[0],
+        ).to(device)
+    else:
+        branch = DualHeadMLP(
+            input_dim=branch_state['backbone.0.weight'].shape[1],
+            hidden_dim=branch_state['backbone.0.weight'].shape[0],
+            n_modes=branch_state['head_u.weight'].shape[0],
+            n_layers=len([k for k in branch_state.keys() if k.startswith('backbone.') and k.endswith('.weight')]) + 1,
+            input_scale=input_scale,
+        ).to(device)
+    branch.load_state_dict(branch_state)
+    branch.eval()
+
+    normalization = branch_ckpt.get('input_normalization', {})
+    raw_u_min = float(normalization.get('raw_u_min', 0.0))
+    raw_u_max = float(normalization.get('raw_u_max', 1.0))
+    raw_v_min = float(normalization.get('raw_v_min', 0.0))
+    raw_v_max = float(normalization.get('raw_v_max', 1.0))
+
     grid_info = svd_data['grid_info']
     Nx, Ny, Nt = grid_info.astype(int)
+    n_modes = int(svd_data['basis'].shape[1])
 
-    # Build sensor measurements for this sample
-    n_sensors_u = int(np.sqrt(branch_input_dim // (2 if dual else 1)))
-    sensor_x = np.linspace(0, Nx - 1, n_sensors_u, dtype=int)
-    sensor_y = np.linspace(0, Ny - 1, n_sensors_u, dtype=int)
+    # Get SVD basis and coefficients
+    U_basis = svd_data['basis']  # (Nx*Ny*Nt, n_modes)
+    Sigma_u = svd_data['singular_values'][:n_modes]
+    VT_u = svd_data['coefficients'][:n_modes, :]
+
+    U_basis_v = svd_data.get('basis_v', None)
+    if U_basis_v is not None:
+        Sigma_v = svd_data['singular_values_v'][:n_modes]
+        VT_v = svd_data['coefficients_v'][:n_modes, :]
+    
+    # Get branch coefficients
+    sensor_x = np.linspace(0, Nx - 1, n_sensors, dtype=int)
+    sensor_y = np.linspace(0, Ny - 1, n_sensors, dtype=int)
 
     u_ic = u_fom[:, :, 0, sample_idx]
-    u_meas = np.array([u_ic[si, sj] for si in sensor_x for sj in sensor_y], dtype=np.float32)
+    u_meas_raw = np.array([u_ic[si, sj] for si in sensor_x for sj in sensor_y], dtype=np.float32)
+    u_meas_norm = 2 * (u_meas_raw - raw_u_min) / (raw_u_max - raw_u_min + 1e-10) - 1
 
-    if dual and v_fom is not None:
+    if v_fom is not None:
         v_ic = v_fom[:, :, 0, sample_idx]
-        v_meas = np.array([v_ic[si, sj] for si in sensor_x for sj in sensor_y], dtype=np.float32)
-        meas = np.concatenate([u_meas, v_meas])
+        v_meas_raw = np.array([v_ic[si, sj] for si in sensor_x for sj in sensor_y], dtype=np.float32)
+        v_meas_norm = 2 * (v_meas_raw - raw_v_min) / (raw_v_max - raw_v_min + 1e-10) - 1
+        meas = np.concatenate([u_meas_norm, v_meas_norm])
     else:
-        meas = u_meas
+        meas = u_meas_norm
 
     meas_tensor = torch.from_numpy(meas).float().unsqueeze(0).to(device)
+    
+    with torch.no_grad():
+        branch_out = branch(meas_tensor)
+    
+    if isinstance(branch_out, tuple):
+        coeffs_u = branch_out[0].cpu().numpy()[0]  # (n_modes,)
+        coeffs_v = branch_out[1].cpu().numpy()[0]  # (n_modes,)
+    else:
+        coeffs_u = branch_out.cpu().numpy()[0]
+        coeffs_v = None
 
     x = np.linspace(0, 1, Nx)
     y = np.linspace(0, 1, Ny)
     t = np.linspace(0, 1, Nt)
     X, Y, _ = np.meshgrid(x, y, t, indexing='ij')
 
-    # Determine number of rows: 1 per time instant for u, 1 per time instant for v if dual
+    dual = v_fom is not None
     n_rows = len(time_instants) * (2 if dual else 1)
     fig, axes = plt.subplots(n_rows, 3, figsize=(15, 4 * n_rows))
     if n_rows == 1:
         axes = axes[np.newaxis, :]
 
-    print(f"  Generating predictions for sample {sample_idx}...")
+    print(f"  Generating SVD basis reconstructions for sample {sample_idx}...")
+    print(f"  Branch coefficients (u): min={coeffs_u.min():.4e}, max={coeffs_u.max():.4e}")
+    if coeffs_v is not None:
+        print(f"  Branch coefficients (v): min={coeffs_v.min():.4e}, max={coeffs_v.max():.4e}")
+    
     row = 0
     for t_val in time_instants:
-        t_idx    = int(t_val * (Nt - 1))
+        t_idx = int(t_val * (Nt - 1))
         t_actual = t[t_idx]
-        coords_np = np.stack([
-            X[:, :, t_idx].flatten('F'),
-            Y[:, :, t_idx].flatten('F'),
-            np.full((Nx * Ny,), t_actual)
-        ], axis=1)
-
-        u_pred, v_pred = _run_deeponet_inference(deeponet, meas_tensor, coords_np, Nx, Ny, device, dual)
+        
+        # Reconstruct from SVD basis + branch coefficients
+        spatial_t_idx = np.arange(Nx * Ny * Nt).reshape(Nx, Ny, Nt, order='F')[:, :, t_idx].flatten('F')
+        u_pred = U_basis[spatial_t_idx, :n_modes] @ coeffs_u
+        u_pred = u_pred.reshape(Nx, Ny, order='F')
+        
         u_gt = u_fom[:, :, t_idx, sample_idx]
-
-        l2_u = _plot_field_row(axes[row], u_gt, u_pred, 'u', t_val)
+        l2_u = _plot_field_row(axes[row], u_gt, u_pred, 'u (SVD basis)', t_val)
         print(f"  t={t_val:.2f}  u: L2={l2_u:.4e}")
         row += 1
 
-        if dual and v_fom is not None and v_pred is not None:
+        if dual and coeffs_v is not None:
+            v_pred = U_basis_v[spatial_t_idx, :n_modes] @ coeffs_v
+            v_pred = v_pred.reshape(Nx, Ny, order='F')
             v_gt = v_fom[:, :, t_idx, sample_idx]
-            l2_v = _plot_field_row(axes[row], v_gt, v_pred, 'v', t_val)
+            l2_v = _plot_field_row(axes[row], v_gt, v_pred, 'v (SVD basis)', t_val)
             print(f"  t={t_val:.2f}  v: L2={l2_v:.4e}")
             row += 1
 
-    plt.suptitle(f'DeepONet Validation (Sample {sample_idx}, {problem_type})', fontsize=13, y=0.998)
+    plt.suptitle(f'Branch + SVD Basis Reconstruction (Sample {sample_idx})', fontsize=13, y=0.998)
     plt.tight_layout()
-    save_path = os.path.join(output_dir, f'validation_deeponet_sample{sample_idx}.png')
-    plt.savefig(save_path, dpi=150, bbox_inches='tight')
-    plt.close()
-    print(f"  ✓ Saved: validation_deeponet_sample{sample_idx}.png")
-    print("  ✓ DeepONet validation complete")
-    save_path = os.path.join(output_dir, f'validation_deeponet_sample{sample_idx}.png')
+    save_path = os.path.join(str(output_dir), f'validation_deeponet_sample{sample_idx}.png')
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
     plt.close()
     print(f"  ✓ Saved: validation_deeponet_sample{sample_idx}.png")
@@ -1186,23 +1222,29 @@ def plot_deeponet_test(
             return
     
     print("Loading DeepONet model...")
-    deeponet, dual, branch_input_dim, input_scale = _load_deeponet_from_checkpoint(
+    deeponet, n_sensors, normalization = _load_deeponet_from_checkpoint(
         deeponet_checkpoint, device, problem_type
     )
-    print(f"  DeepONet loaded — dual={dual}, branch_input_dim={branch_input_dim}")
-    
-    n_sensors_u = int(np.sqrt(branch_input_dim // (2 if dual else 1)))
-    sensor_x = np.linspace(0, Nx - 1, n_sensors_u, dtype=int)
-    sensor_y = np.linspace(0, Ny - 1, n_sensors_u, dtype=int)
+    print(f"  DeepONet loaded — n_sensors={n_sensors}")
+
+    raw_u_min = float(normalization.get('raw_u_min', 0.0))
+    raw_u_max = float(normalization.get('raw_u_max', 1.0))
+    raw_v_min = float(normalization.get('raw_v_min', 0.0))
+    raw_v_max = float(normalization.get('raw_v_max', 1.0))
+
+    sensor_x = np.linspace(0, Nx - 1, n_sensors, dtype=int)
+    sensor_y = np.linspace(0, Ny - 1, n_sensors, dtype=int)
     
     u_ic = u_fom[:, :, 0, 0]
-    u_meas = np.array([u_ic[si, sj] for si in sensor_x for sj in sensor_y], dtype=np.float32)
+    u_meas_raw = np.array([u_ic[si, sj] for si in sensor_x for sj in sensor_y], dtype=np.float32)
+    u_meas_norm = 2 * (u_meas_raw - raw_u_min) / (raw_u_max - raw_u_min + 1e-10) - 1
     if dual and v_fom is not None:
         v_ic = v_fom[:, :, 0, 0]
-        v_meas = np.array([v_ic[si, sj] for si in sensor_x for sj in sensor_y], dtype=np.float32)
-        meas = np.concatenate([u_meas, v_meas])
+        v_meas_raw = np.array([v_ic[si, sj] for si in sensor_x for sj in sensor_y], dtype=np.float32)
+        v_meas_norm = 2 * (v_meas_raw - raw_v_min) / (raw_v_max - raw_v_min + 1e-10) - 1
+        meas = np.concatenate([u_meas_norm, v_meas_norm])
     else:
-        meas = u_meas
+        meas = u_meas_norm
     meas_tensor = torch.from_numpy(meas).float().unsqueeze(0).to(device)
     
     x = np.linspace(0, 1, Nx)

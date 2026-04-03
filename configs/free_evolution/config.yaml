@@ -55,14 +55,14 @@ networks:
     output_dim: 18
     hidden_dim: 128
     n_layers: 4
-    visualize: true
+    visualize: false
 training:
   batch_size: 256
   learning_rate: 0.001
   train_test_split: 0.8
   trunk_n_epochs: 2000
   branch_n_epochs: 2000
-  deeponet_n_epochs: 400
+  deeponet_n_epochs: 0
   max_trunk_points: 10000
   max_branch_samples: null
   max_deeponet_samples: null

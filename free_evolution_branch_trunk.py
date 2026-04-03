@@ -30,7 +30,8 @@ from src.svd_analysis import (
     compute_svd_magnitude_summary,
 )
 from src.training import train_trunk, train_branch, train_deeponet_joint
-from src.plotting import plot_validation_basic, plot_trunk_validation, plot_branch_validation
+from src.plotting import plot_deeponet_test, plot_deeponet_validation, plot_trunk_validation, plot_branch_validation
+from src.models import DeepONet, DualHeadMLP, DualHeadSensorBranch
 
 
 def _round_to_significant(value: float, significant_digits: int = 6) -> float:
@@ -49,6 +50,204 @@ def _round_magnitude_summary(summary: dict, significant_digits: int = 6) -> dict
             for metric_name, metric_value in metrics.items()
         }
     return rounded
+
+
+def _load_dual_trunk_from_checkpoint(trunk_ckpt_path: Path, device: torch.device) -> tuple[DualHeadMLP, dict]:
+    """Load a dual-head trunk model from checkpoint and infer architecture."""
+
+    trunk_ckpt = torch.load(str(trunk_ckpt_path), map_location=device, weights_only=False)
+    trunk_state = trunk_ckpt.get('model_state_dict', trunk_ckpt)
+
+    if 'backbone.0.weight' not in trunk_state or 'head_u.weight' not in trunk_state or 'head_v.weight' not in trunk_state:
+        raise ValueError(
+            f"Checkpoint {trunk_ckpt_path} is not a dual-head trunk checkpoint. "
+            "Expected keys: backbone.0.weight, head_u.weight, head_v.weight"
+        )
+
+    input_dim = trunk_state['backbone.0.weight'].shape[1]
+    hidden_dim = trunk_state['backbone.0.weight'].shape[0]
+    n_modes = trunk_state['head_u.weight'].shape[0]
+    n_backbone_linears = len([k for k in trunk_state.keys() if k.startswith('backbone.') and k.endswith('.weight')])
+    n_layers = n_backbone_linears + 1
+
+    u_output_scale = float(trunk_ckpt.get('u_output_scale', 1.0) or 1.0)
+    v_output_scale = float(trunk_ckpt.get('v_output_scale', 1.0) or 1.0)
+
+    trunk = DualHeadMLP(
+        input_dim=input_dim,
+        hidden_dim=hidden_dim,
+        n_modes=n_modes,
+        n_layers=n_layers,
+        u_output_scale=u_output_scale,
+        v_output_scale=v_output_scale,
+    ).to(device)
+    trunk.load_state_dict(trunk_state)
+    trunk.eval()
+
+    metadata = {
+        'input_dim': input_dim,
+        'hidden_dim': hidden_dim,
+        'n_modes': n_modes,
+        'n_layers': n_layers,
+        'u_output_scale': u_output_scale,
+        'v_output_scale': v_output_scale,
+    }
+    return trunk, metadata
+
+
+def _load_dual_branch_from_checkpoint(
+    branch_ckpt_path: Path,
+    device: torch.device,
+    n_sensors: int,
+) -> tuple[torch.nn.Module, dict]:
+    """Load a dual-head branch model (sensor-encoder or legacy MLP) from checkpoint."""
+
+    branch_ckpt = torch.load(str(branch_ckpt_path), map_location=device, weights_only=False)
+    branch_state = branch_ckpt.get('model_state_dict', branch_ckpt)
+
+    input_scale = float(branch_ckpt.get('input_scale', 1.0) or 1.0)
+    u_output_scale = float(branch_ckpt.get('u_output_scale', 1.0) or 1.0)
+    v_output_scale = float(branch_ckpt.get('v_output_scale', 1.0) or 1.0)
+
+    if any(k.startswith('encoder.') for k in branch_state.keys()):
+        if 'mlp.backbone.0.weight' not in branch_state or 'mlp.head_u.weight' not in branch_state:
+            raise ValueError(
+                f"Checkpoint {branch_ckpt_path} has encoder keys but is missing dual MLP head keys."
+            )
+
+        hidden_dim = branch_state['mlp.backbone.0.weight'].shape[0]
+        n_modes = branch_state['mlp.head_u.weight'].shape[0]
+        n_backbone_linears = len([
+            k for k in branch_state.keys()
+            if k.startswith('mlp.backbone.') and k.endswith('.weight')
+        ])
+        n_layers = n_backbone_linears + 1
+        encoder_channels = branch_state['encoder.0.weight'].shape[0]
+
+        branch = DualHeadSensorBranch(
+            n_sensors=n_sensors,
+            hidden_dim=hidden_dim,
+            n_modes=n_modes,
+            n_layers=n_layers,
+            input_scale=input_scale,
+            encoder_channels=encoder_channels,
+            u_output_scale=u_output_scale,
+            v_output_scale=v_output_scale,
+        ).to(device)
+        branch.load_state_dict(branch_state)
+        branch.eval()
+
+        metadata = {
+            'arch': 'DualHeadSensorBranch',
+            'hidden_dim': hidden_dim,
+            'n_modes': n_modes,
+            'n_layers': n_layers,
+            'input_scale': input_scale,
+            'u_output_scale': u_output_scale,
+            'v_output_scale': v_output_scale,
+            'encoder_channels': encoder_channels,
+        }
+        return branch, metadata
+
+    if 'backbone.0.weight' in branch_state and 'head_u.weight' in branch_state and 'head_v.weight' in branch_state:
+        input_dim = branch_state['backbone.0.weight'].shape[1]
+        hidden_dim = branch_state['backbone.0.weight'].shape[0]
+        n_modes = branch_state['head_u.weight'].shape[0]
+        n_backbone_linears = len([k for k in branch_state.keys() if k.startswith('backbone.') and k.endswith('.weight')])
+        n_layers = n_backbone_linears + 1
+
+        branch = DualHeadMLP(
+            input_dim=input_dim,
+            hidden_dim=hidden_dim,
+            n_modes=n_modes,
+            n_layers=n_layers,
+            input_scale=input_scale,
+            u_output_scale=u_output_scale,
+            v_output_scale=v_output_scale,
+        ).to(device)
+        branch.load_state_dict(branch_state)
+        branch.eval()
+
+        metadata = {
+            'arch': 'DualHeadMLP',
+            'input_dim': input_dim,
+            'hidden_dim': hidden_dim,
+            'n_modes': n_modes,
+            'n_layers': n_layers,
+            'input_scale': input_scale,
+            'u_output_scale': u_output_scale,
+            'v_output_scale': v_output_scale,
+        }
+        return branch, metadata
+
+    raise ValueError(
+        f"Checkpoint {branch_ckpt_path} is not a supported dual-head branch checkpoint. "
+        "Expected either sensor-encoder keys (encoder.* + mlp.head_u/head_v) or dual MLP keys "
+        "(backbone.* + head_u/head_v)."
+    )
+
+
+def _compose_dual_deeponet_checkpoint(
+    trunk_ckpt_path: Path,
+    branch_ckpt_path: Path,
+    deeponet_ckpt_path: Path,
+    device: torch.device,
+    n_sensors: int,
+):
+    """Compose and save a dual-head DeepONet checkpoint from pretrained trunk and branch."""
+
+    trunk, trunk_meta = _load_dual_trunk_from_checkpoint(trunk_ckpt_path, device)
+    branch, branch_meta = _load_dual_branch_from_checkpoint(branch_ckpt_path, device, n_sensors)
+
+    # Extract sensor normalization stored in the branch checkpoint
+    branch_ckpt_raw = torch.load(str(branch_ckpt_path), map_location='cpu', weights_only=False)
+    input_norm = branch_ckpt_raw.get('input_normalization', {})
+    normalization = {
+        'raw_u_min': float(input_norm.get('raw_u_min', 0.0)),
+        'raw_u_max': float(input_norm.get('raw_u_max', 1.0)),
+        'raw_v_min': float(input_norm.get('raw_v_min', 0.0)),
+        'raw_v_max': float(input_norm.get('raw_v_max', 1.0)),
+    }
+
+    deeponet = DeepONet(
+        trunk=trunk,
+        branch_ic=branch,
+        problem_type='free_evolution',
+    ).to(device)
+    deeponet.eval()
+
+    deeponet_ckpt = {
+        'model_state_dict': deeponet.state_dict(),
+        'config': {
+            'n_modes': trunk_meta['n_modes'],
+            'n_sensors': n_sensors,
+            'trunk_hidden_dim': trunk_meta['hidden_dim'],
+            'trunk_n_layers': trunk_meta['n_layers'],
+            'branch_hidden_dim': branch_meta['hidden_dim'],
+            'branch_n_layers': branch_meta['n_layers'],
+            'branch_architecture': branch_meta['arch'],
+        },
+        'dual': True,
+        'input_scale': float(branch_meta.get('input_scale', 1.0)),
+        'u_output_scale': float(trunk_meta.get('u_output_scale', 1.0)),
+        'v_output_scale': float(trunk_meta.get('v_output_scale', 1.0)),
+        'normalization': normalization,
+        'composed_from_pretrained': True,
+        'source_checkpoints': {
+            'trunk': str(trunk_ckpt_path),
+            'branch': str(branch_ckpt_path),
+        },
+    }
+
+    deeponet_ckpt_path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(deeponet_ckpt, str(deeponet_ckpt_path))
+
+    print(f"✓ Composed dual-head DeepONet from pretrained checkpoints")
+    print(f"  Trunk checkpoint: {trunk_ckpt_path}")
+    print(f"  Branch checkpoint: {branch_ckpt_path}")
+    print(f"  Normalization: u=[{normalization['raw_u_min']:.4e}, {normalization['raw_u_max']:.4e}]"
+          f", v=[{normalization['raw_v_min']:.4e}, {normalization['raw_v_max']:.4e}]")
+    print(f"  Saved composed checkpoint: {deeponet_ckpt_path}")
 
 
 class TeeLogger:
@@ -258,6 +457,7 @@ def main(cfg: DictConfig):
         print("Loading pre-trained trunk model...")
         print(f"✓ Loaded: {trunk_checkpoint}")
         trunk_result = {'status': 'loaded_from_checkpoint'}
+        
     if cfg.networks.trunk.visualize:
         plot_trunk_validation(output_dir, svd_data, models_dir, device, 
                             problem_type=problem_type)
@@ -268,39 +468,39 @@ def main(cfg: DictConfig):
     print("\nStep 4: Train Branch Network")
     print("-" * 70)
 
-    branch_reference_name = f"{problem_type}_branch"
-    branch_mat_path = data_dir / f"{branch_reference_name}.mat"
-    branch_svd_path = data_dir / f"svd_{branch_reference_name}.npy"
-
-    if not branch_mat_path.exists():
-        raise FileNotFoundError(
-            f"Branch reference dataset not found: {branch_mat_path}. "
-            f"Expected a .mat file named '{branch_reference_name}.mat'."
-        )
-    if not branch_svd_path.exists():
-        raise FileNotFoundError(
-            f"Branch reference SVD not found: {branch_svd_path}. "
-            f"Expected an .npy file named 'svd_{branch_reference_name}.npy'."
-        )
-
-    print(f"Loading branch reference dataset: {branch_mat_path}")
-    with h5py.File(branch_mat_path, 'r') as f:
-        u_fom_branch = np.array(f['U_data']).T
-        v_fom_branch = np.array(f['V_data']).T if 'V_data' in f else None
-
-    print(f"Loading branch reference SVD: {branch_svd_path}")
-    svd_data_branch = np.load(branch_svd_path, allow_pickle=True).item()
-
-    branch_svd_magnitude_summary = compute_svd_magnitude_summary(
-        svd_data=svd_data_branch,
-        n_modes=cfg.svd.n_modes,
-        u_fom=u_fom_branch,
-        v_fom=v_fom_branch,
-    )
-    
     branch_checkpoint = models_dir / "branch_svd_free_evolution.pth"
-    
+
     if cfg.training.branch_n_epochs > 0 and not branch_checkpoint.exists():
+        branch_reference_name = f"{problem_type}_branch"
+        branch_mat_path = data_dir / f"{branch_reference_name}.mat"
+        branch_svd_path = data_dir / f"svd_{branch_reference_name}.npy"
+
+        if not branch_mat_path.exists():
+            raise FileNotFoundError(
+                f"Branch reference dataset not found: {branch_mat_path}. "
+                f"Expected a .mat file named '{branch_reference_name}.mat'."
+            )
+        if not branch_svd_path.exists():
+            raise FileNotFoundError(
+                f"Branch reference SVD not found: {branch_svd_path}. "
+                f"Expected an .npy file named 'svd_{branch_reference_name}.npy'."
+            )
+
+        print(f"Loading branch reference dataset: {branch_mat_path}")
+        with h5py.File(branch_mat_path, 'r') as f:
+            u_fom_branch = np.array(f['U_data']).T
+            v_fom_branch = np.array(f['V_data']).T if 'V_data' in f else None
+
+        print(f"Loading branch reference SVD: {branch_svd_path}")
+        svd_data_branch = np.load(branch_svd_path, allow_pickle=True).item()
+
+        branch_svd_magnitude_summary = compute_svd_magnitude_summary(
+            svd_data=svd_data_branch,
+            n_modes=cfg.svd.n_modes,
+            u_fom=u_fom_branch,
+            v_fom=v_fom_branch,
+        )
+    
         if branch_svd_magnitude_summary is None:
             raise ValueError(
                 "Branch SVD magnitude summary is missing. "
@@ -334,7 +534,15 @@ def main(cfg: DictConfig):
         branch_result = {'status': 'loaded_from_checkpoint'}
     
     if cfg.networks.branch.visualize:
-        print(output_dir)
+        branch_reference_name = f"{problem_type}_branch"
+        branch_mat_path = data_dir / f"{branch_reference_name}.mat"
+        print(f"Loading branch reference dataset: {branch_mat_path}")
+        with h5py.File(branch_mat_path, 'r') as f:
+            u_fom_branch = np.array(f['U_data']).T
+            v_fom_branch = np.array(f['V_data']).T if 'V_data' in f else None
+        branch_svd_path = data_dir / f"svd_{branch_reference_name}.npy"
+        svd_data_branch = np.load(branch_svd_path, allow_pickle=True).item()
+
         plot_branch_validation(
             output_dir=output_dir,
             u_fom=u_fom_branch,
@@ -348,13 +556,33 @@ def main(cfg: DictConfig):
     # # ====================================================================
     # # 5. OPTIONAL: JOINT DEEPONET TRAINING
     # # ====================================================================
-    # # if False:  # Toggle to enable
     # print("\nStep 5: Joint DeepONet Training")
     # print("-" * 70)
+
+    # if v_fom is None or 'basis_v' not in svd_data:
+    #     raise ValueError(
+    #         "Free-evolution DeepONet requires dual-head data (v_fom and svd_data['basis_v']). "
+    #         "Single-head branch/trunk is no longer supported in this pipeline."
+    #     )
     
     # deeponet_checkpoint = models_dir / "deeponet_free_evolution.pth"
     
-    # if cfg.training.deeponet_n_epochs > 0 and not deeponet_checkpoint.exists():
+    # trunk_pretrained = models_dir / "trunk_svd_free_evolution.pth"
+    # branch_pretrained = models_dir / "branch_svd_free_evolution.pth"
+    # if not trunk_pretrained.exists():
+    #     output_fallback = output_dir / "trunk_svd_free_evolution.pth"
+    #     if output_fallback.exists():
+    #         trunk_pretrained = output_fallback
+    # if not branch_pretrained.exists():
+    #     output_fallback = output_dir / "branch_svd_free_evolution.pth"
+    #     if output_fallback.exists():
+    #         branch_pretrained = output_fallback
+
+    # if deeponet_checkpoint.exists():
+    #     print("Loading pre-trained DeepONet model...")
+    #     print(f"✓ Loaded: {deeponet_checkpoint}")
+    #     deeponet_result = {'status': 'loaded_from_checkpoint'}
+    # elif cfg.training.deeponet_n_epochs > 0:
     #     # Build config with all required fields
     #     deeponet_config = OmegaConf.to_container(cfg.training)
     #     deeponet_config['n_modes'] = cfg.svd.n_modes
@@ -363,9 +591,7 @@ def main(cfg: DictConfig):
     #     deeponet_config['branch_hidden_dim'] = cfg.networks.branch.hidden_dim
     #     deeponet_config['branch_n_layers'] = cfg.networks.branch.n_layers
     #     deeponet_config['n_sensors'] = cfg.sensors.n_sensors
-        
-    #     trunk_pretrained = output_dir / "trunk_svd_free_evolution.pth"
-    #     branch_pretrained = output_dir / "branch_svd_free_evolution.pth"
+
     #     deeponet_result = train_deeponet_joint(
     #         config=deeponet_config,
     #         u_fom=u_fom,
@@ -379,27 +605,47 @@ def main(cfg: DictConfig):
     #         v_fom=v_fom,
     #     )
     # else:
-    #     print("Loading pre-trained DeepONet model...")
-    #     print(f"✓ Loaded: {deeponet_checkpoint}")
-    #     deeponet_result = {'status': 'loaded_from_checkpoint'}
+    #     print("DeepONet checkpoint not found; composing from pretrained dual-head trunk and branch...")
+    #     if not trunk_pretrained.exists():
+    #         raise FileNotFoundError(
+    #             f"Cannot compose DeepONet: trunk checkpoint not found at {trunk_pretrained}"
+    #         )
+    #     if not branch_pretrained.exists():
+    #         raise FileNotFoundError(
+    #             f"Cannot compose DeepONet: branch checkpoint not found at {branch_pretrained}"
+    #         )
+
+    #     _compose_dual_deeponet_checkpoint(
+    #         trunk_ckpt_path=trunk_pretrained,
+    #         branch_ckpt_path=branch_pretrained,
+    #         deeponet_ckpt_path=deeponet_checkpoint,
+    #         device=device,
+    #         n_sensors=cfg.sensors.n_sensors,
+    #     )
+    #     deeponet_result = {'status': 'composed_from_pretrained'}
     
     # # ====================================================================
-    # # 6. VALIDATION & VISUALIZATION
+    # # 6. DEEPONET VALIDATION
     # # ====================================================================
-    # print("\nStep 6: Validation & Visualization")
+    # print("\nStep 6: DeepONet Validation")
     # print("-" * 70)
-    
-    # plot_validation_basic(
+
+    # # plot_deeponet_test(
+    # #     output_dir=str(output_dir),
+    # #     data_dir=str(data_dir),
+    # #     models_dir=str(models_dir),
+    # #     device=device,
+    # #     problem_type='free_evolution',
+    # # )
+
+    # plot_deeponet_validation(
     #     output_dir=str(output_dir),
     #     u_fom=u_fom,
     #     v_fom=v_fom,
     #     svd_data=svd_data,
-    #     data_dir=str(data_dir),
     #     models_dir=str(models_dir),
     #     device=device,
-    #     n_samples_plot=3,
-    #     cfg=cfg,
-    #     problem_type='free_evolution'
+    #     problem_type='free_evolution',
     # )
     
     # # ====================================================================
