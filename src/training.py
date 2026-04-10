@@ -72,12 +72,7 @@ def train_trunk(
     n_modes = config['n_modes']
     targets_u_raw = U_basis[:, :n_modes]
 
-    dual = (problem_type == 'free_evolution')
-    if dual and ('basis_v' not in svd_data):
-        raise ValueError(
-            "free_evolution trunk training requires 'basis_v' in svd_data. "
-            "Re-run SVD extraction with velocity enabled."
-        )
+    dual = ('basis_v' in svd_data)
     if dual:
         V_basis = svd_data['basis_v']
         targets_v_raw = V_basis[:, :n_modes]
@@ -278,27 +273,27 @@ def train_branch(
     models_dir: str = None,
     problem_type: str = 'free_evolution',
     v_fom: np.ndarray = None,
+    f_fom: np.ndarray = None,
 ) -> dict:
-    """Train the dual branch network on (u0, v0) -> (sigma*coeff_u, sigma*coeff_v)."""
+    """Train dual-head sensor branch on IC/force sensors -> (sigma*coeff_u, sigma*coeff_v)."""
     
     print("\n" + "=" * 70)
-    print("TRAINING BRANCH NETWORK (IC → SVD Coefficients)")
+    print("TRAINING BRANCH NETWORK (Sensors → SVD Coefficients)")
     print("=" * 70)
     
-    # Extract IC sensors
+    # Extract dimensions
     Nx, Ny, Nt, N_samples = u_fom.shape
     n_modes = config['n_modes']
     n_sensors = config['n_sensors']
 
-    if problem_type != 'free_evolution':
-        raise ValueError(
-            "train_branch only supports the dual free_evolution branch architecture."
-        )
-
     if v_fom is None or 'coefficients_v' not in svd_data:
         raise ValueError(
-            "free_evolution branch training requires both v_fom and coefficients_v in svd_data"
+            "Dual branch training requires both v_fom and coefficients_v in svd_data"
         )
+
+    use_force_channel = (problem_type == 'constant_force')
+    if use_force_channel and f_fom is None:
+        raise ValueError("constant_force branch training requires f_fom for the third branch channel")
 
     summary = config.get('svd_magnitude_summary', None)
     if summary is None:
@@ -306,6 +301,11 @@ def train_branch(
 
     raw_u_min, raw_u_max = _get_summary_range(summary, 'raw_u')
     raw_v_min, raw_v_max = _get_summary_range(summary, 'raw_v')
+    if use_force_channel:
+        raw_f_min, raw_f_max = _get_summary_range(summary, 'raw_f')
+    else:
+        raw_f_min, raw_f_max = 0.0, 1.0
+
     u_output_scale = float(summary['sigma_coeff_u']['max'])
     v_output_scale = float(summary['sigma_coeff_v']['max'])
     if u_output_scale <= 0 or v_output_scale <= 0:
@@ -318,6 +318,7 @@ def train_branch(
         sample_indices = np.random.choice(N_samples, max_branch_samples, replace=False)
         u_fom_subset = u_fom[:, :, :, sample_indices]
         v_fom_subset = v_fom[:, :, :, sample_indices]
+        f_fom_subset = f_fom[:, :, sample_indices] if use_force_channel else None
         N_samples_train = max_branch_samples
     else:
         if max_branch_samples:
@@ -326,6 +327,7 @@ def train_branch(
             print(f"Using all {N_samples} samples")
         u_fom_subset = u_fom
         v_fom_subset = v_fom
+        f_fom_subset = f_fom if use_force_channel else None
         N_samples_train = N_samples
         sample_indices = None
     
@@ -352,17 +354,41 @@ def train_branch(
     u_s_norm = _scale_to_ominus1_1(u_sensors, raw_u_min, raw_u_max)
     v_s_norm = _scale_to_ominus1_1(v_sensors, raw_v_min, raw_v_max)
 
-    # Two-channel sensor grid: (N, 2, S, S)
+    # Base channels: u and v sensor grids
     u_grid = u_s_norm.reshape(N_samples_train, n_sensors, n_sensors)
     v_grid = v_s_norm.reshape(N_samples_train, n_sensors, n_sensors)
-    ic_norm = np.stack([u_grid, v_grid], axis=1)
-    print(f"  Branch input raw ranges from cfg: u=[{raw_u_min:.6e}, {raw_u_max:.6e}], v=[{raw_v_min:.6e}, {raw_v_max:.6e}]")
+
+    if use_force_channel:
+        f_sensors = []
+        for s in range(N_samples_train):
+            f_field = f_fom_subset[:, :, s]
+            sensors = [f_field[si, sj] for si in sensor_x_indices for sj in sensor_y_indices]
+            f_sensors.append(sensors)
+        f_sensors = np.array(f_sensors)
+        f_s_norm = _scale_to_ominus1_1(f_sensors, raw_f_min, raw_f_max)
+        f_grid = f_s_norm.reshape(N_samples_train, n_sensors, n_sensors)
+        ic_norm = np.stack([u_grid, v_grid, f_grid], axis=1)
+        input_channels = 3
+    else:
+        f_s_norm = None
+        ic_norm = np.stack([u_grid, v_grid], axis=1)
+        input_channels = 2
+
+    print(
+        f"  Branch input raw ranges from cfg: "
+        f"u=[{raw_u_min:.6e}, {raw_u_max:.6e}], v=[{raw_v_min:.6e}, {raw_v_max:.6e}]"
+        + (f", f=[{raw_f_min:.6e}, {raw_f_max:.6e}]" if use_force_channel else "")
+    )
     print(
         f"  Branch normalized input ranges: "
         f"u=[{u_s_norm.min():.6e}, {u_s_norm.max():.6e}], "
         f"v=[{v_s_norm.min():.6e}, {v_s_norm.max():.6e}]"
+        + (f", f=[{f_s_norm.min():.6e}, {f_s_norm.max():.6e}]" if use_force_channel else "")
     )
-    print(f"  Dual-field branch: input tensor = {ic_norm.shape} (N, 2, {n_sensors}, {n_sensors})")
+    print(
+        f"  Dual-field branch: input tensor = {ic_norm.shape} "
+        f"(N, {input_channels}, {n_sensors}, {n_sensors})"
+    )
     
     # SVD coefficients as targets (u)
     VT_u = svd_data['coefficients'][:n_modes, :]
@@ -407,6 +433,7 @@ def train_branch(
         n_modes=n_modes,
         n_layers=config['branch_n_layers'],
         input_scale=input_scale,
+        input_channels=input_channels,
         u_output_scale=u_output_scale,
         v_output_scale=v_output_scale,
     ).to(device)
@@ -470,12 +497,15 @@ def train_branch(
         'u_output_scale': float(u_output_scale),
         'v_output_scale': float(v_output_scale),
         'n_sensors': int(n_sensors),
+        'n_input_channels': int(input_channels),
         'uses_sensor_encoder': True,
         'input_normalization': {
             'raw_u_min': float(raw_u_min),
             'raw_u_max': float(raw_u_max),
             'raw_v_min': float(raw_v_min),
             'raw_v_max': float(raw_v_max),
+            'raw_f_min': float(raw_f_min) if use_force_channel else None,
+            'raw_f_max': float(raw_f_max) if use_force_channel else None,
         },
     }, ckpt_path)
     print(f"\n✓ Saved: {ckpt_path}")
@@ -534,7 +564,8 @@ def train_deeponet_joint(
     if problem_type == 'constant_force' and f_data is None:
         raise ValueError("f_data must be provided for 'constant_force' problem")
     
-    dual = (problem_type == 'free_evolution') and (v_fom is not None) and ('basis_v' in svd_data)
+    dual = (v_fom is not None) and ('basis_v' in svd_data)
+    use_force_channel = (problem_type == 'constant_force') and dual
 
     # Extract data dimensions
     Nx, Ny, Nt, N_samples = u_fom.shape
@@ -580,9 +611,16 @@ def train_deeponet_joint(
     # ------------------------------------------------------------------ #
     input_scale = 0.1 if problem_type == 'constant_force' else 1.0
     if dual:
-        measurement_dim = 2 * n_sensors * n_sensors   # [u0 ∥ v0]
-        branch = DualHeadMLP(measurement_dim, config['branch_hidden_dim'], n_modes,
-                             config['branch_n_layers'], input_scale=input_scale).to(device)
+        input_channels = 3 if use_force_channel else 2
+        measurement_dim = input_channels * n_sensors * n_sensors
+        branch = DualHeadSensorBranch(
+            n_sensors=n_sensors,
+            hidden_dim=config['branch_hidden_dim'],
+            n_modes=n_modes,
+            n_layers=config['branch_n_layers'],
+            input_scale=input_scale,
+            input_channels=input_channels,
+        ).to(device)
     else:
         measurement_dim = n_sensors * n_sensors
         branch = MLP(measurement_dim, config['branch_hidden_dim'], n_modes,
@@ -598,7 +636,7 @@ def train_deeponet_joint(
         print("  Initializing branch from scratch")
     
     # Create DeepONet
-    if problem_type == 'free_evolution':
+    if dual:
         deeponet = DeepONet(
             trunk=trunk,
             branch_ic=branch,
@@ -618,7 +656,8 @@ def train_deeponet_joint(
     print(f"\nDeepONet architecture:")
     model_type = "DualHeadMLP" if dual else "MLP"
     print(f"  Trunk  ({model_type}): 3 → {config['trunk_hidden_dim']} ({config['trunk_n_layers']} layers) → {n_modes} × {'2 heads' if dual else '1 head'}")
-    print(f"  Branch ({model_type}): {measurement_dim} → {config['branch_hidden_dim']} ({config['branch_n_layers']} layers) → {n_modes} × {'2 heads' if dual else '1 head'}")
+    branch_type = "DualHeadSensorBranch" if dual else model_type
+    print(f"  Branch ({branch_type}): {measurement_dim} → {config['branch_hidden_dim']} ({config['branch_n_layers']} layers) → {n_modes} × {'2 heads' if dual else '1 head'}")
     print(f"  Problem type: {problem_type}")
     
     # ------------------------------------------------------------------ #
@@ -629,7 +668,7 @@ def train_deeponet_joint(
     sensor_x_indices = np.linspace(0, Nx - 1, n_sensors, dtype=int)
     sensor_y_indices = np.linspace(0, Ny - 1, n_sensors, dtype=int)
     
-    if problem_type == 'free_evolution':
+    if dual:
         u_sensors = []
         for s in range(N_samples):
             u_ic = u_fom[:, :, 0, s]
@@ -638,18 +677,30 @@ def train_deeponet_joint(
         u_s_min, u_s_max = u_sensors.min(), u_sensors.max()
         u_s_norm = 2 * (u_sensors - u_s_min) / (u_s_max - u_s_min + 1e-10) - 1
 
-        if dual:
-            v_sensors = []
+        v_sensors = []
+        for s in range(N_samples):
+            v_ic = v_fom[:, :, 0, s]
+            v_sensors.append([v_ic[si, sj] for si in sensor_x_indices for sj in sensor_y_indices])
+        v_sensors = np.array(v_sensors)
+        v_s_min, v_s_max = v_sensors.min(), v_sensors.max()
+        v_s_norm = 2 * (v_sensors - v_s_min) / (v_s_max - v_s_min + 1e-10) - 1
+
+        u_grid = u_s_norm.reshape(N_samples, n_sensors, n_sensors)
+        v_grid = v_s_norm.reshape(N_samples, n_sensors, n_sensors)
+        if use_force_channel:
+            force_sensors = []
             for s in range(N_samples):
-                v_ic = v_fom[:, :, 0, s]
-                v_sensors.append([v_ic[si, sj] for si in sensor_x_indices for sj in sensor_y_indices])
-            v_sensors = np.array(v_sensors)
-            v_s_min, v_s_max = v_sensors.min(), v_sensors.max()
-            v_s_norm = 2 * (v_sensors - v_s_min) / (v_s_max - v_s_min + 1e-10) - 1
-            measurements = np.concatenate([u_s_norm, v_s_norm], axis=1)
+                f_field = f_data[:, :, s]
+                force_sensors.append([f_field[si, sj] for si in sensor_x_indices for sj in sensor_y_indices])
+            force_sensors = np.array(force_sensors)
+            f_s_min, f_s_max = force_sensors.min(), force_sensors.max()
+            f_s_norm = 2 * (force_sensors - f_s_min) / (f_s_max - f_s_min + 1e-10) - 1
+            f_grid = f_s_norm.reshape(N_samples, n_sensors, n_sensors)
+            measurements = np.stack([u_grid, v_grid, f_grid], axis=1)
         else:
-            measurements = u_s_norm
-            v_s_min = v_s_max = 0.0
+            f_s_min = f_s_max = 0.0
+            measurements = np.stack([u_grid, v_grid], axis=1)
+
         measurements_min = measurements.min()
         measurements_max = measurements.max()
     else:  # constant_force
@@ -694,17 +745,23 @@ def train_deeponet_joint(
         pt_indices = np.random.choice(coords_all.shape[0], n_pts, replace=False)
         
         coords_list.append(coords_all[pt_indices])
-        meas_list_out.append(np.tile(measurements[s], (n_pts, 1)))
+        if dual:
+            meas_list_out.append(np.repeat(measurements[s][None, ...], n_pts, axis=0))
+        else:
+            meas_list_out.append(np.tile(measurements[s], (n_pts, 1)))
         u_tgt_list.append(u_targets_all[pt_indices, s])
         if dual:
             v_tgt_list.append(v_targets_all[pt_indices, s])
     
     coords_train_np = np.vstack(coords_list)
-    meas_train_np   = np.vstack(meas_list_out)
+    meas_train_np   = np.concatenate(meas_list_out, axis=0)
     u_tgt_np        = np.hstack(u_tgt_list)
     
     print(f"  Training points: {len(u_tgt_np)}")
-    print(f"  Measurement dim: {measurements.shape[1]}")
+    if dual:
+        print(f"  Measurement shape: {measurements.shape[1:]} (channels, sensors, sensors)")
+    else:
+        print(f"  Measurement dim: {measurements.shape[1]}")
     print(f"  u target range: [{u_fom.min():.4f}, {u_fom.max():.4f}]")
     if dual:
         v_tgt_np = np.hstack(v_tgt_list)
@@ -805,12 +862,15 @@ def train_deeponet_joint(
         'config': config,
         'input_scale': input_scale,
         'dual': dual,
+        'n_input_channels': int(input_channels) if dual else 1,
         'normalization': {
             'u_min': u_min, 'u_max': u_max,
             'v_min': float(v_min) if dual else None,
             'v_max': float(v_max) if dual else None,
             'measurements_min': measurements_min,
             'measurements_max': measurements_max,
+            'force_measurements_min': float(f_s_min) if (dual and use_force_channel) else None,
+            'force_measurements_max': float(f_s_max) if (dual and use_force_channel) else None,
         }
     }, ckpt_path)
     print(f"\n✓ Saved: {ckpt_path}")

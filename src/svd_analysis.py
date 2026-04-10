@@ -520,6 +520,7 @@ def compute_svd_magnitude_summary(
     n_modes: int = None,
     u_fom: np.ndarray = None,
     v_fom: np.ndarray = None,
+    f_fom: np.ndarray = None,
 ) -> dict:
     """Compute SVD magnitude summary plus raw-field extrema when available."""
 
@@ -530,6 +531,9 @@ def compute_svd_magnitude_summary(
 
     if v_fom is not None:
         stats.append(_compute_raw_min_max_stats('raw_v', v_fom))
+
+    if f_fom is not None:
+        stats.append(_compute_raw_min_max_stats('raw_f', f_fom))
 
     basis = svd_data.get('basis', None)
     sigma = svd_data.get('singular_values', None)

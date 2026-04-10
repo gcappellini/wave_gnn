@@ -447,7 +447,7 @@ def main(cfg: DictConfig):
         
         trunk_result = train_trunk(
             config=trunk_config,
-            svd_data=np.load(data_dir / "svd_free_evolution_branch.npy", allow_pickle=True).item(),
+            svd_data=np.load(data_dir / "svd_free_evolution.npy", allow_pickle=True).item(),
             device=device,
             output_dir=str(output_dir),
             models_dir=str(models_dir),
@@ -459,7 +459,7 @@ def main(cfg: DictConfig):
         trunk_result = {'status': 'loaded_from_checkpoint'}
         
     if cfg.networks.trunk.visualize:
-        svd_data_trunk_val = np.load(data_dir / "svd_free_evolution_branch.npy", allow_pickle=True).item()
+        svd_data_trunk_val = np.load(data_dir / "svd_free_evolution.npy", allow_pickle=True).item()
         plot_trunk_validation(output_dir, svd_data_trunk_val, models_dir, device,
                               problem_type=problem_type)
     
@@ -472,7 +472,7 @@ def main(cfg: DictConfig):
     branch_checkpoint = models_dir / "branch_svd_free_evolution.pth"
 
     if cfg.training.branch_n_epochs > 0 and not branch_checkpoint.exists():
-        branch_reference_name = f"{problem_type}_branch"
+        branch_reference_name = f"{problem_type}"
         branch_mat_path = data_dir / f"{branch_reference_name}.mat"
         branch_svd_path = data_dir / f"svd_{branch_reference_name}.npy"
 
@@ -505,7 +505,7 @@ def main(cfg: DictConfig):
         if branch_svd_magnitude_summary is None:
             raise ValueError(
                 "Branch SVD magnitude summary is missing. "
-                "Provide svd_{problem_type}_branch.npy with the required metadata."
+                "Provide svd_{problem_type}.npy with the required metadata."
             )
 
         # Build config with all required fields
@@ -535,7 +535,7 @@ def main(cfg: DictConfig):
         branch_result = {'status': 'loaded_from_checkpoint'}
     
     if cfg.networks.branch.visualize:
-        branch_reference_name = f"{problem_type}_branch"
+        branch_reference_name = f"{problem_type}"
         branch_mat_path = data_dir / f"{branch_reference_name}.mat"
         print(f"Loading branch reference dataset: {branch_mat_path}")
         with h5py.File(branch_mat_path, 'r') as f:
@@ -560,7 +560,7 @@ def main(cfg: DictConfig):
     print("\nStep 5: Joint DeepONet Training")
     print("-" * 70)
 
-    svd_data_branch = np.load(data_dir / "svd_free_evolution_branch.npy", allow_pickle=True).item()
+    svd_data_branch = np.load(data_dir / "svd_free_evolution.npy", allow_pickle=True).item()
 
     if v_fom is None or 'basis_v' not in svd_data_branch:
         raise ValueError(
@@ -633,13 +633,6 @@ def main(cfg: DictConfig):
     print("\nStep 6: DeepONet Validation")
     print("-" * 70)
 
-    # plot_deeponet_test(
-    #     output_dir=str(output_dir),
-    #     data_dir=str(data_dir),
-    #     models_dir=str(models_dir),
-    #     device=device,
-    #     problem_type='free_evolution',
-    # )
 
     plot_deeponet_validation(
         output_dir=str(output_dir),

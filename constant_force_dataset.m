@@ -4,11 +4,11 @@ clc
 
 % Simulation setup
 t_f = 1;
-tlist = linspace(0, t_f, 100);   % Nt time steps
+tlist = linspace(0, t_f, 10);   % Nt time steps
 Nt = numel(tlist);
 
 % Dataset parameters
-N_samples = 128;                  % randomized force location
+N_samples = 5000;                  % randomized force location
 Nx = 100; Ny = 100;               % uniform query grid
 
 % Grids for storage and visualization
@@ -17,13 +17,14 @@ y_grid = linspace(0, 1, Ny);
 [Xq, Yq] = meshgrid(x_grid, y_grid);
 
 % PDE coefficients
-global source_width source_amp source_center_x source_center_y source_sign
+global source_radius source_amp source_center_x source_center_y source_sign
 wave_speed = 1;
 d = 20;
 a = 0;
 m = 0.1;
-source_width = 0.3;
+source_radius = 0.15;
 source_amp = 10.0;
+assert(source_radius > 0 && source_radius < 0.5, 'source_radius must lie in (0, 0.5).');
 % Defaults so coefficient evaluation works before per-sample overrides
 source_center_x = 0.5;
 source_center_y = 0.5;
@@ -49,23 +50,21 @@ mesh = model.Mesh;
 U_data = zeros(Nx, Ny, Nt, N_samples);
 V_data = zeros(Nx, Ny, Nt, N_samples);
 F_data = zeros(Nx, Ny, N_samples);  % Force field (constant in time)
+source_centers = zeros(N_samples, 2);
+source_signs = zeros(N_samples, 1);
 
 cpu_time_start = cputime;
 for sample_id = 1:N_samples
-    % Random force location (range [0.2, 0.8] in both x and y)
-    source_center_x = 0.2 + 0.6 * rand();
-    source_center_y = 0.2 + 0.6 * rand();
+    % Sample centers so the circular support stays strictly inside the domain.
+    source_center_x = source_radius + (1 - 2 * source_radius) * rand();
+    source_center_y = source_radius + (1 - 2 * source_radius) * rand();
     source_sign = 2 * randi([0,1]) - 1;  % Random sign: +1 or -1
+    source_centers(sample_id, :) = [source_center_x, source_center_y];
+    source_signs(sample_id) = source_sign;
     
-    % Compute and store force field for this sample
-    for xi = 1:Nx
-        for yi = 1:Ny
-            x_val = x_grid(xi);
-            y_val = y_grid(yi);
-            F_data(xi, yi, sample_id) = source_sign * source_amp * ...
-                exp(-((x_val - source_center_x)^2 + (y_val - source_center_y)^2) / source_width^2);
-        end
-    end
+    % Compute and store the piecewise-constant circular force field.
+    radial_mask = (Xq - source_center_x).^2 + (Yq - source_center_y).^2 <= source_radius^2;
+    F_data(:, :, sample_id) = (source_sign * source_amp * double(radial_mask))';
 
     % Zero ICs 
     [u0_fun, ut0_fun] = generate_zero_ic();
@@ -107,7 +106,7 @@ cpu_time_end = cputime - cpu_time_start
 
 % Save dataset to script directory
 script_dir = fileparts(mfilename('fullpath'));
-save(fullfile(script_dir, 'data', 'constant_force.mat'), 'U_data', 'V_data', 'F_data', 'x_grid', 'y_grid', 'tlist', '-v7.3');
+save(fullfile(script_dir, 'data', 'constant_force.mat'), 'U_data', 'V_data', 'F_data', 'source_centers', 'source_signs', 'x_grid', 'y_grid', 'tlist', '-v7.3');
 
 % Visualize three random samples at mid time (displacement and force field)
 mid_idx = round(Nt / 2);
@@ -135,8 +134,9 @@ end
 
 % ------ Helper functions ------
 function fcoeff = force(location, state)
-    global source_sign source_width source_amp source_center_x source_center_y %#ok<NUSED>
-    fcoeff = source_sign * source_amp * exp(-(((location.x - source_center_x).^2) + ((location.y - source_center_y).^2)) / source_width^2);
+    global source_sign source_radius source_amp source_center_x source_center_y %#ok<NUSED>
+    inside_circle = ((location.x - source_center_x).^2 + (location.y - source_center_y).^2) <= source_radius^2;
+    fcoeff = source_sign * source_amp * double(inside_circle);
 end
 
 function [u0_fun, ut0_fun] = generate_zero_ic()

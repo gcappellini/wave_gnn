@@ -1,4 +1,4 @@
-"""Visualize sample 2 from free_evolution_branch.mat as a GIF over all time instants.
+"""Visualize one sample from free_evolution.mat as a GIF over all time instants.
 
 This script loads displacement (U_data) and velocity (V_data), then creates an
 animation where each frame is one time instant. Each frame shows u(x, y) and
@@ -14,8 +14,9 @@ from matplotlib.animation import FuncAnimation, PillowWriter
 
 
 def main() -> None:
-	data_path = Path("data/free_evolution_branch.mat")
-	output_path = Path(f"outputs/sample{sample_idx}_free_evolution_branch.gif")
+	sample_idx = 0
+	data_path = Path("data/free_evolution.mat")
+	output_path = Path(f"outputs/sample{sample_idx}_free_evolution.gif")
 	output_path.parent.mkdir(parents=True, exist_ok=True)
 
 	if not data_path.exists():
@@ -29,7 +30,6 @@ def main() -> None:
 		tlist = np.array(f["tlist"]).reshape(-1)
 
 	nx, ny, nt, n_samples = u_fom.shape
-	sample_idx = 0
 	if sample_idx >= n_samples:
 		raise IndexError(f"sample_idx={sample_idx} out of range for N_samples={n_samples}")
 
@@ -82,7 +82,7 @@ def main() -> None:
 		im_u.set_data(u_sample[:, :, frame_idx])
 		im_v.set_data(v_sample[:, :, frame_idx])
 		t_val = float(tlist[frame_idx]) if tlist.size == nt else float(frame_idx)
-		suptitle.set_text(f"free_evolution_branch sample={sample_idx}, frame={frame_idx}, t={t_val:.6f}")
+		suptitle.set_text(f"free_evolution sample={sample_idx}, frame={frame_idx}, t={t_val:.6f}")
 		return im_u, im_v, suptitle
 
 	animation = FuncAnimation(fig, update, frames=nt, interval=500, blit=False)

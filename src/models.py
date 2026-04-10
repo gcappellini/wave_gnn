@@ -96,6 +96,7 @@ class DualHeadSensorBranch(nn.Module):
         n_modes: int,
         n_layers: int,
         input_scale: float = 1.0,
+        input_channels: int = 2,
         encoder_channels: int = 8,
         pool_kernel: int = 2,
         pool_stride: int = 2,
@@ -104,11 +105,12 @@ class DualHeadSensorBranch(nn.Module):
     ):
         super().__init__()
         self.n_sensors = n_sensors
+        self.input_channels = int(input_channels)
         self.pool_kernel = pool_kernel
         self.pool_stride = pool_stride
 
         self.encoder = nn.Sequential(
-            nn.Conv2d(2, encoder_channels, kernel_size=3, padding=1),
+            nn.Conv2d(self.input_channels, encoder_channels, kernel_size=3, padding=1),
             nn.Tanh(),
             nn.Conv2d(encoder_channels, 1, kernel_size=3, padding=1),
             # nn.Tanh(),
@@ -116,7 +118,7 @@ class DualHeadSensorBranch(nn.Module):
         )
 
         with torch.no_grad():
-            dummy = torch.zeros(1, 2, n_sensors, n_sensors)
+            dummy = torch.zeros(1, self.input_channels, n_sensors, n_sensors)
             encoded = self.encoder(dummy)
             self.encoded_shape = tuple(encoded.shape[1:])
             encoded_dim = int(encoded.numel())
@@ -132,12 +134,15 @@ class DualHeadSensorBranch(nn.Module):
         )
 
     def forward(self, x):
-        """Accepts either (B,2,S,S) sensors or flattened (B,2*S*S) inputs."""
+        """Accepts either (B,C,S,S) sensors or flattened (B,C*S*S) inputs."""
         if x.dim() == 2:
             bsz = x.shape[0]
-            x = x.view(bsz, 2, self.n_sensors, self.n_sensors)
+            x = x.view(bsz, self.input_channels, self.n_sensors, self.n_sensors)
         elif x.dim() != 4:
-            raise ValueError(f"Expected branch input of shape (B,2,S,S) or (B,2*S*S), got {tuple(x.shape)}")
+            raise ValueError(
+                f"Expected branch input of shape (B,C,S,S) or (B,C*S*S) with C={self.input_channels}, "
+                f"got {tuple(x.shape)}"
+            )
 
         features = self.encoder(x).flatten(start_dim=1)
         return self.mlp(features)

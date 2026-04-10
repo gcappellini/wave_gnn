@@ -210,6 +210,7 @@ def plot_branch_validation(
     device: torch.device = None,
     problem_type: str = 'free_evolution',
     v_fom: np.ndarray = None,
+    f_fom: np.ndarray = None,
     sample_idx: int = 2,
 ):
     """
@@ -261,8 +262,10 @@ def plot_branch_validation(
     def _resolve_raw_range(field_name):
         if field_name == 'raw_u':
             min_key, max_key = 'raw_u_min', 'raw_u_max'
-        else:
+        elif field_name == 'raw_v':
             min_key, max_key = 'raw_v_min', 'raw_v_max'
+        else:
+            min_key, max_key = 'raw_f_min', 'raw_f_max'
 
         if min_key in input_normalization and max_key in input_normalization:
             min_value = float(input_normalization[min_key])
@@ -290,6 +293,7 @@ def plot_branch_validation(
         hidden_dim = state_dict['mlp.backbone.0.weight'].shape[0]
         output_dim = state_dict['mlp.head_u.weight'].shape[0]
         n_layers = len([k for k in state_dict.keys() if k.startswith('mlp.backbone.') and k.endswith('.weight')]) + 1
+        input_channels = int(state_dict['encoder.0.weight'].shape[1])
 
         print("  Detected model architecture:")
         print(f"    Type: DualHeadSensorBranch")
@@ -306,6 +310,7 @@ def plot_branch_validation(
             n_modes=output_dim,
             n_layers=n_layers,
             input_scale=input_scale,
+            input_channels=input_channels,
             u_output_scale=u_output_scale,
             v_output_scale=v_output_scale,
         ).to(device)
@@ -371,16 +376,16 @@ def plot_branch_validation(
     sensor_x_indices = np.linspace(0, Nx - 1, n_sensors_inferred, dtype=int)
     sensor_y_indices = np.linspace(0, Ny - 1, n_sensors_inferred, dtype=int)
     
-    ic_sensors = []
+    u_sensors = []
     for s in range(N_samples):
         u_ic = u_fom[:, :, 0, s]
         sensors = [u_ic[si, sj] for si in sensor_x_indices for sj in sensor_y_indices]
-        ic_sensors.append(sensors)
+        u_sensors.append(sensors)
     
-    ic_sensors = np.array(ic_sensors)
+    u_sensors = np.array(u_sensors)
 
     raw_u_min, raw_u_max = _resolve_raw_range('raw_u')
-    ic_norm = 2 * (ic_sensors - raw_u_min) / (raw_u_max - raw_u_min + 1e-10) - 1
+    u_norm = 2 * (u_sensors - raw_u_min) / (raw_u_max - raw_u_min + 1e-10) - 1
 
     if dual:
         if v_fom is None:
@@ -398,13 +403,26 @@ def plot_branch_validation(
         v_norm = 2 * (v_sensors - raw_v_min) / (raw_v_max - raw_v_min + 1e-10) - 1
 
         if uses_sensor_encoder:
-            u_grid = ic_norm.reshape(N_samples, n_sensors_inferred, n_sensors_inferred)
+            u_grid = u_norm.reshape(N_samples, n_sensors_inferred, n_sensors_inferred)
             v_grid = v_norm.reshape(N_samples, n_sensors_inferred, n_sensors_inferred)
-            branch_in = np.stack([u_grid, v_grid], axis=1)
+            channels = [u_grid, v_grid]
+            if int(state_dict['encoder.0.weight'].shape[1]) == 3:
+                if f_fom is None:
+                    raise ValueError("3-channel branch validation requires f_fom")
+                f_sensors = []
+                for s in range(N_samples):
+                    f_field = f_fom[:, :, s]
+                    sensors = [f_field[si, sj] for si in sensor_x_indices for sj in sensor_y_indices]
+                    f_sensors.append(sensors)
+                f_sensors = np.array(f_sensors)
+                raw_f_min, raw_f_max = _resolve_raw_range('raw_f')
+                f_norm = 2 * (f_sensors - raw_f_min) / (raw_f_max - raw_f_min + 1e-10) - 1
+                channels.append(f_norm.reshape(N_samples, n_sensors_inferred, n_sensors_inferred))
+            branch_in = np.stack(channels, axis=1)
         else:
-            branch_in = np.concatenate([ic_norm, v_norm], axis=1)
+            branch_in = np.concatenate([u_norm, v_norm], axis=1)
     else:
-        branch_in = ic_norm
+        branch_in = u_norm
 
     ic_tensor = torch.tensor(branch_in, dtype=torch.float32).to(device)
     
@@ -962,6 +980,7 @@ def _load_deeponet_from_checkpoint(ckpt_path, device, problem_type='free_evoluti
     branch_backbone_count = len([k for k in state if k.startswith('branch_ic.mlp.backbone.') and k.endswith('.weight')])
     branch_n_layers      = branch_backbone_count + 1
     encoder_channels     = state[enc_key].shape[0]
+    input_channels       = state[enc_key].shape[1]
     n_sensors = int(ckpt.get('config', {}).get('n_sensors') or ckpt.get('n_sensors', 0))
     if n_sensors == 0:
         raise ValueError(f"n_sensors not found in checkpoint: {ckpt_path}")
@@ -969,6 +988,7 @@ def _load_deeponet_from_checkpoint(ckpt_path, device, problem_type='free_evoluti
     branch_net = DualHeadSensorBranch(
         n_sensors=n_sensors, hidden_dim=branch_hidden_dim, n_modes=n_modes,
         n_layers=branch_n_layers, input_scale=input_scale,
+        input_channels=input_channels,
         encoder_channels=encoder_channels,
     ).to(device)
 
@@ -994,7 +1014,8 @@ def _run_deeponet_inference(deeponet, measurements_tensor, coords_np, Nx, Ny, de
         v_pred: (Nx, Ny) velocity prediction, or None if not dual
     """
     coords_t = torch.from_numpy(coords_np).float().to(device)
-    meas_batch = measurements_tensor.repeat(coords_t.shape[0], 1)
+    repeat_shape = (coords_t.shape[0],) + (1,) * (measurements_tensor.dim() - 1)
+    meas_batch = measurements_tensor.repeat(*repeat_shape)
     with torch.no_grad():
         out = deeponet(meas_batch, coords_t)
     if dual:
@@ -1075,6 +1096,7 @@ def plot_deeponet_validation(
     time_instants: list = [0.0, 0.5, 1.0],
     problem_type: str = 'free_evolution',
     v_fom: np.ndarray = None,
+    f_fom: np.ndarray = None,
 ):
     """
     Validate full DeepONet predictions against ground truth.
@@ -1120,6 +1142,8 @@ def plot_deeponet_validation(
     raw_u_max = float(normalization.get('raw_u_max', 1.0))
     raw_v_min = float(normalization.get('raw_v_min', 0.0))
     raw_v_max = float(normalization.get('raw_v_max', 1.0))
+    raw_f_min = float(normalization.get('raw_f_min', 0.0))
+    raw_f_max = float(normalization.get('raw_f_max', 1.0))
 
     Nx, Ny, Nt, N_samples = u_fom.shape
     if sample_idx >= N_samples:
@@ -1128,9 +1152,9 @@ def plot_deeponet_validation(
     dual = v_fom is not None
 
     data_dir = Path(models_dir).parent / "data"
-    branch_mat = data_dir / "free_evolution_branch.mat"
+    primary_mat = data_dir / "free_evolution.mat"
     fallback_mat = data_dir / f"{problem_type}.mat"
-    grid_mat = branch_mat if branch_mat.exists() else fallback_mat
+    grid_mat = primary_mat if primary_mat.exists() else fallback_mat
     x, y, t = _load_grid_from_mat(grid_mat, Nx, Ny, Nt)
 
     sensor_x = np.linspace(0, Nx - 1, n_sensors, dtype=int)
@@ -1144,7 +1168,19 @@ def plot_deeponet_validation(
         v_ic = v_fom[:, :, 0, sample_idx]
         v_meas_raw = np.array([v_ic[si, sj] for si in sensor_x for sj in sensor_y], dtype=np.float32)
         v_meas_norm = 2 * (v_meas_raw - raw_v_min) / (raw_v_max - raw_v_min + 1e-10) - 1
-        meas = np.concatenate([u_meas_norm, v_meas_norm])
+        input_channels = int(getattr(getattr(deeponet, 'branch_ic', None), 'input_channels', 2))
+        if input_channels == 3:
+            if f_fom is None:
+                raise ValueError("plot_deeponet_validation requires f_fom for 3-channel branch input")
+            f_ic = f_fom[:, :, sample_idx]
+            f_meas_raw = np.array([f_ic[si, sj] for si in sensor_x for sj in sensor_y], dtype=np.float32)
+            f_meas_norm = 2 * (f_meas_raw - raw_f_min) / (raw_f_max - raw_f_min + 1e-10) - 1
+            u_grid = u_meas_norm.reshape(n_sensors, n_sensors)
+            v_grid = v_meas_norm.reshape(n_sensors, n_sensors)
+            f_grid = f_meas_norm.reshape(n_sensors, n_sensors)
+            meas = np.stack([u_grid, v_grid, f_grid], axis=0).astype(np.float32)
+        else:
+            meas = np.concatenate([u_meas_norm, v_meas_norm])
     else:
         meas = u_meas_norm
     meas_tensor = torch.from_numpy(meas).float().unsqueeze(0).to(device)
@@ -1305,6 +1341,7 @@ def plot_deeponet_test(
     with h5py.File(test_file, 'r') as f:
         u_fom = np.array(f['U_data']).T
         v_fom = np.array(f['V_data']).T if 'V_data' in f else None
+        f_fom = np.array(f['F_data']).T if 'F_data' in f else None
         x_from_file = np.array(f['x_grid']).reshape(-1) if 'x_grid' in f else None
         y_from_file = np.array(f['y_grid']).reshape(-1) if 'y_grid' in f else None
         t_from_file = np.array(f['tlist']).reshape(-1) if 'tlist' in f else None
@@ -1342,6 +1379,8 @@ def plot_deeponet_test(
     raw_u_max = float(normalization.get('raw_u_max', 1.0))
     raw_v_min = float(normalization.get('raw_v_min', 0.0))
     raw_v_max = float(normalization.get('raw_v_max', 1.0))
+    raw_f_min = float(normalization.get('raw_f_min', 0.0))
+    raw_f_max = float(normalization.get('raw_f_max', 1.0))
     dual = v_fom is not None
 
     sensor_x = np.linspace(0, Nx - 1, n_sensors, dtype=int)
@@ -1354,7 +1393,19 @@ def plot_deeponet_test(
         v_ic = v_fom[:, :, 0, 0]
         v_meas_raw = np.array([v_ic[si, sj] for si in sensor_x for sj in sensor_y], dtype=np.float32)
         v_meas_norm = 2 * (v_meas_raw - raw_v_min) / (raw_v_max - raw_v_min + 1e-10) - 1
-        meas = np.concatenate([u_meas_norm, v_meas_norm])
+        input_channels = int(getattr(getattr(deeponet, 'branch_ic', None), 'input_channels', 2))
+        if input_channels == 3:
+            if f_fom is None:
+                raise ValueError("plot_deeponet_test requires F_data for 3-channel branch input")
+            f_ic = f_fom[:, :, 0]
+            f_meas_raw = np.array([f_ic[si, sj] for si in sensor_x for sj in sensor_y], dtype=np.float32)
+            f_meas_norm = 2 * (f_meas_raw - raw_f_min) / (raw_f_max - raw_f_min + 1e-10) - 1
+            u_grid = u_meas_norm.reshape(n_sensors, n_sensors)
+            v_grid = v_meas_norm.reshape(n_sensors, n_sensors)
+            f_grid = f_meas_norm.reshape(n_sensors, n_sensors)
+            meas = np.stack([u_grid, v_grid, f_grid], axis=0).astype(np.float32)
+        else:
+            meas = np.concatenate([u_meas_norm, v_meas_norm])
     else:
         meas = u_meas_norm
     meas_tensor = torch.from_numpy(meas).float().unsqueeze(0).to(device)
