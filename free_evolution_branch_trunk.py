@@ -447,7 +447,7 @@ def main(cfg: DictConfig):
         
         trunk_result = train_trunk(
             config=trunk_config,
-            svd_data=svd_data,
+            svd_data=np.load(data_dir / "svd_free_evolution_branch.npy", allow_pickle=True).item(),
             device=device,
             output_dir=str(output_dir),
             models_dir=str(models_dir),
@@ -459,8 +459,9 @@ def main(cfg: DictConfig):
         trunk_result = {'status': 'loaded_from_checkpoint'}
         
     if cfg.networks.trunk.visualize:
-        plot_trunk_validation(output_dir, svd_data, models_dir, device, 
-                            problem_type=problem_type)
+        svd_data_trunk_val = np.load(data_dir / "svd_free_evolution_branch.npy", allow_pickle=True).item()
+        plot_trunk_validation(output_dir, svd_data_trunk_val, models_dir, device,
+                              problem_type=problem_type)
     
     # ====================================================================
     # 4. TRAIN BRANCH NETWORK
@@ -553,113 +554,116 @@ def main(cfg: DictConfig):
             problem_type=problem_type,
         )
     
-    # # ====================================================================
-    # # 5. OPTIONAL: JOINT DEEPONET TRAINING
-    # # ====================================================================
-    # print("\nStep 5: Joint DeepONet Training")
-    # print("-" * 70)
+    # ====================================================================
+    # 5. OPTIONAL: JOINT DEEPONET TRAINING
+    # ====================================================================
+    print("\nStep 5: Joint DeepONet Training")
+    print("-" * 70)
 
-    # if v_fom is None or 'basis_v' not in svd_data:
-    #     raise ValueError(
-    #         "Free-evolution DeepONet requires dual-head data (v_fom and svd_data['basis_v']). "
-    #         "Single-head branch/trunk is no longer supported in this pipeline."
-    #     )
+    svd_data_branch = np.load(data_dir / "svd_free_evolution_branch.npy", allow_pickle=True).item()
+
+    if v_fom is None or 'basis_v' not in svd_data_branch:
+        raise ValueError(
+            "Free-evolution DeepONet requires dual-head data (v_fom and svd_data['basis_v']). "
+            "Single-head branch/trunk is no longer supported in this pipeline."
+        )
     
-    # deeponet_checkpoint = models_dir / "deeponet_free_evolution.pth"
+    deeponet_checkpoint = models_dir / "deeponet_free_evolution.pth"
     
-    # trunk_pretrained = models_dir / "trunk_svd_free_evolution.pth"
-    # branch_pretrained = models_dir / "branch_svd_free_evolution.pth"
-    # if not trunk_pretrained.exists():
-    #     output_fallback = output_dir / "trunk_svd_free_evolution.pth"
-    #     if output_fallback.exists():
-    #         trunk_pretrained = output_fallback
-    # if not branch_pretrained.exists():
-    #     output_fallback = output_dir / "branch_svd_free_evolution.pth"
-    #     if output_fallback.exists():
-    #         branch_pretrained = output_fallback
+    trunk_pretrained = models_dir / "trunk_svd_free_evolution.pth"
+    branch_pretrained = models_dir / "branch_svd_free_evolution.pth"
+    if not trunk_pretrained.exists():
+        output_fallback = output_dir / "trunk_svd_free_evolution.pth"
+        if output_fallback.exists():
+            trunk_pretrained = output_fallback
+    if not branch_pretrained.exists():
+        output_fallback = output_dir / "branch_svd_free_evolution.pth"
+        if output_fallback.exists():
+            branch_pretrained = output_fallback
 
-    # if deeponet_checkpoint.exists():
-    #     print("Loading pre-trained DeepONet model...")
-    #     print(f"✓ Loaded: {deeponet_checkpoint}")
-    #     deeponet_result = {'status': 'loaded_from_checkpoint'}
-    # elif cfg.training.deeponet_n_epochs > 0:
-    #     # Build config with all required fields
-    #     deeponet_config = OmegaConf.to_container(cfg.training)
-    #     deeponet_config['n_modes'] = cfg.svd.n_modes
-    #     deeponet_config['trunk_hidden_dim'] = cfg.networks.trunk.hidden_dim
-    #     deeponet_config['trunk_n_layers'] = cfg.networks.trunk.n_layers
-    #     deeponet_config['branch_hidden_dim'] = cfg.networks.branch.hidden_dim
-    #     deeponet_config['branch_n_layers'] = cfg.networks.branch.n_layers
-    #     deeponet_config['n_sensors'] = cfg.sensors.n_sensors
+    if deeponet_checkpoint.exists():
+        print("Loading pre-trained DeepONet model...")
+        print(f"✓ Loaded: {deeponet_checkpoint}")
+        deeponet_result = {'status': 'loaded_from_checkpoint'}
+    elif cfg.training.deeponet_n_epochs > 0:
+        # Build config with all required fields
+        deeponet_config = OmegaConf.to_container(cfg.training)
+        deeponet_config['n_modes'] = cfg.svd.n_modes
+        deeponet_config['trunk_hidden_dim'] = cfg.networks.trunk.hidden_dim
+        deeponet_config['trunk_n_layers'] = cfg.networks.trunk.n_layers
+        deeponet_config['branch_hidden_dim'] = cfg.networks.branch.hidden_dim
+        deeponet_config['branch_n_layers'] = cfg.networks.branch.n_layers
+        deeponet_config['n_sensors'] = cfg.sensors.n_sensors
 
-    #     deeponet_result = train_deeponet_joint(
-    #         config=deeponet_config,
-    #         u_fom=u_fom,
-    #         svd_data=svd_data,
-    #         trunk_pretrained_path=str(trunk_pretrained),
-    #         branch_pretrained_path=str(branch_pretrained),
-    #         device=device,
-    #         output_dir=str(output_dir),
-    #         models_dir=str(models_dir),
-    #         problem_type='free_evolution',
-    #         v_fom=v_fom,
-    #     )
-    # else:
-    #     print("DeepONet checkpoint not found; composing from pretrained dual-head trunk and branch...")
-    #     if not trunk_pretrained.exists():
-    #         raise FileNotFoundError(
-    #             f"Cannot compose DeepONet: trunk checkpoint not found at {trunk_pretrained}"
-    #         )
-    #     if not branch_pretrained.exists():
-    #         raise FileNotFoundError(
-    #             f"Cannot compose DeepONet: branch checkpoint not found at {branch_pretrained}"
-    #         )
+        deeponet_result = train_deeponet_joint(
+            config=deeponet_config,
+            u_fom=u_fom,
+            svd_data=svd_data_branch,
+            trunk_pretrained_path=str(trunk_pretrained),
+            branch_pretrained_path=str(branch_pretrained),
+            device=device,
+            output_dir=str(output_dir),
+            models_dir=str(models_dir),
+            problem_type='free_evolution',
+            v_fom=v_fom,
+        )
+    else:
+        print("DeepONet checkpoint not found; composing from pretrained dual-head trunk and branch...")
+        if not trunk_pretrained.exists():
+            raise FileNotFoundError(
+                f"Cannot compose DeepONet: trunk checkpoint not found at {trunk_pretrained}"
+            )
+        if not branch_pretrained.exists():
+            raise FileNotFoundError(
+                f"Cannot compose DeepONet: branch checkpoint not found at {branch_pretrained}"
+            )
 
-    #     _compose_dual_deeponet_checkpoint(
-    #         trunk_ckpt_path=trunk_pretrained,
-    #         branch_ckpt_path=branch_pretrained,
-    #         deeponet_ckpt_path=deeponet_checkpoint,
-    #         device=device,
-    #         n_sensors=cfg.sensors.n_sensors,
-    #     )
-    #     deeponet_result = {'status': 'composed_from_pretrained'}
+        _compose_dual_deeponet_checkpoint(
+            trunk_ckpt_path=trunk_pretrained,
+            branch_ckpt_path=branch_pretrained,
+            deeponet_ckpt_path=deeponet_checkpoint,
+            device=device,
+            n_sensors=cfg.sensors.n_sensors,
+        )
+        deeponet_result = {'status': 'composed_from_pretrained'}
     
-    # # ====================================================================
-    # # 6. DEEPONET VALIDATION
-    # # ====================================================================
-    # print("\nStep 6: DeepONet Validation")
-    # print("-" * 70)
+    # ====================================================================
+    # 6. DEEPONET VALIDATION
+    # ====================================================================
+    print("\nStep 6: DeepONet Validation")
+    print("-" * 70)
 
-    # # plot_deeponet_test(
-    # #     output_dir=str(output_dir),
-    # #     data_dir=str(data_dir),
-    # #     models_dir=str(models_dir),
-    # #     device=device,
-    # #     problem_type='free_evolution',
-    # # )
-
-    # plot_deeponet_validation(
+    # plot_deeponet_test(
     #     output_dir=str(output_dir),
-    #     u_fom=u_fom,
-    #     v_fom=v_fom,
-    #     svd_data=svd_data,
+    #     data_dir=str(data_dir),
     #     models_dir=str(models_dir),
     #     device=device,
     #     problem_type='free_evolution',
     # )
+
+    plot_deeponet_validation(
+        output_dir=str(output_dir),
+        u_fom=u_fom,
+        v_fom=v_fom,
+        svd_data=svd_data_branch,
+        models_dir=str(models_dir),
+        device=device,
+        problem_type='free_evolution',
+        sample_idx=2
+    )
     
-    # # ====================================================================
-    # # COMPLETE
-    # # ====================================================================
-    # print("\n" + "=" * 70)
-    # print("✓ PIPELINE COMPLETE")
-    # print("=" * 70)
-    # print(f"Output directory: {output_dir}")
-    # print("=" * 70 + "\n")
+    # ====================================================================
+    # COMPLETE
+    # ====================================================================
+    print("\n" + "=" * 70)
+    print("✓ PIPELINE COMPLETE")
+    print("=" * 70)
+    print(f"Output directory: {output_dir}")
+    print("=" * 70 + "\n")
     
-    # # Close log file
-    # sys.stdout = tee.terminal
-    # tee.close()
+    # Close log file
+    sys.stdout = tee.terminal
+    tee.close()
 
 
 if __name__ == "__main__":

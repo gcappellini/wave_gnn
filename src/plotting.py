@@ -210,6 +210,7 @@ def plot_branch_validation(
     device: torch.device = None,
     problem_type: str = 'free_evolution',
     v_fom: np.ndarray = None,
+    sample_idx: int = 2,
 ):
     """
     Compare branch network coefficient predictions with SVD coefficients.
@@ -537,6 +538,49 @@ def plot_branch_validation(
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
     plt.close()
     print(f"  ✓ Saved: validation_branch_coefficients.png")
+
+    # --- Per-sample σ·coefficient comparison plot ---
+    if sample_idx >= N_samples:
+        print(f"  ⚠ sample_idx={sample_idx} out of range (N_samples={N_samples}); skipping per-sample plot.")
+    else:
+        print(f"  Generating per-sample σ·coefficient plot (sample {sample_idx})...")
+        modes_axis = np.arange(output_dim)
+        bar_width = 0.4
+
+        if dual:
+            fig2, axes2 = plt.subplots(2, 1, figsize=(12, 8))
+            for ax2, c_true, c_pred, label_name in [
+                (axes2[0], coeffs_true_u, coeffs_pred_u, 'Deformation'),
+                (axes2[1], coeffs_true_v, coeffs_pred_v, 'Velocity'),
+            ]:
+                ax2.bar(modes_axis - bar_width / 2, c_true[sample_idx],
+                        width=bar_width, alpha=0.7, label='True (σ·coeff)', color='steelblue')
+                ax2.bar(modes_axis + bar_width / 2, c_pred[sample_idx],
+                        width=bar_width, alpha=0.7, label='Predicted (σ·coeff)', color='tomato')
+                ax2.set_xlabel('Mode Index', fontsize=11)
+                ax2.set_ylabel('σ · coefficient', fontsize=11)
+                ax2.set_title(f'{label_name}: True vs Predicted σ·Coefficients (Sample {sample_idx})', fontsize=12)
+                ax2.legend(fontsize=9)
+                ax2.grid(True, alpha=0.3, axis='y')
+            fig2.suptitle(f'Branch Validation: Per-Sample σ·Coefficients (Sample {sample_idx})', fontsize=14)
+        else:
+            fig2, ax2 = plt.subplots(figsize=(12, 4))
+            ax2.bar(modes_axis - bar_width / 2, coeffs_true_u[sample_idx],
+                    width=bar_width, alpha=0.7, label='True (σ·coeff)', color='steelblue')
+            ax2.bar(modes_axis + bar_width / 2, coeffs_pred_u[sample_idx],
+                    width=bar_width, alpha=0.7, label='Predicted (σ·coeff)', color='tomato')
+            ax2.set_xlabel('Mode Index', fontsize=11)
+            ax2.set_ylabel('σ · coefficient', fontsize=11)
+            ax2.set_title(f'Deformation: True vs Predicted σ·Coefficients (Sample {sample_idx})', fontsize=12)
+            ax2.legend(fontsize=9)
+            ax2.grid(True, alpha=0.3, axis='y')
+
+        plt.tight_layout()
+        sample_save_path = os.path.join(output_dir, f'validation_branch_sample{sample_idx}_coefficients.png')
+        plt.savefig(sample_save_path, dpi=150, bbox_inches='tight')
+        plt.close()
+        print(f"  ✓ Saved: validation_branch_sample{sample_idx}_coefficients.png")
+
     print(f"  ✓ Branch validation complete")
 
 
@@ -816,7 +860,7 @@ def plot_trunk_validation(
                 ax_trunk_v = axes_v[row, 2 * pair]
                 im_v = ax_trunk_v.imshow(
                     trunk_mode_v,
-                    cmap='seismic',
+                    cmap='viridis',
                     origin='lower',
                     vmin=vmin_global_v,
                     vmax=vmax_global_v,
@@ -829,7 +873,7 @@ def plot_trunk_validation(
                 ax_svd_v = axes_v[row, 2 * pair + 1]
                 ax_svd_v.imshow(
                     svd_mode_v,
-                    cmap='seismic',
+                    cmap='viridis',
                     origin='lower',
                     vmin=vmin_global_v,
                     vmax=vmax_global_v,
@@ -962,24 +1006,62 @@ def _run_deeponet_inference(deeponet, measurements_tensor, coords_np, Nx, Ny, de
     return u_pred, v_pred
 
 
-def _plot_field_row(axes_row, gt, pred, label, t_val):
-    """Plot GT | Pred | |Error| in a single row of axes."""
+def _load_grid_from_mat(mat_path: Path, Nx: int, Ny: int, Nt: int):
+    """Load x/y/t coordinates from .mat if available; otherwise fallback to uniform [0, 1]."""
+    import h5py
+
+    x = np.linspace(0.0, 1.0, Nx)
+    y = np.linspace(0.0, 1.0, Ny)
+    t = np.linspace(0.0, 1.0, Nt)
+
+    if not mat_path.exists():
+        return x, y, t
+
+    with h5py.File(mat_path, 'r') as f:
+        if 'x_grid' in f:
+            x_loaded = np.array(f['x_grid']).reshape(-1)
+            if x_loaded.size == Nx:
+                x = x_loaded
+        if 'y_grid' in f:
+            y_loaded = np.array(f['y_grid']).reshape(-1)
+            if y_loaded.size == Ny:
+                y = y_loaded
+        if 'tlist' in f:
+            t_loaded = np.array(f['tlist']).reshape(-1)
+            if t_loaded.size == Nt:
+                t = t_loaded
+
+    return x, y, t
+
+
+def _plot_field_row(axes_row, gt, pred, label, t_val, field_kind='u', value_limits=None, error_max=None):
+    """Plot GT | Pred | |Error| in a single row of axes using shared colorbar limits."""
     err = np.abs(pred - gt)
-    vmin = min(gt.min(), pred.min())
-    vmax = max(gt.max(), pred.max())
-    im0 = axes_row[0].imshow(gt,   cmap='seismic', origin='lower', vmin=vmin, vmax=vmax)
+    if value_limits is None:
+        vmin = min(gt.min(), pred.min())
+        vmax = max(gt.max(), pred.max())
+    else:
+        vmin, vmax = value_limits
+
+    if field_kind == 'v':
+        value_cmap = 'viridis'
+    else:
+        value_cmap = 'seismic'
+    error_cmap = 'YlOrRd'
+
+    axes_row[0].imshow(gt, cmap=value_cmap, origin='lower', vmin=vmin, vmax=vmax)
     axes_row[0].set_title(f"GT {label} (t={t_val:.2f})", fontsize=10)
     axes_row[0].set_xticks([]); axes_row[0].set_yticks([])
-    plt.colorbar(im0, ax=axes_row[0], fraction=0.046)
-    im1 = axes_row[1].imshow(pred, cmap='seismic', origin='lower', vmin=vmin, vmax=vmax)
+    axes_row[1].imshow(pred, cmap=value_cmap, origin='lower', vmin=vmin, vmax=vmax)
     axes_row[1].set_title(f"Pred {label} (t={t_val:.2f})", fontsize=10)
     axes_row[1].set_xticks([]); axes_row[1].set_yticks([])
-    plt.colorbar(im1, ax=axes_row[1], fraction=0.046)
-    im2 = axes_row[2].imshow(err,  cmap='hot',     origin='lower')
+    if error_max is None:
+        axes_row[2].imshow(err, cmap=error_cmap, origin='lower')
+    else:
+        axes_row[2].imshow(err, cmap=error_cmap, origin='lower', vmin=0.0, vmax=error_max)
     l2  = np.linalg.norm(pred - gt) / (np.linalg.norm(gt) + 1e-12)
     axes_row[2].set_title(f"|Error| {label}  L2={l2:.2e}", fontsize=10)
     axes_row[2].set_xticks([]); axes_row[2].set_yticks([])
-    plt.colorbar(im2, ax=axes_row[2], fraction=0.046)
     return l2
 
 
@@ -1028,63 +1110,29 @@ def plot_deeponet_validation(
             print("  Skipping DeepONet validation.")
             return
     
-    print("Loading branch model for debugging (SVD basis reconstruction)...")
-    branch_ckpt_path = Path(models_dir) / "branch_svd_free_evolution.pth"
-    if not branch_ckpt_path.exists():
-        print(f"⚠ Warning: Branch checkpoint not found: {branch_ckpt_path}")
-        print("  Skipping validation.")
-        return
-    
-    branch_ckpt = torch.load(str(branch_ckpt_path), map_location=device, weights_only=False)
-    branch_state = branch_ckpt.get('model_state_dict', branch_ckpt)
-    n_sensors = int(branch_ckpt.get('n_sensors', 0) or branch_ckpt.get('config', {}).get('n_sensors', 0))
-    if n_sensors == 0:
-        raise ValueError(f"n_sensors not found in branch checkpoint")
-    input_scale = float(branch_ckpt.get('input_scale', 1.0) or 1.0)
-    u_output_scale = float(branch_ckpt.get('u_output_scale', 1.0) or 1.0)
-    v_output_scale = float(branch_ckpt.get('v_output_scale', 1.0) or 1.0)
+    print("Loading DeepONet model...")
+    deeponet, n_sensors, normalization = _load_deeponet_from_checkpoint(
+        deeponet_checkpoint, device, problem_type
+    )
+    print(f"  DeepONet loaded — n_sensors={n_sensors}")
 
-    if any(k.startswith('encoder.') for k in branch_state.keys()):
-        branch = DualHeadSensorBranch(
-            n_sensors=n_sensors,
-            hidden_dim=branch_state['mlp.backbone.0.weight'].shape[0],
-            n_modes=branch_state['mlp.head_u.weight'].shape[0],
-            n_layers=len([k for k in branch_state.keys() if k.startswith('mlp.backbone.') and k.endswith('.weight')]) + 1,
-            input_scale=input_scale,
-            encoder_channels=branch_state['encoder.0.weight'].shape[0],
-        ).to(device)
-    else:
-        branch = DualHeadMLP(
-            input_dim=branch_state['backbone.0.weight'].shape[1],
-            hidden_dim=branch_state['backbone.0.weight'].shape[0],
-            n_modes=branch_state['head_u.weight'].shape[0],
-            n_layers=len([k for k in branch_state.keys() if k.startswith('backbone.') and k.endswith('.weight')]) + 1,
-            input_scale=input_scale,
-        ).to(device)
-    branch.load_state_dict(branch_state)
-    branch.eval()
-
-    normalization = branch_ckpt.get('input_normalization', {})
     raw_u_min = float(normalization.get('raw_u_min', 0.0))
     raw_u_max = float(normalization.get('raw_u_max', 1.0))
     raw_v_min = float(normalization.get('raw_v_min', 0.0))
     raw_v_max = float(normalization.get('raw_v_max', 1.0))
 
-    grid_info = svd_data['grid_info']
-    Nx, Ny, Nt = grid_info.astype(int)
-    n_modes = int(svd_data['basis'].shape[1])
+    Nx, Ny, Nt, N_samples = u_fom.shape
+    if sample_idx >= N_samples:
+        raise IndexError(f"sample_idx={sample_idx} out of range for N_samples={N_samples}")
 
-    # Get SVD basis and coefficients
-    U_basis = svd_data['basis']  # (Nx*Ny*Nt, n_modes)
-    Sigma_u = svd_data['singular_values'][:n_modes]
-    VT_u = svd_data['coefficients'][:n_modes, :]
+    dual = v_fom is not None
 
-    U_basis_v = svd_data.get('basis_v', None)
-    if U_basis_v is not None:
-        Sigma_v = svd_data['singular_values_v'][:n_modes]
-        VT_v = svd_data['coefficients_v'][:n_modes, :]
-    
-    # Get branch coefficients
+    data_dir = Path(models_dir).parent / "data"
+    branch_mat = data_dir / "free_evolution_branch.mat"
+    fallback_mat = data_dir / f"{problem_type}.mat"
+    grid_mat = branch_mat if branch_mat.exists() else fallback_mat
+    x, y, t = _load_grid_from_mat(grid_mat, Nx, Ny, Nt)
+
     sensor_x = np.linspace(0, Nx - 1, n_sensors, dtype=int)
     sensor_y = np.linspace(0, Ny - 1, n_sensors, dtype=int)
 
@@ -1092,67 +1140,127 @@ def plot_deeponet_validation(
     u_meas_raw = np.array([u_ic[si, sj] for si in sensor_x for sj in sensor_y], dtype=np.float32)
     u_meas_norm = 2 * (u_meas_raw - raw_u_min) / (raw_u_max - raw_u_min + 1e-10) - 1
 
-    if v_fom is not None:
+    if dual:
         v_ic = v_fom[:, :, 0, sample_idx]
         v_meas_raw = np.array([v_ic[si, sj] for si in sensor_x for sj in sensor_y], dtype=np.float32)
         v_meas_norm = 2 * (v_meas_raw - raw_v_min) / (raw_v_max - raw_v_min + 1e-10) - 1
         meas = np.concatenate([u_meas_norm, v_meas_norm])
     else:
         meas = u_meas_norm
-
     meas_tensor = torch.from_numpy(meas).float().unsqueeze(0).to(device)
-    
-    with torch.no_grad():
-        branch_out = branch(meas_tensor)
-    
-    if isinstance(branch_out, tuple):
-        coeffs_u = branch_out[0].cpu().numpy()[0]  # (n_modes,)
-        coeffs_v = branch_out[1].cpu().numpy()[0]  # (n_modes,)
-    else:
-        coeffs_u = branch_out.cpu().numpy()[0]
-        coeffs_v = None
 
-    x = np.linspace(0, 1, Nx)
-    y = np.linspace(0, 1, Ny)
-    t = np.linspace(0, 1, Nt)
     X, Y, _ = np.meshgrid(x, y, t, indexing='ij')
 
-    dual = v_fom is not None
-    n_rows = len(time_instants) * (2 if dual else 1)
+    print(f"  Generating DeepONet predictions for sample {sample_idx}...")
+    print(f"  Using grid from: {grid_mat}")
+
+    rows_data = []
+    for t_val in time_instants:
+        t_idx = int(np.argmin(np.abs(t - t_val)))
+        t_actual = float(t[t_idx])
+        print(f"  Requested t={t_val:.3f} -> nearest t[{t_idx}]={t_actual:.6f}")
+
+        coords_np = np.stack([
+            X[:, :, t_idx].flatten('F'),
+            Y[:, :, t_idx].flatten('F'),
+            np.full((Nx * Ny,), t_actual),
+        ], axis=1)
+
+        u_pred, v_pred = _run_deeponet_inference(deeponet, meas_tensor, coords_np, Nx, Ny, device, dual)
+        u_gt = u_fom[:, :, t_idx, sample_idx]
+        rows_data.append({'kind': 'u', 't_val': t_actual, 'gt': u_gt, 'pred': u_pred, 'label': 'u'})
+
+        if dual and v_pred is not None:
+            v_gt = v_fom[:, :, t_idx, sample_idx]
+            rows_data.append({'kind': 'v', 't_val': t_actual, 'gt': v_gt, 'pred': v_pred, 'label': 'v'})
+
+    n_rows = len(rows_data)
     fig, axes = plt.subplots(n_rows, 3, figsize=(15, 4 * n_rows))
     if n_rows == 1:
         axes = axes[np.newaxis, :]
 
-    print(f"  Generating SVD basis reconstructions for sample {sample_idx}...")
-    print(f"  Branch coefficients (u): min={coeffs_u.min():.4e}, max={coeffs_u.max():.4e}")
-    if coeffs_v is not None:
-        print(f"  Branch coefficients (v): min={coeffs_v.min():.4e}, max={coeffs_v.max():.4e}")
-    
-    row = 0
-    for t_val in time_instants:
-        t_idx = int(t_val * (Nt - 1))
-        t_actual = t[t_idx]
-        
-        # Reconstruct from SVD basis + branch coefficients
-        spatial_t_idx = np.arange(Nx * Ny * Nt).reshape(Nx, Ny, Nt, order='F')[:, :, t_idx].flatten('F')
-        u_pred = U_basis[spatial_t_idx, :n_modes] @ coeffs_u
-        u_pred = u_pred.reshape(Nx, Ny, order='F')
-        
-        u_gt = u_fom[:, :, t_idx, sample_idx]
-        l2_u = _plot_field_row(axes[row], u_gt, u_pred, 'u (SVD basis)', t_val)
-        print(f"  t={t_val:.2f}  u: L2={l2_u:.4e}")
-        row += 1
+    u_vals = [arr for row_data in rows_data if row_data['kind'] == 'u' for arr in (row_data['gt'], row_data['pred'])]
+    u_limits = (min(arr.min() for arr in u_vals), max(arr.max() for arr in u_vals))
 
-        if dual and coeffs_v is not None:
-            v_pred = U_basis_v[spatial_t_idx, :n_modes] @ coeffs_v
-            v_pred = v_pred.reshape(Nx, Ny, order='F')
-            v_gt = v_fom[:, :, t_idx, sample_idx]
-            l2_v = _plot_field_row(axes[row], v_gt, v_pred, 'v (SVD basis)', t_val)
-            print(f"  t={t_val:.2f}  v: L2={l2_v:.4e}")
-            row += 1
+    v_vals = [arr for row_data in rows_data if row_data['kind'] == 'v' for arr in (row_data['gt'], row_data['pred'])]
+    v_limits = None
+    if v_vals:
+        v_limits = (min(arr.min() for arr in v_vals), max(arr.max() for arr in v_vals))
+
+    error_u_vals = [np.abs(row_data['pred'] - row_data['gt']).max() for row_data in rows_data if row_data['kind'] == 'u']
+    error_max_u = max(max(error_u_vals), 1e-12)
+
+    error_v_vals = [np.abs(row_data['pred'] - row_data['gt']).max() for row_data in rows_data if row_data['kind'] == 'v']
+    error_max_v = max(max(error_v_vals), 1e-12) if error_v_vals else None
+
+    u_rows = []
+    v_rows = []
+    for row_idx, row_data in enumerate(rows_data):
+        if row_data['kind'] == 'u':
+            value_limits = u_limits
+            error_max = error_max_u
+            u_rows.append(row_idx)
+        else:
+            value_limits = v_limits
+            error_max = error_max_v
+            v_rows.append(row_idx)
+
+        l2_val = _plot_field_row(
+            axes[row_idx],
+            row_data['gt'],
+            row_data['pred'],
+            row_data['label'],
+            row_data['t_val'],
+            field_kind=row_data['kind'],
+            value_limits=value_limits,
+            error_max=error_max,
+        )
+        print(f"  t={row_data['t_val']:.2f}  {row_data['kind']}: L2={l2_val:.4e}")
 
     plt.suptitle(f'Branch + SVD Basis Reconstruction (Sample {sample_idx})', fontsize=13, y=0.998)
-    plt.tight_layout()
+    plt.tight_layout(rect=[0.0, 0.0, 0.84, 0.97])
+
+    cbar_x = 0.865
+    cbar_w = 0.012
+    cbar_h = 0.18
+    cbar_gap = 0.03
+    cbar_top = 0.93
+    cbar_slot = 0
+
+    if u_rows:
+        sm_u = plt.cm.ScalarMappable(norm=plt.Normalize(vmin=u_limits[0], vmax=u_limits[1]), cmap='seismic')
+        sm_u.set_array([])
+        y1 = cbar_top - cbar_slot * (cbar_h + cbar_gap)
+        cax_u = fig.add_axes([cbar_x, y1 - cbar_h, cbar_w, cbar_h])
+        cb_u = fig.colorbar(sm_u, cax=cax_u)
+        cb_u.set_label('Deformation (u)', fontsize=9)
+        cbar_slot += 1
+
+    if v_rows and v_limits is not None:
+        sm_v = plt.cm.ScalarMappable(norm=plt.Normalize(vmin=v_limits[0], vmax=v_limits[1]), cmap='viridis')
+        sm_v.set_array([])
+        y1 = cbar_top - cbar_slot * (cbar_h + cbar_gap)
+        cax_v = fig.add_axes([cbar_x, y1 - cbar_h, cbar_w, cbar_h])
+        cb_v = fig.colorbar(sm_v, cax=cax_v)
+        cb_v.set_label('Velocity (v)', fontsize=9)
+        cbar_slot += 1
+
+    sm_err_u = plt.cm.ScalarMappable(norm=plt.Normalize(vmin=0.0, vmax=error_max_u), cmap='YlOrRd')
+    sm_err_u.set_array([])
+    y1 = cbar_top - cbar_slot * (cbar_h + cbar_gap)
+    cax_err_u = fig.add_axes([cbar_x, y1 - cbar_h, cbar_w, cbar_h])
+    cb_err_u = fig.colorbar(sm_err_u, cax=cax_err_u)
+    cb_err_u.set_label('Abs Error (u)', fontsize=9)
+    cbar_slot += 1
+
+    if error_max_v is not None:
+        sm_err_v = plt.cm.ScalarMappable(norm=plt.Normalize(vmin=0.0, vmax=error_max_v), cmap='YlOrRd')
+        sm_err_v.set_array([])
+        y1 = cbar_top - cbar_slot * (cbar_h + cbar_gap)
+        cax_err_v = fig.add_axes([cbar_x, y1 - cbar_h, cbar_w, cbar_h])
+        cb_err_v = fig.colorbar(sm_err_v, cax=cax_err_v)
+        cb_err_v.set_label('Abs Error (v)', fontsize=9)
+
     save_path = os.path.join(str(output_dir), f'validation_deeponet_sample{sample_idx}.png')
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
     plt.close()
@@ -1197,6 +1305,9 @@ def plot_deeponet_test(
     with h5py.File(test_file, 'r') as f:
         u_fom = np.array(f['U_data']).T
         v_fom = np.array(f['V_data']).T if 'V_data' in f else None
+        x_from_file = np.array(f['x_grid']).reshape(-1) if 'x_grid' in f else None
+        y_from_file = np.array(f['y_grid']).reshape(-1) if 'y_grid' in f else None
+        t_from_file = np.array(f['tlist']).reshape(-1) if 'tlist' in f else None
     
     if u_fom.ndim == 3:
         u_fom = u_fom[..., np.newaxis]
@@ -1231,6 +1342,7 @@ def plot_deeponet_test(
     raw_u_max = float(normalization.get('raw_u_max', 1.0))
     raw_v_min = float(normalization.get('raw_v_min', 0.0))
     raw_v_max = float(normalization.get('raw_v_max', 1.0))
+    dual = v_fom is not None
 
     sensor_x = np.linspace(0, Nx - 1, n_sensors, dtype=int)
     sensor_y = np.linspace(0, Ny - 1, n_sensors, dtype=int)
@@ -1247,21 +1359,17 @@ def plot_deeponet_test(
         meas = u_meas_norm
     meas_tensor = torch.from_numpy(meas).float().unsqueeze(0).to(device)
     
-    x = np.linspace(0, 1, Nx)
-    y = np.linspace(0, 1, Ny)
-    t = np.linspace(0, 1, Nt)
+    x = x_from_file if (x_from_file is not None and x_from_file.size == Nx) else np.linspace(0.0, 1.0, Nx)
+    y = y_from_file if (y_from_file is not None and y_from_file.size == Ny) else np.linspace(0.0, 1.0, Ny)
+    t = t_from_file if (t_from_file is not None and t_from_file.size == Nt) else np.linspace(0.0, 1.0, Nt)
     X, Y, _ = np.meshgrid(x, y, t, indexing='ij')
     
-    n_rows = len(time_instants) * (2 if dual else 1)
-    fig, axes = plt.subplots(n_rows, 3, figsize=(15, 4 * n_rows))
-    if n_rows == 1:
-        axes = axes[np.newaxis, :]
-    
     print("  Generating predictions for test sample...")
-    row = 0
+    rows_data = []
     for t_val in time_instants:
-        t_idx    = int(t_val * (Nt - 1))
-        t_actual = t[t_idx]
+        t_idx = int(np.argmin(np.abs(t - t_val)))
+        t_actual = float(t[t_idx])
+        print(f"  Requested t={t_val:.3f} -> nearest t[{t_idx}]={t_actual:.6f}")
         coords_np = np.stack([
             X[:, :, t_idx].flatten('F'),
             Y[:, :, t_idx].flatten('F'),
@@ -1270,17 +1378,98 @@ def plot_deeponet_test(
 
         u_pred, v_pred = _run_deeponet_inference(deeponet, meas_tensor, coords_np, Nx, Ny, device, dual)
         u_gt = u_fom[:, :, t_idx, 0]
-        l2_u = _plot_field_row(axes[row], u_gt, u_pred, 'u', t_val)
-        print(f"  t={t_val:.2f}  u: L2={l2_u:.4e}")
-        row += 1
+        rows_data.append({'kind': 'u', 't_val': t_val, 'gt': u_gt, 'pred': u_pred, 'label': 'u'})
         if dual and v_fom is not None and v_pred is not None:
             v_gt = v_fom[:, :, t_idx, 0]
-            l2_v = _plot_field_row(axes[row], v_gt, v_pred, 'v', t_val)
-            print(f"  t={t_val:.2f}  v: L2={l2_v:.4e}")
-            row += 1
+            rows_data.append({'kind': 'v', 't_val': t_val, 'gt': v_gt, 'pred': v_pred, 'label': 'v'})
+
+    n_rows = len(rows_data)
+    fig, axes = plt.subplots(n_rows, 3, figsize=(15, 4 * n_rows))
+    if n_rows == 1:
+        axes = axes[np.newaxis, :]
+
+    u_vals = [arr for row_data in rows_data if row_data['kind'] == 'u' for arr in (row_data['gt'], row_data['pred'])]
+    u_limits = (min(arr.min() for arr in u_vals), max(arr.max() for arr in u_vals))
+
+    v_vals = [arr for row_data in rows_data if row_data['kind'] == 'v' for arr in (row_data['gt'], row_data['pred'])]
+    v_limits = None
+    if v_vals:
+        v_limits = (min(arr.min() for arr in v_vals), max(arr.max() for arr in v_vals))
+
+    error_u_vals = [np.abs(row_data['pred'] - row_data['gt']).max() for row_data in rows_data if row_data['kind'] == 'u']
+    error_max_u = max(max(error_u_vals), 1e-12)
+
+    error_v_vals = [np.abs(row_data['pred'] - row_data['gt']).max() for row_data in rows_data if row_data['kind'] == 'v']
+    error_max_v = max(max(error_v_vals), 1e-12) if error_v_vals else None
+
+    u_rows = []
+    v_rows = []
+    for row_idx, row_data in enumerate(rows_data):
+        if row_data['kind'] == 'u':
+            value_limits = u_limits
+            error_max = error_max_u
+            u_rows.append(row_idx)
+        else:
+            value_limits = v_limits
+            error_max = error_max_v
+            v_rows.append(row_idx)
+
+        l2_val = _plot_field_row(
+            axes[row_idx],
+            row_data['gt'],
+            row_data['pred'],
+            row_data['label'],
+            row_data['t_val'],
+            field_kind=row_data['kind'],
+            value_limits=value_limits,
+            error_max=error_max,
+        )
+        print(f"  t={row_data['t_val']:.2f}  {row_data['kind']}: L2={l2_val:.4e}")
     
     plt.suptitle(f'DeepONet Test: Out-of-Range Sample ({problem_type})', fontsize=14, y=0.998)
-    plt.tight_layout()
+    plt.tight_layout(rect=[0.0, 0.0, 0.84, 0.97])
+
+    cbar_x = 0.865
+    cbar_w = 0.012
+    cbar_h = 0.18
+    cbar_gap = 0.03
+    cbar_top = 0.93
+    cbar_slot = 0
+
+    if u_rows:
+        sm_u = plt.cm.ScalarMappable(norm=plt.Normalize(vmin=u_limits[0], vmax=u_limits[1]), cmap='seismic')
+        sm_u.set_array([])
+        y1 = cbar_top - cbar_slot * (cbar_h + cbar_gap)
+        cax_u = fig.add_axes([cbar_x, y1 - cbar_h, cbar_w, cbar_h])
+        cb_u = fig.colorbar(sm_u, cax=cax_u)
+        cb_u.set_label('Deformation (u)', fontsize=9)
+        cbar_slot += 1
+
+    if v_rows and v_limits is not None:
+        sm_v = plt.cm.ScalarMappable(norm=plt.Normalize(vmin=v_limits[0], vmax=v_limits[1]), cmap='viridis')
+        sm_v.set_array([])
+        y1 = cbar_top - cbar_slot * (cbar_h + cbar_gap)
+        cax_v = fig.add_axes([cbar_x, y1 - cbar_h, cbar_w, cbar_h])
+        cb_v = fig.colorbar(sm_v, cax=cax_v)
+        cb_v.set_label('Velocity (v)', fontsize=9)
+        cbar_slot += 1
+
+    sm_err_u = plt.cm.ScalarMappable(norm=plt.Normalize(vmin=0.0, vmax=error_max_u), cmap='YlOrRd')
+    sm_err_u.set_array([])
+    y1 = cbar_top - cbar_slot * (cbar_h + cbar_gap)
+    cax_err_u = fig.add_axes([cbar_x, y1 - cbar_h, cbar_w, cbar_h])
+    cb_err_u = fig.colorbar(sm_err_u, cax=cax_err_u)
+    cb_err_u.set_label('Abs Error (u)', fontsize=9)
+    cbar_slot += 1
+
+    if error_max_v is not None:
+        sm_err_v = plt.cm.ScalarMappable(norm=plt.Normalize(vmin=0.0, vmax=error_max_v), cmap='YlOrRd')
+        sm_err_v.set_array([])
+        y1 = cbar_top - cbar_slot * (cbar_h + cbar_gap)
+        cax_err_v = fig.add_axes([cbar_x, y1 - cbar_h, cbar_w, cbar_h])
+        cb_err_v = fig.colorbar(sm_err_v, cax=cax_err_v)
+        cb_err_v.set_label('Abs Error (v)', fontsize=9)
+
     save_path = os.path.join(output_dir, f'validation_deeponet_test_{problem_type}.png')
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
     plt.close()

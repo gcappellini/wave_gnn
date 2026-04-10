@@ -25,8 +25,8 @@ print("=" * 70)
 data_dir = Path("data")
 models_dir = Path("models")
 
-print("\n1. Loading free_evolution.mat...")
-with h5py.File(data_dir / "free_evolution.mat", 'r') as f:
+print("\n1. Loading free_evolution_branch.mat...")
+with h5py.File(data_dir / "free_evolution_branch.mat", 'r') as f:
     u_fom = np.array(f['U_data']).T  # (Nx, Ny, Nt, N_samples)
     v_fom = np.array(f['V_data']).T
 
@@ -35,25 +35,23 @@ print(f"   u_fom shape: {u_fom.shape}")
 print(f"   v_fom shape: {v_fom.shape}")
 
 # ============================================================================
-# 2. COMPUTE SVD DATA
+# 2. LOAD PRE-COMPUTED SVD DATA
 # ============================================================================
-print("\n2. Computing SVD decomposition...")
+print("\n2. Loading pre-computed SVD data...")
 
-n_samples = u_fom.shape[3]
+svd_data = np.load(data_dir / "svd_free_evolution_branch.npy", allow_pickle=True).item()
 
-# Flatten spatial-temporal dimensions for SVD (use C order consistently)
-u_flat = u_fom.reshape(Nx * Ny * Nt, n_samples, order='C')  # (Nx*Ny*Nt, N_samples)
-v_flat = v_fom.reshape(Nx * Ny * Nt, n_samples, order='C')  # (Nx*Ny*Nt, N_samples)
+U_basis_full = svd_data['basis']           # (Nx*Ny*Nt, n_modes)
+Sigma_u_full = svd_data['singular_values'] # (n_modes,)
+VT_u_full    = svd_data['coefficients']    # (n_modes, N_samples)
 
-print(f"   Computing SVD for u... shape={u_flat.shape}")
-U_basis_full, Sigma_u_full, VT_u_full = np.linalg.svd(u_flat, full_matrices=False)
+U_basis_v_full = svd_data['basis_v']              # (Nx*Ny*Nt, n_modes)
+Sigma_v_full   = svd_data['singular_values_v']    # (n_modes,)
+VT_v_full      = svd_data['coefficients_v']       # (n_modes, N_samples)
 
-print(f"   Computing SVD for v... shape={v_flat.shape}")
-U_basis_v_full, Sigma_v_full, VT_v_full = np.linalg.svd(v_flat, full_matrices=False)
-
-print(f"   Full SVD computed. Will determine n_modes from trained models...")
-print(f"   Full U_basis shape: {U_basis_full.shape}")
-print(f"   Full Sigma_u shape: {Sigma_u_full.shape}")
+print(f"   ✓ Loaded: svd_free_evolution_branch.npy")
+print(f"   U_basis shape: {U_basis_full.shape}")
+print(f"   Sigma_u shape: {Sigma_u_full.shape}")
 
 # ============================================================================
 # 3. LOAD TRUNK CHECKPOINT
@@ -116,7 +114,7 @@ print(f"   v_sample range: [{v_sample.min():.4e}, {v_sample.max():.4e}]")
 # ============================================================================
 # 6. SVD RECONSTRUCTION (Ground Truth)
 # ============================================================================
-print("\n6. Computing SVD reconstruction...")
+print("\n6. Selecting SVD reconstruction...")
 
 # Compute spatial indices for time slice t_idx (using C order to match SVD reshape)
 spatial_indices = np.arange(Nx * Ny * Nt).reshape(Nx, Ny, Nt, order='C')[:, :, t_idx].flatten('C')
@@ -143,23 +141,23 @@ print(f"   SVD correlation with original v: {corr_v:.4f}")
 print(f"   SVD u range: [{u_svd_recon.min():.4e}, {u_svd_recon.max():.4e}]")
 print(f"   SVD v range: [{v_svd_recon.min():.4e}, {v_svd_recon.max():.4e}]")
 
-# ============================================================================
-# 7. EXTRACT SENSOR MEASUREMENTS AND NORMALIZE
-# ============================================================================
-print("\n7. Extracting and normalizing sensor measurements...")
-sensor_x = np.linspace(0, Nx - 1, n_sensors, dtype=int)
-sensor_y = np.linspace(0, Ny - 1, n_sensors, dtype=int)
+# # ============================================================================
+# # 7. EXTRACT SENSOR MEASUREMENTS AND NORMALIZE
+# # ============================================================================
+# print("\n7. Extracting and normalizing sensor measurements...")
+# sensor_x = np.linspace(0, Nx - 1, n_sensors, dtype=int)
+# sensor_y = np.linspace(0, Ny - 1, n_sensors, dtype=int)
 
-u_ic = u_fom[:, :, 0, sample_idx]
-u_meas_raw = np.array([u_ic[si, sj] for si in sensor_x for sj in sensor_y], dtype=np.float32)
-u_meas_norm = 2 * (u_meas_raw - raw_u_min) / (raw_u_max - raw_u_min + 1e-10) - 1
+# u_ic = u_fom[:, :, 0, sample_idx]
+# u_meas_raw = np.array([u_ic[si, sj] for si in sensor_x for sj in sensor_y], dtype=np.float32)
+# u_meas_norm = 2 * (u_meas_raw - raw_u_min) / (raw_u_max - raw_u_min + 1e-10) - 1
 
-v_ic = v_fom[:, :, 0, sample_idx]
-v_meas_raw = np.array([v_ic[si, sj] for si in sensor_x for sj in sensor_y], dtype=np.float32)
-v_meas_norm = 2 * (v_meas_raw - raw_v_min) / (raw_v_max - raw_v_min + 1e-10) - 1
+# v_ic = v_fom[:, :, 0, sample_idx]
+# v_meas_raw = np.array([v_ic[si, sj] for si in sensor_x for sj in sensor_y], dtype=np.float32)
+# v_meas_norm = 2 * (v_meas_raw - raw_v_min) / (raw_v_max - raw_v_min + 1e-10) - 1
 
-meas = np.concatenate([u_meas_norm, v_meas_norm]).astype(np.float32)
-print(f"   meas shape: {meas.shape}")
+# meas = np.concatenate([u_meas_norm, v_meas_norm]).astype(np.float32)
+# print(f"   meas shape: {meas.shape}")
 
 # ============================================================================
 # 8. RUN BRANCH FORWARD PASS
