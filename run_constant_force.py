@@ -1,8 +1,7 @@
-"""
-Complete Pipeline for Free Evolution Problem
+"""Complete pipeline for the merged wave dataset.
 
 Orchestrates the full workflow:
-1. Ground truth generation (MATLAB)
+1. Load pre-merged dataset
 2. SVD basis extraction
 3. Train trunk network
 4. Train branch network
@@ -12,6 +11,7 @@ Orchestrates the full workflow:
 
 import os
 import sys
+import shutil
 import h5py
 import numpy as np
 import torch
@@ -22,15 +22,18 @@ import hydra
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf, open_dict
 
-# Import modules
-from src.ground_truth_generation import generate_ground_truth
 from src.svd_analysis import (
     extract_svd_basis,
     visualize_svd_analysis,
     compute_svd_magnitude_summary,
 )
 from src.training import train_trunk, train_branch, train_deeponet_joint
-from src.plotting import plot_deeponet_test, plot_deeponet_validation, plot_trunk_validation, plot_branch_validation
+from src.plotting import (
+    plot_deeponet_validation,
+    plot_deeponet_rollout_validation,
+    plot_trunk_validation,
+    plot_branch_validation,
+)
 from src.models import DeepONet, DualHeadMLP, DualHeadSensorBranch
 
 
@@ -291,396 +294,465 @@ class TeeLogger:
 
 @hydra.main(version_base=None, config_path="configs/constant_force", config_name="config")
 def main(cfg: DictConfig):
+    run_constant_force_pipeline(cfg)
+
+
+def run_constant_force_pipeline(
+    cfg: DictConfig,
+    output_dir: Path = None,
+    pretrained_models_dir: Path = None,
+    log_file_name: str = "run_constant_force.log",
+    use_tee_logger: bool = True,
+    save_default_config_summary: bool = True,
+    run_validation: bool = True,
+):
     """
-    Execute full pipeline for free evolution problem.
+    Execute full pipeline for merged dataset training.
     
-    Hydra automatically:
-    - Loads config from configs/constant_force/config.yaml
-    - Creates timestamped output directory: outputs/YYYY-MM-DD/HH-MM-SS
-    - Sets working directory to outputs/YYYY-MM-DD/HH-MM-SS
+    When called from Hydra entrypoints, output_dir defaults to Hydra runtime output.
+    This function can also be reused by curriculum runners with explicit output_dir
+    and chained pretrained_models_dir.
     """
-    
-    # Setup paths first to determine log location
+
     script_dir = Path(__file__).parent.absolute()
     data_dir = script_dir / "data"
-    models_dir = script_dir / "models"
-    hydra_cfg = HydraConfig.get()
-    output_dir = Path(hydra_cfg.runtime.output_dir)
+
+    if output_dir is None:
+        hydra_cfg = HydraConfig.get()
+        output_dir = Path(hydra_cfg.runtime.output_dir)
+    else:
+        output_dir = Path(output_dir)
+
+    if pretrained_models_dir is None:
+        pretrained_models_dir = script_dir / "models"
+    else:
+        pretrained_models_dir = Path(pretrained_models_dir)
+
+    models_dir = output_dir / "checkpoints"
 
     problem_type = cfg.problem.name
-    
-    # Setup logging to both file and console
-    log_file = output_dir / "run_constant_force.log"
-    tee = TeeLogger(log_file)
-    sys.stdout = tee
-    
-    print("\n" + "=" * 70)
-    print(f"DEEPONET PIPELINE: {cfg.problem.name.upper()}")
-    print("=" * 70)
-    print(f"\nConfig:\n{OmegaConf.to_yaml(cfg)}")
-    
+
+    os.makedirs(output_dir, exist_ok=True)
     os.makedirs(data_dir, exist_ok=True)
     os.makedirs(models_dir, exist_ok=True)
-    
-    print(f"\nWorking directory (output): {output_dir}")
-    print(f"Data directory: {data_dir}")
-    print(f"Models directory: {models_dir}")
-    print(f"Log file: {log_file}")
-    
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Device: {device}\n")
-    
-    # ====================================================================
-    # 1. GROUND TRUTH GENERATION
-    # ====================================================================
-    matlab_script = script_dir / cfg.problem.matlab.script
-    output_mat = data_dir / "constant_force.mat"
-    
-    if not output_mat.exists():
-        print("Step 1: Ground Truth Generation (MATLAB)")
+
+    tee = None
+    original_stdout = sys.stdout
+    log_file = output_dir / log_file_name
+
+    try:
+        if use_tee_logger:
+            tee = TeeLogger(log_file)
+            sys.stdout = tee
+
+        print("\n" + "=" * 70)
+        print(f"DEEPONET PIPELINE: {cfg.problem.name.upper()}")
+        print("=" * 70)
+        print(f"\nConfig:\n{OmegaConf.to_yaml(cfg)}")
+
+        print(f"\nWorking directory (output): {output_dir}")
+        print(f"Data directory: {data_dir}")
+        print(f"Pretrained models directory: {pretrained_models_dir}")
+        print(f"Checkpoints directory: {models_dir}")
+        if use_tee_logger:
+            print(f"Log file: {log_file}")
+
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        print(f"Device: {device}\n")
+
+        # ====================================================================
+        # 1. DATASET LOADING
+        # ====================================================================
+        print("Step 1: Loading merged dataset")
         print("-" * 70)
-        gt_data = generate_ground_truth(
-            matlab_script_path=str(matlab_script),
-            output_mat_file=str(output_mat),
-            script_dir=str(script_dir),
-            config=OmegaConf.to_container(cfg.problem.matlab)
-        )
-    else:
-        print("Step 1: Loading pre-computed ground truth")
-        print("-" * 70)
-        with h5py.File(output_mat, 'r') as f:
+
+        merged_path = data_dir / "merged.mat"
+        if not merged_path.exists():
+            raise FileNotFoundError(
+                f"Merged dataset not found: {merged_path}. "
+                "Run data/merge_dataset.py first."
+            )
+
+        with h5py.File(merged_path, 'r') as f:
+            if 'U_data' not in f or 'V_data' not in f:
+                raise ValueError(
+                    f"Missing required datasets in {merged_path}. Expected U_data and V_data"
+                )
+
             u_fom = np.array(f['U_data']).T
             v_fom = np.array(f['V_data']).T
             f_data = np.array(f['F_data']).T if 'F_data' in f else None
-        
+            source_centers = np.array(f['source_centers']).T if 'source_centers' in f else None
+            source_signs = np.array(f['source_signs']).T if 'source_signs' in f else None
+
+        if u_fom.shape != v_fom.shape:
+            raise ValueError(
+                f"U_data/V_data shape mismatch in {merged_path}: {u_fom.shape} vs {v_fom.shape}"
+            )
+
+        if f_data is None or source_centers is None or source_signs is None:
+            raise ValueError(
+                f"Missing required merged keys in {merged_path}. "
+                "Expected: F_data, source_centers, source_signs"
+            )
+
         Nx, Ny, Nt, N_samples = u_fom.shape
         gt_data = {
             'u_fom': u_fom,
             'v_fom': v_fom,
             'f_data': f_data,
+            'source_centers': source_centers,
+            'source_signs': source_signs,
             'metadata': {
-                'Nx': Nx, 'Ny': Ny, 'Nt': Nt, 'N_samples': N_samples
+                'Nx': Nx,
+                'Ny': Ny,
+                'Nt': Nt,
+                'N_samples': N_samples,
+                'source_datasets': ['constant_force', 'forced_sine_dataset', 'free_evolution'],
             }
         }
-        print(f"✓ Loaded: {output_mat}")
-        print(f"  Shape: {u_fom.shape}")
-    
-    u_fom = gt_data['u_fom']
-    v_fom = gt_data.get('v_fom', None)
-    f_data = gt_data.get('f_data', None)
-    if f_data is None and output_mat.exists():
-        with h5py.File(output_mat, 'r') as f:
-            if 'F_data' in f:
-                f_data = np.array(f['F_data']).T
-    
-    # ====================================================================
-    # 2. SVD BASIS EXTRACTION
-    # ====================================================================
-    print("\nStep 2: SVD Basis Extraction")
-    print("-" * 70)
-    
-    svd_output = data_dir / "svd_constant_force.npy"
-    
-    if not svd_output.exists():
-        svd_data = extract_svd_basis(
-            u_fom=u_fom,
-            n_modes=cfg.svd.n_modes,
-            visualize=False,
-            output_dir=str(output_dir),
-            v_fom=v_fom,
-        )
-        np.save(svd_output, svd_data)
-        print(f"✓ Saved: {svd_output}")
-    else:
-        print("Loading pre-computed SVD data...")
-        svd_output_dict = np.load(svd_output, allow_pickle=True).item()
-        svd_data = svd_output_dict
-        print(f"✓ Loaded: {svd_output}")
 
-    svd_magnitude_summary = None
-    if cfg.svd.visualize:
-        svd_magnitude_summary = visualize_svd_analysis(
-            svd_data=svd_data,
-            output_dir=str(output_dir),
-            n_modes=cfg.svd.n_modes,
-            u_fom=u_fom,
-            v_fom=v_fom,
-        )
+        print(f"✓ Loaded merged dataset: U{u_fom.shape}, V{v_fom.shape}, F{f_data.shape}")
+        print(f"  Source metadata: centers{source_centers.shape}, signs{source_signs.shape}")
 
-    if not svd_magnitude_summary:
-        svd_magnitude_summary = compute_svd_magnitude_summary(
-            svd_data=svd_data,
-            n_modes=cfg.svd.n_modes,
-            u_fom=u_fom,
-            v_fom=v_fom,
-            f_fom=f_data,
-        )
+        u_fom = gt_data['u_fom']
+        v_fom = gt_data.get('v_fom', None)
+        f_data = gt_data.get('f_data', None)
 
-    if svd_magnitude_summary:
-        svd_magnitude_summary = _round_magnitude_summary(svd_magnitude_summary, significant_digits=6)
+        # ====================================================================
+        # 2. SVD BASIS EXTRACTION
+        # ====================================================================
+        print("\nStep 2: SVD Basis Extraction")
+        print("-" * 70)
 
-        with open_dict(cfg):
-            cfg.svd.magnitude_summary = svd_magnitude_summary
+        svd_output = data_dir / "svd_merged.npy"
 
-        hydra_cfg_path = output_dir / ".hydra" / "config.yaml"
-        OmegaConf.save(cfg, str(hydra_cfg_path))
+        if not svd_output.exists():
+            svd_data = extract_svd_basis(
+                u_fom=u_fom,
+                n_modes=cfg.svd.n_modes,
+                visualize=False,
+                output_dir=str(output_dir),
+                v_fom=v_fom,
+            )
+            np.save(svd_output, svd_data)
+            print(f"✓ Saved: {svd_output}")
+        else:
+            print("Loading pre-computed SVD data...")
+            svd_output_dict = np.load(svd_output, allow_pickle=True).item()
+            svd_data = svd_output_dict
+            print(f"✓ Loaded: {svd_output}")
 
-        default_cfg_path = script_dir / "configs" / "constant_force" / "config.yaml"
-        default_cfg = OmegaConf.load(str(default_cfg_path))
-        with open_dict(default_cfg):
-            default_cfg.svd.magnitude_summary = svd_magnitude_summary
-        OmegaConf.save(default_cfg, str(default_cfg_path))
+        svd_magnitude_summary = None
+        if cfg.svd.visualize:
+            svd_magnitude_summary = visualize_svd_analysis(
+                svd_data=svd_data,
+                output_dir=str(output_dir),
+                n_modes=cfg.svd.n_modes,
+                u_fom=u_fom,
+                v_fom=v_fom,
+            )
 
-        print(f"✓ Stored SVD magnitude summary in cfg: {hydra_cfg_path}")
-        print(f"✓ Updated default config with SVD magnitude summary: {default_cfg_path}")
-    
-    # ====================================================================
-    # 3. TRAIN TRUNK NETWORK
-    # ====================================================================
-    print("\nStep 3: Train Trunk Network")
-    print("-" * 70)
-    
-    trunk_checkpoint = models_dir / "trunk_svd_constant_force.pth"
-    
-    if cfg.training.trunk_n_epochs > 0 and not trunk_checkpoint.exists():
-        if 'magnitude_summary' not in cfg.svd:
+        if not svd_magnitude_summary:
+            svd_magnitude_summary = compute_svd_magnitude_summary(
+                svd_data=svd_data,
+                n_modes=cfg.svd.n_modes,
+                u_fom=u_fom,
+                v_fom=v_fom,
+                f_fom=f_data,
+            )
+
+        if svd_magnitude_summary:
+            svd_magnitude_summary = _round_magnitude_summary(svd_magnitude_summary, significant_digits=6)
+
+            with open_dict(cfg):
+                cfg.svd.magnitude_summary = svd_magnitude_summary
+
+            hydra_cfg_path = output_dir / ".hydra" / "config.yaml"
+            hydra_cfg_path.parent.mkdir(parents=True, exist_ok=True)
+            OmegaConf.save(cfg, str(hydra_cfg_path))
+
+            if save_default_config_summary:
+                default_cfg_path = script_dir / "configs" / "constant_force" / "config.yaml"
+                default_cfg = OmegaConf.load(str(default_cfg_path))
+                with open_dict(default_cfg):
+                    default_cfg.svd.magnitude_summary = svd_magnitude_summary
+                OmegaConf.save(default_cfg, str(default_cfg_path))
+                print(f"✓ Updated default config with SVD magnitude summary: {default_cfg_path}")
+
+            print(f"✓ Stored SVD magnitude summary in cfg: {hydra_cfg_path}")
+
+        # ====================================================================
+        # 3. TRAIN TRUNK NETWORK
+        # ====================================================================
+        print("\nStep 3: Train Trunk Network")
+        print("-" * 70)
+
+        trunk_checkpoint = pretrained_models_dir / f"trunk_svd_{problem_type}.pth"
+
+        if cfg.training.trunk_n_epochs > 0 and not trunk_checkpoint.exists():
+            if 'magnitude_summary' not in cfg.svd:
+                raise ValueError(
+                    "cfg.svd.magnitude_summary is missing. "
+                    "Run Step 2 (SVD) first to populate scaling parameters."
+                )
+
+            trunk_config = OmegaConf.to_container(cfg.training)
+            trunk_config['n_modes'] = cfg.svd.n_modes
+            trunk_config['trunk_hidden_dim'] = cfg.networks.trunk.hidden_dim
+            trunk_config['trunk_n_layers'] = cfg.networks.trunk.n_layers
+            trunk_config['svd_magnitude_summary'] = OmegaConf.to_container(
+                cfg.svd.magnitude_summary,
+                resolve=True,
+            )
+
+            train_trunk(
+                config=trunk_config,
+                svd_data=np.load(data_dir / "svd_merged.npy", allow_pickle=True).item(),
+                device=device,
+                output_dir=str(output_dir),
+                models_dir=str(models_dir),
+                problem_type=problem_type,
+            )
+        else:
+            print("Loading pre-trained trunk model...")
+            print(f"✓ Loaded: {trunk_checkpoint}")
+
+        # Keep a canonical trunk checkpoint in repo-level models for curriculum reuse.
+        trained_trunk_checkpoint = models_dir / f"trunk_svd_{problem_type}.pth"
+        canonical_trunk_checkpoint = script_dir / "models" / "trunk_svd_merged.pth"
+        if trained_trunk_checkpoint.exists():
+            canonical_trunk_checkpoint.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(trained_trunk_checkpoint, canonical_trunk_checkpoint)
+            print(f"✓ Saved trunk checkpoint copy: {canonical_trunk_checkpoint}")
+
+        if cfg.networks.trunk.visualize:
+            svd_data_trunk_val = np.load(data_dir / "svd_merged.npy", allow_pickle=True).item()
+            plot_trunk_validation(output_dir, svd_data_trunk_val, models_dir, device,
+                                  problem_type=problem_type)
+
+        # ====================================================================
+        # 4. TRAIN BRANCH NETWORK
+        # ====================================================================
+        print("\nStep 4: Train Branch Network")
+        print("-" * 70)
+
+        if f_data is None:
+            raise ValueError("merged pipeline requires F_data in merged.mat")
+
+        branch_checkpoint = pretrained_models_dir / f"branch_svd_{problem_type}.pth"
+
+        if cfg.training.branch_n_epochs > 0 and not branch_checkpoint.exists():
+            branch_mat_path = data_dir / "merged.mat"
+            branch_svd_path = data_dir / "svd_merged.npy"
+
+            if not branch_mat_path.exists():
+                raise FileNotFoundError(
+                    f"Branch reference dataset not found: {branch_mat_path}. "
+                    "Expected data/merged.mat."
+                )
+            if not branch_svd_path.exists():
+                raise FileNotFoundError(
+                    f"Branch reference SVD not found: {branch_svd_path}. "
+                    "Expected data/svd_merged.npy."
+                )
+
+            print(f"Loading branch reference dataset: {branch_mat_path}")
+            with h5py.File(branch_mat_path, 'r') as f:
+                u_fom_branch = np.array(f['U_data']).T
+                v_fom_branch = np.array(f['V_data']).T if 'V_data' in f else None
+                f_data_branch = np.array(f['F_data']).T if 'F_data' in f else None
+
+            print(f"Loading branch reference SVD: {branch_svd_path}")
+            svd_data_branch = np.load(branch_svd_path, allow_pickle=True).item()
+
+            branch_svd_magnitude_summary = compute_svd_magnitude_summary(
+                svd_data=svd_data_branch,
+                n_modes=cfg.svd.n_modes,
+                u_fom=u_fom_branch,
+                v_fom=v_fom_branch,
+                f_fom=f_data_branch,
+            )
+
+            if branch_svd_magnitude_summary is None:
+                raise ValueError(
+                    "Branch SVD magnitude summary is missing. "
+                    "Provide svd_{problem_type}.npy with the required metadata."
+                )
+
+            branch_config = OmegaConf.to_container(cfg.training)
+            branch_config['n_modes'] = cfg.svd.n_modes
+            branch_config['n_sensors'] = cfg.sensors.n_sensors
+            branch_config['branch_hidden_dim'] = cfg.networks.branch.hidden_dim
+            branch_config['branch_n_layers'] = cfg.networks.branch.n_layers
+            branch_config['svd_magnitude_summary'] = _round_magnitude_summary(
+                branch_svd_magnitude_summary,
+                significant_digits=6,
+            )
+
+            train_branch(
+                config=branch_config,
+                u_fom=u_fom_branch,
+                svd_data=svd_data_branch,
+                device=device,
+                output_dir=str(output_dir),
+                models_dir=str(models_dir),
+                problem_type=problem_type,
+                v_fom=v_fom_branch,
+                f_fom=f_data_branch,
+            )
+        else:
+            print("Loading pre-trained branch model...")
+            print(f"✓ Loaded: {branch_checkpoint}")
+
+        # Keep a canonical branch checkpoint in repo-level models for curriculum reuse.
+        trained_branch_checkpoint = models_dir / f"branch_svd_{problem_type}.pth"
+        canonical_branch_checkpoint = script_dir / "models" / "branch_svd_merged.pth"
+        if trained_branch_checkpoint.exists():
+            canonical_branch_checkpoint.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(trained_branch_checkpoint, canonical_branch_checkpoint)
+            print(f"✓ Saved branch checkpoint copy: {canonical_branch_checkpoint}")
+
+        if cfg.networks.branch.visualize:
+            branch_mat_path = data_dir / "merged.mat"
+            print(f"Loading branch reference dataset: {branch_mat_path}")
+            with h5py.File(branch_mat_path, 'r') as f:
+                u_fom_branch = np.array(f['U_data']).T
+                v_fom_branch = np.array(f['V_data']).T if 'V_data' in f else None
+                f_data_branch = np.array(f['F_data']).T if 'F_data' in f else None
+            branch_svd_path = data_dir / "svd_merged.npy"
+            svd_data_branch = np.load(branch_svd_path, allow_pickle=True).item()
+
+            plot_branch_validation(
+                output_dir=output_dir,
+                u_fom=u_fom_branch,
+                v_fom=v_fom_branch,
+                f_fom=f_data_branch,
+                svd_data=svd_data_branch,
+                models_dir=models_dir,
+                device=device,
+                problem_type=problem_type,
+            )
+
+        # ====================================================================
+        # 5. OPTIONAL: JOINT DEEPONET TRAINING
+        # ====================================================================
+        print("\nStep 5: Joint DeepONet Training")
+        print("-" * 70)
+
+        svd_data_branch = np.load(data_dir / "svd_merged.npy", allow_pickle=True).item()
+
+        if v_fom is None or 'basis_v' not in svd_data_branch:
             raise ValueError(
-                "cfg.svd.magnitude_summary is missing. "
-                "Run Step 2 (SVD) first to populate scaling parameters."
+                "Constant-force DeepONet requires dual-head data (v_fom and svd_data['basis_v']). "
+                "Single-head branch/trunk is no longer supported in this pipeline."
             )
 
-        # Build config with all required fields
-        trunk_config = OmegaConf.to_container(cfg.training)
-        trunk_config['n_modes'] = cfg.svd.n_modes
-        trunk_config['trunk_hidden_dim'] = cfg.networks.trunk.hidden_dim
-        trunk_config['trunk_n_layers'] = cfg.networks.trunk.n_layers
-        trunk_config['svd_magnitude_summary'] = OmegaConf.to_container(
-            cfg.svd.magnitude_summary,
-            resolve=True,
-        )
-        
-        trunk_result = train_trunk(
-            config=trunk_config,
-            svd_data=np.load(data_dir / "svd_constant_force.npy", allow_pickle=True).item(),
-            device=device,
-            output_dir=str(output_dir),
-            models_dir=str(models_dir),
-            problem_type=problem_type,
-        )
-    else:
-        print("Loading pre-trained trunk model...")
-        print(f"✓ Loaded: {trunk_checkpoint}")
-        trunk_result = {'status': 'loaded_from_checkpoint'}
-        
-    if cfg.networks.trunk.visualize:
-        svd_data_trunk_val = np.load(data_dir / "svd_constant_force.npy", allow_pickle=True).item()
-        plot_trunk_validation(output_dir, svd_data_trunk_val, models_dir, device,
-                              problem_type=problem_type)
-    
-    # ====================================================================
-    # 4. TRAIN BRANCH NETWORK
-    # ====================================================================
-    print("\nStep 4: Train Branch Network")
-    print("-" * 70)
+        deeponet_checkpoint = pretrained_models_dir / f"deeponet_{problem_type}.pth"
 
-    if f_data is None:
-        raise ValueError("constant_force pipeline requires F_data in constant_force.mat")
+        trunk_pretrained = pretrained_models_dir / f"trunk_svd_{problem_type}.pth"
+        branch_pretrained = pretrained_models_dir / f"branch_svd_{problem_type}.pth"
 
-    branch_checkpoint = models_dir / "branch_svd_constant_force.pth"
+        finetune_deeponet = bool(cfg.training.get('finetune_deeponet', False))
+        deeponet_init_ckpt = deeponet_checkpoint if deeponet_checkpoint.exists() else None
 
-    if cfg.training.branch_n_epochs > 0 and not branch_checkpoint.exists():
-        branch_reference_name = f"{problem_type}"
-        branch_mat_path = data_dir / f"{branch_reference_name}.mat"
-        branch_svd_path = data_dir / f"svd_{branch_reference_name}.npy"
+        if deeponet_checkpoint.exists() and not finetune_deeponet:
+            print("Loading pre-trained DeepONet model...")
+            print(f"✓ Loaded: {deeponet_checkpoint}")
+        elif cfg.training.deeponet_n_epochs > 0:
+            if finetune_deeponet:
+                if deeponet_init_ckpt is not None:
+                    print(f"Fine-tuning DeepONet from checkpoint: {deeponet_init_ckpt}")
+                else:
+                    print("finetune_deeponet=true but no existing DeepONet checkpoint found; training from trunk/branch initialization")
 
-        if not branch_mat_path.exists():
-            raise FileNotFoundError(
-                f"Branch reference dataset not found: {branch_mat_path}. "
-                f"Expected a .mat file named '{branch_reference_name}.mat'."
+            deeponet_config = OmegaConf.to_container(cfg.training)
+            deeponet_config['n_modes'] = cfg.svd.n_modes
+            deeponet_config['trunk_hidden_dim'] = cfg.networks.trunk.hidden_dim
+            deeponet_config['trunk_n_layers'] = cfg.networks.trunk.n_layers
+            deeponet_config['branch_hidden_dim'] = cfg.networks.branch.hidden_dim
+            deeponet_config['branch_n_layers'] = cfg.networks.branch.n_layers
+            deeponet_config['n_sensors'] = cfg.sensors.n_sensors
+
+            train_deeponet_joint(
+                config=deeponet_config,
+                u_fom=u_fom,
+                svd_data=svd_data_branch,
+                trunk_pretrained_path=str(trunk_pretrained),
+                branch_pretrained_path=str(branch_pretrained),
+                deeponet_pretrained_path=str(deeponet_init_ckpt) if deeponet_init_ckpt is not None else None,
+                device=device,
+                output_dir=str(output_dir),
+                models_dir=str(models_dir),
+                problem_type=problem_type,
+                v_fom=v_fom,
+                f_data=f_data,
             )
-        if not branch_svd_path.exists():
-            raise FileNotFoundError(
-                f"Branch reference SVD not found: {branch_svd_path}. "
-                f"Expected an .npy file named 'svd_{branch_reference_name}.npy'."
-            )
+        else:
+            print("DeepONet checkpoint not found; composing from pretrained dual-head trunk and branch...")
+            if not trunk_pretrained.exists():
+                raise FileNotFoundError(
+                    f"Cannot compose DeepONet: trunk checkpoint not found at {trunk_pretrained}"
+                )
+            if not branch_pretrained.exists():
+                raise FileNotFoundError(
+                    f"Cannot compose DeepONet: branch checkpoint not found at {branch_pretrained}"
+                )
 
-        print(f"Loading branch reference dataset: {branch_mat_path}")
-        with h5py.File(branch_mat_path, 'r') as f:
-            u_fom_branch = np.array(f['U_data']).T
-            v_fom_branch = np.array(f['V_data']).T if 'V_data' in f else None
-            f_data_branch = np.array(f['F_data']).T if 'F_data' in f else None
-
-        print(f"Loading branch reference SVD: {branch_svd_path}")
-        svd_data_branch = np.load(branch_svd_path, allow_pickle=True).item()
-
-        branch_svd_magnitude_summary = compute_svd_magnitude_summary(
-            svd_data=svd_data_branch,
-            n_modes=cfg.svd.n_modes,
-            u_fom=u_fom_branch,
-            v_fom=v_fom_branch,
-            f_fom=f_data_branch,
-        )
-    
-        if branch_svd_magnitude_summary is None:
-            raise ValueError(
-                "Branch SVD magnitude summary is missing. "
-                "Provide svd_{problem_type}.npy with the required metadata."
+            composed_ckpt_path = models_dir / f"deeponet_{problem_type}.pth"
+            os.makedirs(models_dir, exist_ok=True)
+            _compose_dual_deeponet_checkpoint(
+                trunk_ckpt_path=trunk_pretrained,
+                branch_ckpt_path=branch_pretrained,
+                deeponet_ckpt_path=composed_ckpt_path,
+                device=device,
+                n_sensors=cfg.sensors.n_sensors,
             )
 
-        # Build config with all required fields
-        branch_config = OmegaConf.to_container(cfg.training)
-        branch_config['n_modes'] = cfg.svd.n_modes
-        branch_config['n_sensors'] = cfg.sensors.n_sensors
-        branch_config['branch_hidden_dim'] = cfg.networks.branch.hidden_dim
-        branch_config['branch_n_layers'] = cfg.networks.branch.n_layers
-        branch_config['svd_magnitude_summary'] = _round_magnitude_summary(
-            branch_svd_magnitude_summary,
-            significant_digits=6,
-        )
-        
-        branch_result = train_branch(
-            config=branch_config,
-            u_fom=u_fom_branch,
-            svd_data=svd_data_branch,
-            device=device,
-            output_dir=str(output_dir),
-            models_dir=str(models_dir),
-            problem_type='constant_force',
-            v_fom=v_fom_branch,
-            f_fom=f_data_branch,
-        )
-    else:
-        print("Loading pre-trained branch model...")
-        print(f"✓ Loaded: {branch_checkpoint}")
-        branch_result = {'status': 'loaded_from_checkpoint'}
-    
-    if cfg.networks.branch.visualize:
-        branch_reference_name = f"{problem_type}"
-        branch_mat_path = data_dir / f"{branch_reference_name}.mat"
-        print(f"Loading branch reference dataset: {branch_mat_path}")
-        with h5py.File(branch_mat_path, 'r') as f:
-            u_fom_branch = np.array(f['U_data']).T
-            v_fom_branch = np.array(f['V_data']).T if 'V_data' in f else None
-            f_data_branch = np.array(f['F_data']).T if 'F_data' in f else None
-        branch_svd_path = data_dir / f"svd_{branch_reference_name}.npy"
-        svd_data_branch = np.load(branch_svd_path, allow_pickle=True).item()
+        # ====================================================================
+        # 6. DEEPONET VALIDATION
+        # ====================================================================
+        if run_validation:
+            print("\nStep 6: DeepONet Validation")
+            print("-" * 70)
 
-        plot_branch_validation(
-            output_dir=output_dir,
-            u_fom=u_fom_branch,
-            v_fom=v_fom_branch,
-            f_fom=f_data_branch,
-            svd_data=svd_data_branch,
-            models_dir=models_dir,
-            device=device,
-            problem_type=problem_type,
-        )
-    
-    # ====================================================================
-    # 5. OPTIONAL: JOINT DEEPONET TRAINING
-    # ====================================================================
-    print("\nStep 5: Joint DeepONet Training")
-    print("-" * 70)
+            _val_ckpt = models_dir / f"deeponet_{problem_type}.pth"
+            validation_models_dir = str(models_dir) if _val_ckpt.exists() else str(pretrained_models_dir)
 
-    svd_data_branch = np.load(data_dir / "svd_constant_force.npy", allow_pickle=True).item()
-
-    if v_fom is None or 'basis_v' not in svd_data_branch:
-        raise ValueError(
-            "Constant-force DeepONet requires dual-head data (v_fom and svd_data['basis_v']). "
-            "Single-head branch/trunk is no longer supported in this pipeline."
-        )
-    
-    deeponet_checkpoint = models_dir / "deeponet_constant_force.pth"
-    
-    trunk_pretrained = models_dir / "trunk_svd_constant_force.pth"
-    branch_pretrained = models_dir / "branch_svd_constant_force.pth"
-    if not trunk_pretrained.exists():
-        output_fallback = output_dir / "trunk_svd_constant_force.pth"
-        if output_fallback.exists():
-            trunk_pretrained = output_fallback
-    if not branch_pretrained.exists():
-        output_fallback = output_dir / "branch_svd_constant_force.pth"
-        if output_fallback.exists():
-            branch_pretrained = output_fallback
-
-    if deeponet_checkpoint.exists():
-        print("Loading pre-trained DeepONet model...")
-        print(f"✓ Loaded: {deeponet_checkpoint}")
-        deeponet_result = {'status': 'loaded_from_checkpoint'}
-    elif cfg.training.deeponet_n_epochs > 0:
-        # Build config with all required fields
-        deeponet_config = OmegaConf.to_container(cfg.training)
-        deeponet_config['n_modes'] = cfg.svd.n_modes
-        deeponet_config['trunk_hidden_dim'] = cfg.networks.trunk.hidden_dim
-        deeponet_config['trunk_n_layers'] = cfg.networks.trunk.n_layers
-        deeponet_config['branch_hidden_dim'] = cfg.networks.branch.hidden_dim
-        deeponet_config['branch_n_layers'] = cfg.networks.branch.n_layers
-        deeponet_config['n_sensors'] = cfg.sensors.n_sensors
-
-        deeponet_result = train_deeponet_joint(
-            config=deeponet_config,
-            u_fom=u_fom,
-            svd_data=svd_data_branch,
-            trunk_pretrained_path=str(trunk_pretrained),
-            branch_pretrained_path=str(branch_pretrained),
-            device=device,
-            output_dir=str(output_dir),
-            models_dir=str(models_dir),
-            problem_type='constant_force',
-            v_fom=v_fom,
-            f_data=f_data,
-        )
-    else:
-        print("DeepONet checkpoint not found; composing from pretrained dual-head trunk and branch...")
-        if not trunk_pretrained.exists():
-            raise FileNotFoundError(
-                f"Cannot compose DeepONet: trunk checkpoint not found at {trunk_pretrained}"
-            )
-        if not branch_pretrained.exists():
-            raise FileNotFoundError(
-                f"Cannot compose DeepONet: branch checkpoint not found at {branch_pretrained}"
+            plot_deeponet_validation(
+                output_dir=str(output_dir),
+                u_fom=u_fom,
+                v_fom=v_fom,
+                f_fom=f_data,
+                svd_data=svd_data_branch,
+                models_dir=validation_models_dir,
+                device=device,
+                problem_type=problem_type,
+                sample_idx=2
             )
 
-        _compose_dual_deeponet_checkpoint(
-            trunk_ckpt_path=trunk_pretrained,
-            branch_ckpt_path=branch_pretrained,
-            deeponet_ckpt_path=deeponet_checkpoint,
-            device=device,
-            n_sensors=cfg.sensors.n_sensors,
-        )
-        deeponet_result = {'status': 'composed_from_pretrained'}
-    
-    # ====================================================================
-    # 6. DEEPONET VALIDATION
-    # ====================================================================
-    print("\nStep 6: DeepONet Validation")
-    print("-" * 70)
+            plot_deeponet_rollout_validation(
+                output_dir=str(output_dir),
+                u_fom=u_fom,
+                v_fom=v_fom,
+                f_fom=f_data,
+                svd_data=svd_data_branch,
+                models_dir=validation_models_dir,
+                rollout_dt=cfg.validation.rollout_dt,
+                device=device,
+                problem_type=problem_type,
+                sample_idx=2,
+            )
 
-
-    plot_deeponet_validation(
-        output_dir=str(output_dir),
-        u_fom=u_fom,
-        v_fom=v_fom,
-        f_fom=f_data,
-        svd_data=svd_data_branch,
-        models_dir=str(models_dir),
-        device=device,
-        problem_type='constant_force',
-        sample_idx=2
-    )
-    
-    # ====================================================================
-    # COMPLETE
-    # ====================================================================
-    print("\n" + "=" * 70)
-    print("✓ PIPELINE COMPLETE")
-    print("=" * 70)
-    print(f"Output directory: {output_dir}")
-    print("=" * 70 + "\n")
-    
-    # Close log file
-    sys.stdout = tee.terminal
-    tee.close()
+        print("\n" + "=" * 70)
+        print("✓ PIPELINE COMPLETE")
+        print("=" * 70)
+        print(f"Output directory: {output_dir}")
+        print("=" * 70 + "\n")
+    finally:
+        if use_tee_logger and tee is not None:
+            sys.stdout = original_stdout
+            tee.close()
 
 
 if __name__ == "__main__":

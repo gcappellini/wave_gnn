@@ -996,7 +996,40 @@ def _load_deeponet_from_checkpoint(ckpt_path, device, problem_type='free_evoluti
     deeponet.load_state_dict(state)
     deeponet.eval()
 
-    normalization = ckpt.get('normalization', {})
+    normalization = dict(ckpt.get('normalization', {}) or {})
+
+    # Backfill raw input normalization for older DeepONet checkpoints.
+    # Validation/inference branch input normalization must match branch pretraining.
+    has_raw_u = ('raw_u_min' in normalization) and ('raw_u_max' in normalization)
+    has_raw_v = ('raw_v_min' in normalization) and ('raw_v_max' in normalization)
+    has_raw_f = ('raw_f_min' in normalization) and ('raw_f_max' in normalization)
+    if not (has_raw_u and has_raw_v and has_raw_f):
+        branch_ckpt_path = ckpt_path.parent / f"branch_svd_{problem_type}.pth"
+        if branch_ckpt_path.exists():
+            try:
+                branch_ckpt = torch.load(branch_ckpt_path, map_location='cpu', weights_only=False)
+                input_norm = branch_ckpt.get('input_normalization', {}) or {}
+                if 'raw_u_min' in input_norm and 'raw_u_max' in input_norm:
+                    normalization['raw_u_min'] = float(input_norm['raw_u_min'])
+                    normalization['raw_u_max'] = float(input_norm['raw_u_max'])
+                if 'raw_v_min' in input_norm and 'raw_v_max' in input_norm:
+                    normalization['raw_v_min'] = float(input_norm['raw_v_min'])
+                    normalization['raw_v_max'] = float(input_norm['raw_v_max'])
+                if 'raw_f_min' in input_norm and 'raw_f_max' in input_norm:
+                    normalization['raw_f_min'] = float(input_norm['raw_f_min'])
+                    normalization['raw_f_max'] = float(input_norm['raw_f_max'])
+                print("  DeepONet loader: recovered raw_* normalization from branch checkpoint")
+            except Exception as exc:
+                print(f"  Warning: failed to recover normalization from branch checkpoint: {exc}")
+
+    # Last-resort defaults for legacy checkpoints.
+    normalization.setdefault('raw_u_min', float(normalization.get('u_min', 0.0) or 0.0))
+    normalization.setdefault('raw_u_max', float(normalization.get('u_max', 1.0) or 1.0))
+    normalization.setdefault('raw_v_min', float(normalization.get('v_min', 0.0) or 0.0))
+    normalization.setdefault('raw_v_max', float(normalization.get('v_max', 1.0) or 1.0))
+    normalization.setdefault('raw_f_min', float(normalization.get('force_measurements_min', -1.0) or -1.0))
+    normalization.setdefault('raw_f_max', float(normalization.get('force_measurements_max', 1.0) or 1.0))
+
     return deeponet, n_sensors, normalization
 
 
@@ -1084,6 +1117,341 @@ def _plot_field_row(axes_row, gt, pred, label, t_val, field_kind='u', value_limi
     axes_row[2].set_title(f"|Error| {label}  L2={l2:.2e}", fontsize=10)
     axes_row[2].set_xticks([]); axes_row[2].set_yticks([])
     return l2
+
+
+def _sample_sensor_grid(field, sensor_x, sensor_y):
+    """Sample a full-resolution field on the branch sensor grid."""
+    return np.array([field[si, sj] for si in sensor_x for sj in sensor_y], dtype=np.float32)
+
+
+def _normalize_sensor_values(values, raw_min, raw_max):
+    """Map raw sensor values to [-1, 1]."""
+    return 2 * (values - raw_min) / (raw_max - raw_min + 1e-10) - 1
+
+
+def _build_branch_measurement_tensor(
+    u_field,
+    v_field,
+    f_fom,
+    sample_idx,
+    sensor_x,
+    sensor_y,
+    raw_u_min,
+    raw_u_max,
+    raw_v_min,
+    raw_v_max,
+    raw_f_min,
+    raw_f_max,
+    input_channels,
+    n_sensors,
+    device,
+):
+    """Build normalized branch input tensor from full fields."""
+    u_meas_norm = _normalize_sensor_values(
+        _sample_sensor_grid(u_field, sensor_x, sensor_y),
+        raw_u_min,
+        raw_u_max,
+    )
+
+    if input_channels == 1:
+        meas = u_meas_norm.astype(np.float32)
+        return torch.from_numpy(meas).float().unsqueeze(0).to(device)
+
+    v_meas_norm = _normalize_sensor_values(
+        _sample_sensor_grid(v_field, sensor_x, sensor_y),
+        raw_v_min,
+        raw_v_max,
+    )
+
+    if input_channels == 3:
+        if f_fom is None:
+            raise ValueError("3-channel DeepONet rollout requires f_fom")
+
+        if f_fom.ndim == 4:
+            f_field = f_fom[:, :, 0, sample_idx]
+        else:
+            f_field = f_fom[:, :, sample_idx]
+
+        f_meas_norm = _normalize_sensor_values(
+            _sample_sensor_grid(f_field, sensor_x, sensor_y),
+            raw_f_min,
+            raw_f_max,
+        )
+
+        meas = np.stack([
+            u_meas_norm.reshape(n_sensors, n_sensors),
+            v_meas_norm.reshape(n_sensors, n_sensors),
+            f_meas_norm.reshape(n_sensors, n_sensors),
+        ], axis=0).astype(np.float32)
+    else:
+        meas = np.concatenate([u_meas_norm, v_meas_norm]).astype(np.float32)
+
+    return torch.from_numpy(meas).float().unsqueeze(0).to(device)
+
+
+def plot_deeponet_rollout_validation(
+    output_dir: str,
+    u_fom: np.ndarray,
+    svd_data: dict,
+    models_dir: str,
+    device: torch.device = None,
+    sample_idx: int = 0,
+    rollout_dt: float = None,
+    problem_type: str = 'free_evolution',
+    v_fom: np.ndarray = None,
+    f_fom: np.ndarray = None,
+):
+    """Validate iterative one-step DeepONet rollout using predicted u/v as next inputs."""
+
+    print("\n" + "=" * 70)
+    print("DEEPONET ROLLOUT VALIDATION: Iterative One-Step Prediction")
+    print("=" * 70)
+
+    if device is None:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    if v_fom is None:
+        print("⚠ Warning: Rollout validation requires v_fom for dual-head predictions")
+        print("  Skipping rollout validation.")
+        return
+
+    output_dir = Path(output_dir)
+    ckpt_name = f"deeponet_{problem_type}.pth"
+    deeponet_checkpoint = output_dir / ckpt_name
+    if not deeponet_checkpoint.exists():
+        deeponet_checkpoint = Path(models_dir) / ckpt_name
+        if not deeponet_checkpoint.exists():
+            print("⚠ Warning: DeepONet checkpoint not found in output_dir or models_dir")
+            print("  Skipping rollout validation.")
+            return
+
+    deeponet, n_sensors, normalization = _load_deeponet_from_checkpoint(
+        deeponet_checkpoint, device, problem_type
+    )
+
+    raw_u_min = float(normalization.get('raw_u_min', 0.0))
+    raw_u_max = float(normalization.get('raw_u_max', 1.0))
+    raw_v_min = float(normalization.get('raw_v_min', 0.0))
+    raw_v_max = float(normalization.get('raw_v_max', 1.0))
+    raw_f_min = float(normalization.get('raw_f_min', 0.0))
+    raw_f_max = float(normalization.get('raw_f_max', 1.0))
+
+    Nx, Ny, Nt, N_samples = u_fom.shape
+    if sample_idx >= N_samples:
+        raise IndexError(f"sample_idx={sample_idx} out of range for N_samples={N_samples}")
+    if Nt < 2:
+        print("⚠ Warning: Need at least two time levels for rollout validation")
+        print("  Skipping rollout validation.")
+        return
+
+    data_dir = Path(models_dir).parent / "data"
+    primary_mat = data_dir / "free_evolution.mat"
+    fallback_mat = data_dir / f"{problem_type}.mat"
+    grid_mat = primary_mat if primary_mat.exists() else fallback_mat
+    x, y, t = _load_grid_from_mat(grid_mat, Nx, Ny, Nt)
+    X, Y, _ = np.meshgrid(x, y, t, indexing='ij')
+
+    if rollout_dt is None:
+        rollout_dt = float(t[1] - t[0])
+    if rollout_dt <= 0:
+        raise ValueError(f"rollout_dt must be positive, got {rollout_dt}")
+
+    sensor_x = np.linspace(0, Nx - 1, n_sensors, dtype=int)
+    sensor_y = np.linspace(0, Ny - 1, n_sensors, dtype=int)
+    input_channels = int(getattr(getattr(deeponet, 'branch_ic', None), 'input_channels', 2))
+
+    rollout_targets = np.arange(float(t[0]) + rollout_dt, float(t[-1]) + 0.5 * rollout_dt, rollout_dt)
+    step_indices = []
+    for target_time in rollout_targets:
+        t_idx = int(np.argmin(np.abs(t - target_time)))
+        if t_idx <= 0:
+            continue
+        if step_indices and t_idx == step_indices[-1]:
+            continue
+        step_indices.append(t_idx)
+
+    if not step_indices:
+        print("⚠ Warning: No rollout steps matched the available time grid")
+        print("  Skipping rollout validation.")
+        return
+
+    print(f"  Generating rollout predictions for sample {sample_idx}...")
+    print(f"  Using grid from: {grid_mat}")
+    print(f"  Requested rollout_dt={rollout_dt:.6f}")
+
+    current_u = u_fom[:, :, 0, sample_idx].astype(np.float32, copy=True)
+    current_v = v_fom[:, :, 0, sample_idx].astype(np.float32, copy=True)
+    prev_time = float(t[0])
+    rollout_rows = []
+    metrics = []
+
+    for step_number, t_idx in enumerate(step_indices, start=1):
+        target_time = float(t[t_idx])
+        local_dt = target_time - prev_time
+        if local_dt <= 0:
+            continue
+
+        meas_tensor = _build_branch_measurement_tensor(
+            u_field=current_u,
+            v_field=current_v,
+            f_fom=f_fom,
+            sample_idx=sample_idx,
+            sensor_x=sensor_x,
+            sensor_y=sensor_y,
+            raw_u_min=raw_u_min,
+            raw_u_max=raw_u_max,
+            raw_v_min=raw_v_min,
+            raw_v_max=raw_v_max,
+            raw_f_min=raw_f_min,
+            raw_f_max=raw_f_max,
+            input_channels=input_channels,
+            n_sensors=n_sensors,
+            device=device,
+        )
+
+        coords_np = np.stack([
+            X[:, :, t_idx].flatten('F'),
+            Y[:, :, t_idx].flatten('F'),
+            np.full((Nx * Ny,), local_dt, dtype=np.float32),
+        ], axis=1)
+
+        u_pred, v_pred = _run_deeponet_inference(deeponet, meas_tensor, coords_np, Nx, Ny, device, True)
+        u_gt = u_fom[:, :, t_idx, sample_idx]
+        v_gt = v_fom[:, :, t_idx, sample_idx]
+
+        u_l2 = np.linalg.norm(u_pred - u_gt) / (np.linalg.norm(u_gt) + 1e-12)
+        v_l2 = np.linalg.norm(v_pred - v_gt) / (np.linalg.norm(v_gt) + 1e-12)
+        metrics.append({'t_val': target_time, 'u_l2': u_l2, 'v_l2': v_l2})
+
+        rollout_rows.append({'kind': 'u', 't_val': target_time, 'gt': u_gt, 'pred': u_pred, 'label': 'u'})
+        rollout_rows.append({'kind': 'v', 't_val': target_time, 'gt': v_gt, 'pred': v_pred, 'label': 'v'})
+
+        print(
+            f"  Step {step_number:02d}: t={prev_time:.6f} -> {target_time:.6f} "
+            f"(local_dt={local_dt:.6f}) | u_L2={u_l2:.4e}, v_L2={v_l2:.4e}"
+        )
+
+        current_u = u_pred.astype(np.float32, copy=True)
+        current_v = v_pred.astype(np.float32, copy=True)
+        prev_time = target_time
+
+    snapshot_count = min(4, len(metrics))
+    snapshot_step_ids = np.linspace(0, len(metrics) - 1, snapshot_count, dtype=int)
+    snapshot_row_ids = []
+    for step_id in snapshot_step_ids:
+        base_row = 2 * step_id
+        snapshot_row_ids.extend([base_row, base_row + 1])
+    snapshot_rows = [rollout_rows[row_id] for row_id in snapshot_row_ids]
+
+    n_rows = len(snapshot_rows)
+    fig, axes = plt.subplots(n_rows, 3, figsize=(15, 4 * n_rows))
+    if n_rows == 1:
+        axes = axes[np.newaxis, :]
+
+    u_vals = [arr for row_data in snapshot_rows if row_data['kind'] == 'u' for arr in (row_data['gt'], row_data['pred'])]
+    u_limits = (min(arr.min() for arr in u_vals), max(arr.max() for arr in u_vals))
+
+    v_vals = [arr for row_data in snapshot_rows if row_data['kind'] == 'v' for arr in (row_data['gt'], row_data['pred'])]
+    v_limits = (min(arr.min() for arr in v_vals), max(arr.max() for arr in v_vals))
+
+    error_max_u = max(
+        max(np.abs(row_data['pred'] - row_data['gt']).max() for row_data in snapshot_rows if row_data['kind'] == 'u'),
+        1e-12,
+    )
+    error_max_v = max(
+        max(np.abs(row_data['pred'] - row_data['gt']).max() for row_data in snapshot_rows if row_data['kind'] == 'v'),
+        1e-12,
+    )
+
+    u_rows = []
+    v_rows = []
+    for row_idx, row_data in enumerate(snapshot_rows):
+        if row_data['kind'] == 'u':
+            value_limits = u_limits
+            error_max = error_max_u
+            u_rows.append(row_idx)
+        else:
+            value_limits = v_limits
+            error_max = error_max_v
+            v_rows.append(row_idx)
+
+        l2_val = _plot_field_row(
+            axes[row_idx],
+            row_data['gt'],
+            row_data['pred'],
+            row_data['label'],
+            row_data['t_val'],
+            field_kind=row_data['kind'],
+            value_limits=value_limits,
+            error_max=error_max,
+        )
+        print(f"  Snapshot t={row_data['t_val']:.2f}  {row_data['kind']}: L2={l2_val:.4e}")
+
+    plt.suptitle(f'Iterative DeepONet Rollout (Sample {sample_idx})', fontsize=13, y=0.998)
+    plt.tight_layout(rect=[0.0, 0.0, 0.84, 0.97])
+
+    cbar_x = 0.865
+    cbar_w = 0.012
+    cbar_h = 0.18
+    cbar_gap = 0.03
+    cbar_top = 0.93
+    cbar_slot = 0
+
+    if u_rows:
+        sm_u = plt.cm.ScalarMappable(norm=plt.Normalize(vmin=u_limits[0], vmax=u_limits[1]), cmap='seismic')
+        sm_u.set_array([])
+        y1 = cbar_top - cbar_slot * (cbar_h + cbar_gap)
+        cax_u = fig.add_axes([cbar_x, y1 - cbar_h, cbar_w, cbar_h])
+        cb_u = fig.colorbar(sm_u, cax=cax_u)
+        cb_u.set_label('Deformation (u)', fontsize=9)
+        cbar_slot += 1
+
+    if v_rows:
+        sm_v = plt.cm.ScalarMappable(norm=plt.Normalize(vmin=v_limits[0], vmax=v_limits[1]), cmap='viridis')
+        sm_v.set_array([])
+        y1 = cbar_top - cbar_slot * (cbar_h + cbar_gap)
+        cax_v = fig.add_axes([cbar_x, y1 - cbar_h, cbar_w, cbar_h])
+        cb_v = fig.colorbar(sm_v, cax=cax_v)
+        cb_v.set_label('Velocity (v)', fontsize=9)
+        cbar_slot += 1
+
+    sm_err_u = plt.cm.ScalarMappable(norm=plt.Normalize(vmin=0.0, vmax=error_max_u), cmap='YlOrRd')
+    sm_err_u.set_array([])
+    y1 = cbar_top - cbar_slot * (cbar_h + cbar_gap)
+    cax_err_u = fig.add_axes([cbar_x, y1 - cbar_h, cbar_w, cbar_h])
+    cb_err_u = fig.colorbar(sm_err_u, cax=cax_err_u)
+    cb_err_u.set_label('Abs Error (u)', fontsize=9)
+    cbar_slot += 1
+
+    sm_err_v = plt.cm.ScalarMappable(norm=plt.Normalize(vmin=0.0, vmax=error_max_v), cmap='YlOrRd')
+    sm_err_v.set_array([])
+    y1 = cbar_top - cbar_slot * (cbar_h + cbar_gap)
+    cax_err_v = fig.add_axes([cbar_x, y1 - cbar_h, cbar_w, cbar_h])
+    cb_err_v = fig.colorbar(sm_err_v, cax=cax_err_v)
+    cb_err_v.set_label('Abs Error (v)', fontsize=9)
+
+    save_path = os.path.join(str(output_dir), f'validation_deeponet_rollout_sample{sample_idx}.png')
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"  ✓ Saved: validation_deeponet_rollout_sample{sample_idx}.png")
+
+    metric_times = [item['t_val'] for item in metrics]
+    metric_u = [item['u_l2'] for item in metrics]
+    metric_v = [item['v_l2'] for item in metrics]
+    fig, ax = plt.subplots(figsize=(8, 4.5))
+    ax.plot(metric_times, metric_u, marker='o', linewidth=1.8, label='u relative L2')
+    ax.plot(metric_times, metric_v, marker='s', linewidth=1.8, label='v relative L2')
+    ax.set_xlabel('Time')
+    ax.set_ylabel('Relative L2 Error')
+    ax.set_title(f'Iterative Rollout Error Accumulation (Sample {sample_idx})')
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+    metric_save_path = os.path.join(str(output_dir), f'validation_deeponet_rollout_metrics_sample{sample_idx}.png')
+    plt.tight_layout()
+    plt.savefig(metric_save_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"  ✓ Saved: validation_deeponet_rollout_metrics_sample{sample_idx}.png")
+    print("  ✓ DeepONet rollout validation complete")
 
 
 def plot_deeponet_validation(

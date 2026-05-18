@@ -1,0 +1,133 @@
+defaults:
+  - config
+  - _self_
+
+curriculum:
+  # If null, stage 0 starts from script_dir/models.
+  initial_pretrained_models_dir: null
+  # Keep global config untouched by default while iterating stages.
+  save_default_config_summary: false
+  # Validation can be expensive; usually run it on the final stage only.
+  run_validation_each_step: true
+  run_validation_last_step: true
+  steps:
+    - name: step_0_pretrain_trunk_branch
+      overrides:
+        training:
+          trunk_n_epochs: 500
+          branch_n_epochs: 500
+          deeponet_n_epochs: 0
+          finetune_deeponet: false
+          use_pinn_loss: false
+          deeponet_rollout:
+            enabled: false
+
+    - name: step_1_joint_supervised
+      overrides:
+        training:
+          trunk_n_epochs: 0
+          branch_n_epochs: 0
+          deeponet_n_epochs: 200
+          finetune_deeponet: true
+          use_pinn_loss: false
+          deeponet_rollout:
+            enabled: false
+
+    - name: step_2_branch_noise
+      overrides:
+        training:
+          trunk_n_epochs: 0
+          branch_n_epochs: 0
+          deeponet_n_epochs: 200
+          finetune_deeponet: true
+          use_pinn_loss: false
+          deeponet_branch_input_noise:
+            enabled: true
+            std: 0.05
+            apply_to_force: false
+            clip_min: -1.0
+            clip_max: 1.0
+
+    - name: step_3_rollout_h2_r1
+      overrides:
+        training:
+          trunk_n_epochs: 0
+          branch_n_epochs: 0
+          deeponet_n_epochs: 200
+          finetune_deeponet: true
+          use_pinn_loss: true
+          pde_loss_weight: 0.02
+          pde_loss_weight_uv: 1.0
+          pde_loss_weight_wave: 0.0
+          pde_loss_weight_start_factor: 0.01
+          pde_loss_weight_end_factor: 1.0
+          pde_loss_weight_warmup_epochs: 30
+          pde_loss_weight_schedule: linear
+          rollout_pi_use_all_samples: true
+          deeponet_rollout:
+            enabled: true
+            horizon: 2
+            step_stride: 1
+
+    - name: step_4_rollout_h3_r1_r2
+      overrides:
+        training:
+          trunk_n_epochs: 0
+          branch_n_epochs: 0
+          deeponet_n_epochs: 200
+          finetune_deeponet: true
+          use_pinn_loss: true
+          pde_loss_weight: 0.05
+          pde_loss_weight_uv: 1.0
+          pde_loss_weight_wave: 0.05
+          pde_loss_weight_start_factor: 0.01
+          pde_loss_weight_end_factor: 1.0
+          pde_loss_weight_warmup_epochs: 30
+          pde_loss_weight_schedule: linear
+          rollout_pi_use_all_samples: true
+          deeponet_rollout:
+            enabled: true
+            horizon: 3
+            step_stride: 1
+
+    - name: step_5_rollout_h5_r1_r2
+      overrides:
+        training:
+          trunk_n_epochs: 0
+          branch_n_epochs: 0
+          deeponet_n_epochs: 200
+          finetune_deeponet: true
+          use_pinn_loss: true
+          pde_loss_weight: 0.1
+          pde_loss_weight_uv: 1.0
+          pde_loss_weight_wave: 0.2
+          pde_loss_weight_start_factor: 0.01
+          pde_loss_weight_end_factor: 1.0
+          pde_loss_weight_warmup_epochs: 30
+          pde_loss_weight_schedule: linear
+          rollout_pi_use_all_samples: true
+          deeponet_rollout:
+            enabled: true
+            horizon: 5
+            step_stride: 1
+
+    - name: step_6_rollout_h5_r1_r2
+      overrides:
+        training:
+          trunk_n_epochs: 0
+          branch_n_epochs: 0
+          deeponet_n_epochs: 200
+          finetune_deeponet: true
+          use_pinn_loss: true
+          pde_loss_weight: 0.2
+          pde_loss_weight_uv: 1.0
+          pde_loss_weight_wave: 0.5
+          pde_loss_weight_start_factor: 0.01
+          pde_loss_weight_end_factor: 1.0
+          pde_loss_weight_warmup_epochs: 30
+          pde_loss_weight_schedule: linear
+          rollout_pi_use_all_samples: true
+          deeponet_rollout:
+            enabled: true
+            horizon: 5
+            step_stride: 1

@@ -83,6 +83,7 @@ class DualHeadMLP(nn.Module):
         h = self.backbone(x)
         out_u = self.head_u(h) * self.u_output_scale
         out_v = self.head_v(h) * self.v_output_scale
+
         return out_u, out_v
 
 
@@ -218,19 +219,19 @@ class DeepONet(nn.Module):
         """
         branch = self.get_branch()
 
-        if self.problem_type == 'free_evolution':
-            # Both trunk and branch are DualHeadMLP → return tuples
-            trunk_u, trunk_v = self.trunk(coords)       # each (B, n_modes)
-            branch_u, branch_v = branch(measurements)   # each (B, n_modes)
-            u = torch.sum(trunk_u * branch_u, dim=1)    # (B,)
-            v = torch.sum(trunk_v * branch_v, dim=1)    # (B,)
-            return u, v
-        else:
-            # constant_force: single-output MLP trunk and branch
-            trunk_out = self.trunk(coords)              # (B, n_modes)
-            branch_out = branch(measurements)           # (B, n_modes)
-            u = torch.sum(trunk_out * branch_out, dim=1)
-            return u
+        trunk_u, trunk_v = self.trunk(coords)       # each (B, n_modes)
+        branch_u, branch_v = branch(measurements)   # each (B, n_modes)
+        u = torch.sum(trunk_u * branch_u, dim=1)    # (B,)
+        v = torch.sum(trunk_v * branch_v, dim=1)    # (B,)
+        
+        # Apply hard constraint mask: x*(1-x)*y*(1-y)*16 to enforce u=v=0 at boundaries
+        x, y = coords[:, 0], coords[:, 1]
+        boundary_mask = x * (1.0 - x) * y * (1.0 - y) * 16.0
+        u = u * boundary_mask
+        v = v * boundary_mask
+        
+        return u, v
+
     
     def compute_pde_residual(self, 
                             measurements: torch.Tensor, 
