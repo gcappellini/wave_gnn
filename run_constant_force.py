@@ -329,6 +329,7 @@ def run_constant_force_pipeline(
         pretrained_models_dir = Path(pretrained_models_dir)
 
     models_dir = output_dir / "checkpoints"
+    canonical_models_dir = script_dir / "models"
 
     problem_type = cfg.problem.name
 
@@ -354,6 +355,7 @@ def run_constant_force_pipeline(
         print(f"Data directory: {data_dir}")
         print(f"Pretrained models directory: {pretrained_models_dir}")
         print(f"Checkpoints directory: {models_dir}")
+        print(f"Canonical models directory: {canonical_models_dir}")
         if use_tee_logger:
             print(f"Log file: {log_file}")
 
@@ -528,7 +530,7 @@ def run_constant_force_pipeline(
 
         if cfg.networks.trunk.visualize:
             svd_data_trunk_val = np.load(data_dir / "svd_merged.npy", allow_pickle=True).item()
-            plot_trunk_validation(output_dir, svd_data_trunk_val, models_dir, device,
+            plot_trunk_validation(output_dir, svd_data_trunk_val, canonical_models_dir, device,
                                   problem_type=problem_type)
 
         # ====================================================================
@@ -629,7 +631,7 @@ def run_constant_force_pipeline(
                 v_fom=v_fom_branch,
                 f_fom=f_data_branch,
                 svd_data=svd_data_branch,
-                models_dir=models_dir,
+                models_dir=canonical_models_dir,
                 device=device,
                 problem_type=problem_type,
             )

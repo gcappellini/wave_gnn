@@ -1,0 +1,28 @@
+\begin{landscape}
+\begin{table}[h!]
+\centering
+\caption{Detailed Curriculum Training Strategy}
+\label{tab:curriculum_detailed}
+\tiny
+\begin{tabularx}{\linewidth}{|c|l|c|c|c|c|c|c|c|l|}
+\hline
+\textbf{Stage} & \textbf{Step} & \textbf{Trunk} & \textbf{Branch} & \textbf{DeepONet} & \textbf{Finetune} & \textbf{PINN} & \textbf{PDE Weight} & \textbf{Rollout} & \textbf{Additional Config} \\
+\hline
+0 & step\_0\_pretrain\_trunk\_branch & 2000 & 2000 & 0 & No & No & 0.0 (UV: 0.0, Wave: 0.0) & Disabled & --- \\
+1 & step\_1\_joint\_supervised & 0 & 0 & 200 & Yes & No & 0.0 (UV: 0.0, Wave: 0.0) & Disabled & --- \\
+2 & step\_2\_branch\_noise & 0 & 0 & 200 & Yes & No & 0.0 (UV: 0.0, Wave: 0.0) & Disabled & Noise (std=0.05) \\
+3 & step\_3\_rollout\_h2\_r1 & 0 & 0 & 100 & Yes & Yes & 0.02 (UV: 1.0, Wave: 0.0) & H=2, S=1 & Warmup=30 (linear) \\
+4 & step\_4\_rollout\_h3\_r1\_r2 & 0 & 0 & 200 & Yes & Yes & 0.05 (UV: 1.0, Wave: 0.05) & H=3, S=1 & Warmup=30 (linear) \\
+5 & step\_5\_rollout\_h5\_r1\_r2 & 0 & 0 & 200 & Yes & Yes & 0.1 (UV: 1.0, Wave: 0.2) & H=5, S=1 & Warmup=30 (linear) \\
+6 & step\_6\_rollout\_h5\_r1\_r2 & 0 & 0 & 200 & Yes & Yes & 0.2 (UV: 1.0, Wave: 0.5) & H=5, S=1 & Warmup=30 (linear) \\
+\hline
+\end{tabularx}
+\vspace{0.5em}
+\begin{tablenotes}
+\tiny
+\item \textbf{Columns:} Trunk/Branch/DeepONet = epochs; Finetune = freeze/update parameters; PINN = Physics-Informed loss; PDE Weight = (overall, UV component, Wave component); Rollout = (H)orizon and (S)tride.
+\item \textbf{Additional Config:} Noise = branch input noise regularization; Warmup = PDE loss weight schedule parameters.
+\item Progressive strategy: Stages 0-2 are supervised pretraining; Stages 3-6 add physics loss with increasing rollout horizons and wave equation weighting.
+\end{tablenotes}
+\end{table}
+\end{landscape}

@@ -1,0 +1,25 @@
+\begin{table}[h!]
+\centering
+\caption{Curriculum Training Strategy: Staged DeepONet Training Pipeline}
+\label{tab:curriculum}
+\small
+\begin{tabularx}{\textwidth}{|c|l|c|c|c|c|c|c|c|}
+\hline
+\textbf{Stage} & \textbf{Step Name} & \textbf{Trunk} & \textbf{Branch} & \textbf{DeepONet} & \textbf{PINN} & \textbf{PDE $w$} & \textbf{Wave $w$} & \textbf{Rollout Config} \\
+\hline
+0 & step\_0\_pretrain\_trunk\_branch & 2000 & 2000 & 0 & No & 0.0 & 0.0 & --- \\
+1 & step\_1\_joint\_supervised & 0 & 0 & 200 & No & 0.0 & 0.0 & --- \\
+2 & step\_2\_branch\_noise & 0 & 0 & 200 & No & 0.0 & 0.0 & --- \\
+3 & step\_3\_rollout\_h2\_r1 & 0 & 0 & 100 & Yes & 0.02 & 0.0 & H=2, S=1 \\
+4 & step\_4\_rollout\_h3\_r1\_r2 & 0 & 0 & 200 & Yes & 0.05 & 0.05 & H=3, S=1 \\
+5 & step\_5\_rollout\_h5\_r1\_r2 & 0 & 0 & 200 & Yes & 0.1 & 0.2 & H=5, S=1 \\
+6 & step\_6\_rollout\_h5\_r1\_r2 & 0 & 0 & 200 & Yes & 0.2 & 0.5 & H=5, S=1 \\
+\hline
+\end{tabularx}
+\vspace{0.5em}
+\begin{tablenotes}
+\small
+\item \textbf{Columns:} Trunk/Branch/DeepONet = number of training epochs; PINN = Physics-Informed Neural Network loss enabled; PDE $w$ = PDE loss weight; Wave $w$ = Wave equation loss weight; Rollout Config = (H)orizon and (S)tride for autoregressive rollout.
+\item Each stage initializes from the previous stage's checkpoints for progressive curriculum learning.
+\end{tablenotes}
+\end{table}

@@ -55,23 +55,23 @@ networks:
     output_dim: 18
     hidden_dim: 128
     n_layers: 4
-    visualize: false
+    visualize: true
   branch:
     input_dim: 64
     output_dim: 18
     hidden_dim: 128
     n_layers: 4
-    visualize: false
+    visualize: true
 training:
   batch_size: 256
   learning_rate: 0.001
   train_test_split: 0.8
   trunk_n_epochs: 2000
   branch_n_epochs: 2000
-  deeponet_n_epochs: 200
+  deeponet_n_epochs: 50
   finetune_deeponet: true
   max_trunk_points: 5000
-  max_branch_samples: null
+  max_branch_samples: 5000
   max_deeponet_samples: 250
   points_per_sample: 100
   use_pinn_loss: true
@@ -83,7 +83,7 @@ training:
   pde_loss_weight_warmup_epochs: 30
   pde_loss_weight_schedule: linear
   rollout_pi_use_all_samples: true
-  n_collocation_per_batch: 4096
+  n_collocation_per_batch: 1024
   deeponet_branch_input_noise:
     enabled: true
     std: 0.05
@@ -96,7 +96,7 @@ training:
     step_stride: 1
     dt: null
     batch_size: 4
-    chunk_size: 4096
+    chunk_size: 1024
     eval_max_samples: 8
     step_weights: null
 validation:
