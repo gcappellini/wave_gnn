@@ -1,0 +1,24 @@
+\begin{table}[htbp]
+  \centering
+  \small
+  \caption{Average relative $L^2$ errors across all samples for curriculum stage checkpoints. Validation uses $t \in \{0.44, 1.00\}$ with one-step prediction from $t=0$; rollout uses iterative prediction over $t \in \{0.11, 0.33, 0.67, 1.00\}$.}
+  \label{tab:curriculum_errors_full_dataset}
+  \begin{tabular}{clcccc}
+    \toprule
+    \textbf{Stage} &
+    \textbf{Description} &
+    $\boldsymbol{\overline{E}_{u}^{\mathrm{val}}}$ &
+    $\boldsymbol{\overline{E}_{v}^{\mathrm{val}}}$ &
+    $\boldsymbol{\overline{E}_{u}^{\mathrm{roll}}}$ &
+    $\boldsymbol{\overline{E}_{v}^{\mathrm{roll}}}$ \\
+    \midrule
+    0 & Trunk/branch SVD & 0.466 & 1.02 \times 10^{2} & 0.584 & 47.930 \\
+    1 & Joint supervised DeepONet & 0.430 & 2.04 \times 10^{2} & 0.533 & 91.265 \\
+    2 & Supervised + branch noise & 1.066 & 4.20 \times 10^{2} & 0.753 & 1.87 \times 10^{2} \\
+    3 & R1, (w\_PDE; H)=(0.02, 2) & 1.103 & 6.73 \times 10^{2} & 0.727 & 1.37 \times 10^{2} \\
+    4 & R1 + R2, (w\_PDE; H)=(0.05, 3) & 1.848 & 1.84 \times 10^{3} & 0.904 & 2.47 \times 10^{2} \\
+    5 & R1 + R2, (w\_PDE; H)=(0.10, 5) & 1.612 & 1.37 \times 10^{3} & 0.671 & 5.46 \times 10^{2} \\
+    6 & R1 + R2, (w\_PDE; H)=(0.20, 5) & 1.189 & 1.27 \times 10^{3} & 0.660 & 4.21 \times 10^{2} \\
+    \bottomrule
+  \end{tabular}
+\end{table}

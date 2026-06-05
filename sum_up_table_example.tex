@@ -1,0 +1,33 @@
+\begin{table}[htbp]
+  \centering
+  \small
+  \caption{Average \(L^2\) errors on the representative test sample across curriculum stages.
+  For Deeponet validation, errors are averaged over \(t = 0.44\) and \(t = 1.0\) (excluding \(t = 0\));
+  for rollout, errors are averaged over \(t \in \{0.11, 0.33, 0.67, 1.0\}\).}
+  \label{tab:curriculum_errors}
+  \begin{tabular}{clcccc}
+    \toprule
+    \textbf{Stage} &
+    \textbf{Description} &
+    \(\boldsymbol{\overline{E}_{u}^{\text{val}}}\) &
+    \(\boldsymbol{\overline{E}_{v}^{\text{val}}}\) &
+    \(\boldsymbol{\overline{E}_{u}^{\text{roll}}}\) &
+    \(\boldsymbol{\overline{E}_{v}^{\text{roll}}}\) \\
+    \midrule
+    0 & Trunk/branch SVD
+      & 0.42 & \(1.17 \times 10^{2}\) & 0.55 & \(2.63 \times 10^{2}\) \\
+    1 & Joint supervised DeepONet
+      & 0.33 & \(3.18 \times 10^{2}\) & 0.56 & \(6.19 \times 10^{2}\) \\
+    2 & Supervised + branch noise
+      & 0.78 & \(3.78 \times 10^{2}\) & 0.53 & \(3.60 \times 10^{2}\) \\
+    3 & R1, \((\textrm{w}_{\textrm{PDE}}; H) = (0.02, 2)\)
+      & 0.33 & \(7.96 \times 10^{2}\) & 0.34 & \(1.83 \times 10^{2}\) \\
+    4 & R1 + R2, \((\textrm{w}_{\textrm{PDE}}; H) =(0.05, 3)\)
+      & 0.76 & \(2.95 \times 10^{3}\) & 0.92 & \(3.82 \times 10^{2}\) \\
+    5 & R1 + R2, \((\textrm{w}_{\textrm{PDE}}; H) =(0.10, 5)\)
+      & 0.52 & \(2.84 \times 10^{3}\) & 0.22 & \(2.57 \times 10^{2}\) \\
+    6 & R1 + R2, \((\textrm{w}_{\textrm{PDE}}; H) =(0.20, 5)\)
+      & 0.22 & \(2.34 \times 10^{3}\) & 0.41 & \(3.82 \times 10^{2}\) \\
+    \bottomrule
+  \end{tabular}
+\end{table}

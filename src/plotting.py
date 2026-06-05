@@ -727,44 +727,105 @@ def plot_trunk_validation(
     t = np.linspace(0, 1, Nt)
     X, Y, T = np.meshgrid(x, y, t, indexing='ij')
     
-    # Select time instant
+    # Select time instant for side-by-side mode maps.
     t_idx = int(time_instant * (Nt - 1))
     t_actual = t[t_idx]
     print(f"  Time instant: {time_instant:.2f} (index {t_idx}, actual value {t_actual:.6f})")
-    
-    # Get trunk predictions at this time
-    coords_t = np.stack([
-        X[:, :, t_idx].flatten('F'),
-        Y[:, :, t_idx].flatten('F'),
-        np.full((Nx * Ny,), t_actual)
-    ], axis=1)
-    
-    coords_tensor = torch.from_numpy(coords_t).float().to(device)
-    
-    with torch.no_grad():
-        trunk_out = trunk(coords_tensor)
 
-    trunk_modes_v = None
+    # Predict trunk modes on the full space-time grid to compute global validation errors.
+    coords_all = np.stack([
+        X.flatten('F'),
+        Y.flatten('F'),
+        T.flatten('F'),
+    ], axis=1)
+    coords_tensor_all = torch.from_numpy(coords_all).float().to(device)
+
+    with torch.no_grad():
+        trunk_out_all = trunk(coords_tensor_all)
+
+    trunk_modes_all_v = None
     if dual:
-        # For dual trunk validation we compare displacement head with displacement SVD basis.
-        trunk_out_u = trunk_out[0].cpu().numpy()
-        trunk_out_v = trunk_out[1].cpu().numpy()
+        trunk_out_all_u = trunk_out_all[0].cpu().numpy()
+        trunk_out_all_v = trunk_out_all[1].cpu().numpy()
         if trunk_output_scaled:
-            trunk_modes = trunk_out_u.reshape(Nx, Ny, n_modes, order='F')
-            trunk_modes_v = trunk_out_v.reshape(Nx, Ny, n_modes, order='F')
+            trunk_modes_all = trunk_out_all_u.reshape(Nx, Ny, Nt, n_modes, order='F')
+            trunk_modes_all_v = trunk_out_all_v.reshape(Nx, Ny, Nt, n_modes, order='F')
         else:
             # Backward compatibility for older dual checkpoints trained on normalized targets.
-            trunk_modes_norm = trunk_out_u.reshape(Nx, Ny, n_modes, order='F')
-            trunk_modes = (trunk_modes_norm + 1) * targets_range / 2 + targets_min
-            trunk_modes_v = None
+            trunk_modes_all_norm = trunk_out_all_u.reshape(Nx, Ny, Nt, n_modes, order='F')
+            trunk_modes_all = (trunk_modes_all_norm + 1) * targets_range / 2 + targets_min
+            trunk_modes_all_v = None
     else:
-        trunk_out_np = trunk_out.cpu().numpy()
-        trunk_modes_norm = trunk_out_np.reshape(Nx, Ny, n_modes, order='F')
-        trunk_modes = (trunk_modes_norm + 1) * targets_range / 2 + targets_min
-    
-    print(f"  Trunk predictions shape: {trunk_modes.shape}")
-    print(f"  Trunk value range: [{trunk_modes.min():.6f}, {trunk_modes.max():.6f}]")
-    print(f"  SVD modes value range: [{modes_svd[:, :, t_idx, :n_modes].min():.6f}, {modes_svd[:, :, t_idx, :n_modes].max():.6f}]")
+        trunk_out_all_np = trunk_out_all.cpu().numpy()
+        trunk_modes_all_norm = trunk_out_all_np.reshape(Nx, Ny, Nt, n_modes, order='F')
+        trunk_modes_all = (trunk_modes_all_norm + 1) * targets_range / 2 + targets_min
+
+    # Keep selected-time slices for existing side-by-side mode-map plots.
+    trunk_modes = trunk_modes_all[:, :, t_idx, :]
+    trunk_modes_v = trunk_modes_all_v[:, :, t_idx, :] if trunk_modes_all_v is not None else None
+
+    print(f"  Trunk predictions shape (all time): {trunk_modes_all.shape}")
+    print(f"  Trunk value range: [{trunk_modes_all.min():.6f}, {trunk_modes_all.max():.6f}]")
+    print(f"  SVD modes value range: [{modes_svd[:, :, :, :n_modes].min():.6f}, {modes_svd[:, :, :, :n_modes].max():.6f}]")
+
+    # Per-mode error histogram (grouped bars) over the full t in [0, 1].
+    coeffs_true_u_all = modes_svd[:, :, :, :n_modes].reshape(-1, n_modes, order='F')
+    coeffs_pred_u_all = trunk_modes_all.reshape(-1, n_modes, order='F')
+    mode_errors_u = np.mean((coeffs_true_u_all - coeffs_pred_u_all) ** 2, axis=0)
+
+    mode_errors_v = None
+    has_velocity = dual and modes_svd_v is not None and trunk_modes_all_v is not None
+    if has_velocity:
+        coeffs_true_v_all = modes_svd_v[:, :, :, :n_modes].reshape(-1, n_modes, order='F')
+        coeffs_pred_v_all = trunk_modes_all_v.reshape(-1, n_modes, order='F')
+        mode_errors_v = np.mean((coeffs_true_v_all - coeffs_pred_v_all) ** 2, axis=0)
+
+    print("  Generating per-mode error histogram over all time...")
+    fig_err, ax_err = plt.subplots(figsize=(12, 5))
+    mode_idx_axis = np.arange(n_modes)
+    bar_width = 0.42 if has_velocity else 0.7
+
+    if has_velocity:
+        ax_err.bar(
+            mode_idx_axis - bar_width / 2,
+            mode_errors_u,
+            width=bar_width,
+            alpha=0.8,
+            label='Deformation (u)',
+            color='steelblue',
+        )
+        ax_err.bar(
+            mode_idx_axis + bar_width / 2,
+            mode_errors_v,
+            width=bar_width,
+            alpha=0.8,
+            label='Velocity (v)',
+            color='tomato',
+        )
+    else:
+        ax_err.bar(
+            mode_idx_axis,
+            mode_errors_u,
+            width=bar_width,
+            alpha=0.85,
+            label='Deformation (u)',
+            color='steelblue',
+        )
+
+    ax_err.set_xticks(mode_idx_axis)
+    ax_err.set_xlim(-0.5, n_modes - 0.5)
+    ax_err.set_xlabel('Mode Index', fontsize=16, fontweight='bold')
+    ax_err.set_ylabel('MSE', fontsize=16, fontweight='bold')
+    ax_err.tick_params(axis='both', labelsize=13)
+    ax_err.set_title('Trunk Per-Mode Error', fontsize=20, fontweight='bold')
+    ax_err.grid(True, alpha=0.3, axis='y')
+    ax_err.legend(fontsize=12)
+
+    plt.tight_layout()
+    save_stats_path = os.path.join(output_dir, 'validation_trunk_coefficients.png')
+    plt.savefig(save_stats_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print("  ✓ Saved: validation_trunk_coefficients.png")
     
     # Create comparison plot
     print("  Generating comparison plot...")
