@@ -10,6 +10,11 @@ curriculum:
   # Validation can be expensive; usually run it on the final stage only.
   run_validation_each_step: true
   run_validation_last_step: true
+  sample_split:
+    train_fraction: 0.8
+    seed: 42
+    # Optional explicit path. If null, defaults to data/splits/merged_train80_test20_seed42.npz
+    path: null
   steps:
     - name: step_0_pretrain_trunk_branch
       overrides:

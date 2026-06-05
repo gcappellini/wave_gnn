@@ -519,6 +519,12 @@ def run_constant_force_pipeline(
         else:
             print("Loading pre-trained trunk model...")
             print(f"✓ Loaded: {trunk_checkpoint}")
+            if trunk_checkpoint.exists():
+                models_dir.mkdir(parents=True, exist_ok=True)
+                stage_trunk_checkpoint = models_dir / f"trunk_svd_{problem_type}.pth"
+                if stage_trunk_checkpoint.resolve() != trunk_checkpoint.resolve():
+                    shutil.copy2(trunk_checkpoint, stage_trunk_checkpoint)
+                    print(f"✓ Copied trunk checkpoint to stage checkpoints: {stage_trunk_checkpoint}")
 
         # Keep a canonical trunk checkpoint in repo-level models for curriculum reuse.
         trained_trunk_checkpoint = models_dir / f"trunk_svd_{problem_type}.pth"
@@ -606,6 +612,12 @@ def run_constant_force_pipeline(
         else:
             print("Loading pre-trained branch model...")
             print(f"✓ Loaded: {branch_checkpoint}")
+            if branch_checkpoint.exists():
+                models_dir.mkdir(parents=True, exist_ok=True)
+                stage_branch_checkpoint = models_dir / f"branch_svd_{problem_type}.pth"
+                if stage_branch_checkpoint.resolve() != branch_checkpoint.resolve():
+                    shutil.copy2(branch_checkpoint, stage_branch_checkpoint)
+                    print(f"✓ Copied branch checkpoint to stage checkpoints: {stage_branch_checkpoint}")
 
         # Keep a canonical branch checkpoint in repo-level models for curriculum reuse.
         trained_branch_checkpoint = models_dir / f"branch_svd_{problem_type}.pth"

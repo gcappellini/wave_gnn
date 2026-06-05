@@ -115,6 +115,68 @@ def _apply_deeponet_branch_input_noise(
     return noisy_measurements
 
 
+def _resolve_sample_split_ids(config: dict, n_samples: int) -> tuple[np.ndarray, np.ndarray]:
+    """Resolve train/test sample ids from split file or fallback random split."""
+
+    split_override = config.get('sample_split_indices_override', None)
+    if split_override is not None:
+        train_sample_ids = np.array(split_override.get('train', []), dtype=np.int64).reshape(-1)
+        test_sample_ids = np.array(split_override.get('test', []), dtype=np.int64).reshape(-1)
+        if train_sample_ids.size == 0 or test_sample_ids.size == 0:
+            raise ValueError("sample_split_indices_override must include non-empty train/test arrays")
+        if train_sample_ids.min() < 0 or test_sample_ids.min() < 0:
+            raise ValueError("sample_split_indices_override cannot include negative indices")
+        if train_sample_ids.max() >= n_samples or test_sample_ids.max() >= n_samples:
+            raise ValueError(
+                f"sample_split_indices_override out of bounds for N_samples={n_samples}"
+            )
+        return train_sample_ids, test_sample_ids
+
+    split_file = config.get('sample_split_file', None)
+    if split_file:
+        split_path = os.path.expanduser(str(split_file))
+        if not os.path.exists(split_path):
+            raise FileNotFoundError(f"sample_split_file not found: {split_path}")
+
+        split_data = np.load(split_path, allow_pickle=True)
+        train_key = 'train_indices' if 'train_indices' in split_data else 'train_idx'
+        test_key = 'test_indices' if 'test_indices' in split_data else 'test_idx'
+        if train_key not in split_data or test_key not in split_data:
+            raise ValueError(
+                f"Invalid split file {split_path}: expected train_indices/test_indices"
+            )
+
+        train_sample_ids = np.array(split_data[train_key], dtype=np.int64).reshape(-1)
+        test_sample_ids = np.array(split_data[test_key], dtype=np.int64).reshape(-1)
+        if train_sample_ids.size == 0 or test_sample_ids.size == 0:
+            raise ValueError(f"Invalid split file {split_path}: empty train or test indices")
+        if train_sample_ids.min() < 0 or test_sample_ids.min() < 0:
+            raise ValueError(f"Invalid split file {split_path}: negative sample indices")
+        if train_sample_ids.max() >= n_samples or test_sample_ids.max() >= n_samples:
+            raise ValueError(
+                f"Invalid split file {split_path}: indices out of bounds for N_samples={n_samples}"
+            )
+
+        print(f"  Using fixed sample split from file: {split_path}")
+        print(f"  Samples train/test: {len(train_sample_ids)}/{len(test_sample_ids)}")
+        return train_sample_ids, test_sample_ids
+
+    train_split = float(config.get('train_test_split', 0.8))
+    if n_samples > 1:
+        n_train_samples = int(n_samples * train_split)
+        n_train_samples = min(max(n_train_samples, 1), n_samples - 1)
+    else:
+        n_train_samples = 1
+
+    sample_perm = np.random.permutation(n_samples)
+    train_sample_ids = sample_perm[:n_train_samples]
+    test_sample_ids = sample_perm[n_train_samples:] if n_samples > 1 else sample_perm[:1]
+    if len(test_sample_ids) == 0:
+        test_sample_ids = train_sample_ids[:1]
+
+    return train_sample_ids, test_sample_ids
+
+
 def _build_dual_rollout_measurement_tensor(
     u_field: torch.Tensor,
     v_field: torch.Tensor,
@@ -848,7 +910,55 @@ def train_deeponet_joint(
     max_deeponet_samples = config.get('max_deeponet_samples', None)
     if max_deeponet_samples and N_samples > max_deeponet_samples:
         print(f"Sampling {max_deeponet_samples} samples from {N_samples} total samples")
-        sample_indices = np.random.choice(N_samples, max_deeponet_samples, replace=False)
+
+        split_file_for_sampling = config.get('sample_split_file', None)
+        if split_file_for_sampling:
+            # Preserve train/test integrity under subsampling by sampling within each split.
+            train_ids_full, test_ids_full = _resolve_sample_split_ids(config, N_samples)
+            train_ratio = len(train_ids_full) / float(N_samples)
+
+            n_train_target = int(round(max_deeponet_samples * train_ratio))
+            n_train_target = min(max(1, n_train_target), len(train_ids_full))
+            n_test_target = max_deeponet_samples - n_train_target
+            n_test_target = min(max(1, n_test_target), len(test_ids_full))
+
+            # Adjust if rounding/clamping changed total.
+            total_target = n_train_target + n_test_target
+            if total_target < max_deeponet_samples:
+                remaining = max_deeponet_samples - total_target
+                train_room = len(train_ids_full) - n_train_target
+                add_train = min(train_room, remaining)
+                n_train_target += add_train
+                remaining -= add_train
+                if remaining > 0:
+                    test_room = len(test_ids_full) - n_test_target
+                    n_test_target += min(test_room, remaining)
+            elif total_target > max_deeponet_samples:
+                overflow = total_target - max_deeponet_samples
+                reduce_from_test = min(max(0, n_test_target - 1), overflow)
+                n_test_target -= reduce_from_test
+                overflow -= reduce_from_test
+                if overflow > 0:
+                    n_train_target -= min(max(0, n_train_target - 1), overflow)
+
+            train_sub = np.random.choice(train_ids_full, n_train_target, replace=False)
+            test_sub = np.random.choice(test_ids_full, n_test_target, replace=False)
+            sample_indices = np.sort(np.concatenate([train_sub, test_sub]).astype(np.int64))
+
+            global_to_local = {int(g_idx): int(l_idx) for l_idx, g_idx in enumerate(sample_indices.tolist())}
+            train_local = np.array([global_to_local[int(g_idx)] for g_idx in train_sub], dtype=np.int64)
+            test_local = np.array([global_to_local[int(g_idx)] for g_idx in test_sub], dtype=np.int64)
+            config['sample_split_indices_override'] = {
+                'train': train_local.tolist(),
+                'test': test_local.tolist(),
+            }
+            print(
+                f"  Split-aware subsampling applied: train/test={len(train_local)}/{len(test_local)} "
+                f"(from split file)"
+            )
+        else:
+            sample_indices = np.random.choice(N_samples, max_deeponet_samples, replace=False)
+
         u_fom = u_fom[:, :, :, sample_indices]
         if v_fom is not None:
             v_fom = v_fom[:, :, :, sample_indices]
@@ -1061,24 +1171,13 @@ def train_deeponet_joint(
         v_max = v_fom.max()
         v_targets_all = v_fom.reshape(-1, N_samples, order='F')
     
-    train_split = float(config.get('train_test_split', 0.8))
+    train_sample_ids, test_sample_ids = _resolve_sample_split_ids(config, N_samples)
     force_fields_t = torch.from_numpy(f_data).float().to(device) if use_force_channel else None
     if dual and rollout_enabled:
         horizon, step_stride, rollout_dt, max_start_idx, rollout_weights = _resolve_rollout_schedule(
             t_vals,
             rollout_config,
         )
-        if N_samples > 1:
-            n_train_samples = int(N_samples * train_split)
-            n_train_samples = min(max(n_train_samples, 1), N_samples - 1)
-        else:
-            n_train_samples = 1
-
-        sample_perm = np.random.permutation(N_samples)
-        train_sample_ids = sample_perm[:n_train_samples]
-        test_sample_ids = sample_perm[n_train_samples:] if N_samples > 1 else sample_perm[:1]
-        if len(test_sample_ids) == 0:
-            test_sample_ids = train_sample_ids[:1]
 
         rollout_batch_size = int(rollout_config.get('batch_size', min(4, max(1, len(train_sample_ids)))) or 1)
         rollout_batch_size = max(1, rollout_batch_size)
@@ -1114,34 +1213,53 @@ def train_deeponet_joint(
         # Sample points per sample for one-step supervision.
         n_points_per_sample = config.get('n_points_per_sample', config.get('points_per_sample', 1000))
 
-        coords_list, meas_list_out, u_tgt_list = [], [], []
-        v_tgt_list = [] if dual else None
-        f_tgt_list = [] if (dual and use_force_channel) else None
+        def _build_point_supervision(sample_ids):
+            coords_list, meas_list_out, u_tgt_list = [], [], []
+            v_tgt_list_local = [] if dual else None
+            f_tgt_list_local = [] if (dual and use_force_channel) else None
 
-        if dual and use_force_channel:
-            # Force is static in time for each sample: index it on (x, y) only.
-            n_xy = Nx * Ny
-            f_targets_all = f_data.reshape(n_xy, N_samples, order='F')
+            if dual and use_force_channel:
+                # Force is static in time for each sample: index it on (x, y) only.
+                n_xy_local = Nx * Ny
+                f_targets_all_local = f_data.reshape(n_xy_local, N_samples, order='F')
 
-        for s in range(N_samples):
-            n_pts = min(n_points_per_sample, coords_all.shape[0])
-            pt_indices = np.random.choice(coords_all.shape[0], n_pts, replace=False)
+            for s in sample_ids:
+                n_pts = min(n_points_per_sample, coords_all.shape[0])
+                pt_indices = np.random.choice(coords_all.shape[0], n_pts, replace=False)
 
-            coords_list.append(coords_all[pt_indices])
+                coords_list.append(coords_all[pt_indices])
+                if dual:
+                    meas_list_out.append(np.repeat(measurements[s][None, ...], n_pts, axis=0))
+                else:
+                    meas_list_out.append(np.tile(measurements[s], (n_pts, 1)))
+                u_tgt_list.append(u_targets_all[pt_indices, s])
+                if dual:
+                    v_tgt_list_local.append(v_targets_all[pt_indices, s])
+                    if use_force_channel:
+                        spatial_indices = pt_indices % n_xy_local
+                        f_tgt_list_local.append(f_targets_all_local[spatial_indices, s])
+
+            coords_np = np.vstack(coords_list)
+            meas_np = np.concatenate(meas_list_out, axis=0)
+            u_np = np.hstack(u_tgt_list)
+
+            out = {
+                'coords': coords_np,
+                'meas': meas_np,
+                'u': u_np,
+            }
             if dual:
-                meas_list_out.append(np.repeat(measurements[s][None, ...], n_pts, axis=0))
-            else:
-                meas_list_out.append(np.tile(measurements[s], (n_pts, 1)))
-            u_tgt_list.append(u_targets_all[pt_indices, s])
-            if dual:
-                v_tgt_list.append(v_targets_all[pt_indices, s])
+                out['v'] = np.hstack(v_tgt_list_local)
                 if use_force_channel:
-                        spatial_indices = pt_indices % n_xy
-                        f_tgt_list.append(f_targets_all[spatial_indices, s])
+                    out['f'] = np.hstack(f_tgt_list_local)
+            return out
 
-        coords_train_np = np.vstack(coords_list)
-        meas_train_np = np.concatenate(meas_list_out, axis=0)
-        u_tgt_np = np.hstack(u_tgt_list)
+        train_data = _build_point_supervision(train_sample_ids)
+        test_data = _build_point_supervision(test_sample_ids)
+
+        coords_train_np = train_data['coords']
+        meas_train_np = train_data['meas']
+        u_tgt_np = train_data['u']
 
         print(f"  Training points: {len(u_tgt_np)}")
         if dual:
@@ -1150,46 +1268,37 @@ def train_deeponet_joint(
             print(f"  Measurement dim: {measurements.shape[1]}")
         print(f"  u target range: [{u_fom.min():.4f}, {u_fom.max():.4f}]")
         if dual:
-            v_tgt_np = np.hstack(v_tgt_list)
+            v_tgt_np = train_data['v']
             print(f"  v target range: [{v_fom.min():.4f}, {v_fom.max():.4f}]")
-            if use_force_channel:
-                f_tgt_np = np.hstack(f_tgt_list)
 
         # Convert to tensors
         coords_t = torch.from_numpy(coords_train_np).float().to(device)
         meas_t = torch.from_numpy(meas_train_np).float().to(device)
         u_tgt_t = torch.from_numpy(u_tgt_np).float().unsqueeze(1).to(device)
+        test_coords = torch.from_numpy(test_data['coords']).float().to(device)
+        test_meas = torch.from_numpy(test_data['meas']).float().to(device)
+        test_u_tgt = torch.from_numpy(test_data['u']).float().unsqueeze(1).to(device)
         if dual:
+            v_tgt_np = train_data['v']
             v_tgt_t = torch.from_numpy(v_tgt_np).float().unsqueeze(1).to(device)
+            test_v_tgt = torch.from_numpy(test_data['v']).float().unsqueeze(1).to(device)
             if use_force_channel:
+                f_tgt_np = train_data['f']
                 f_tgt_t = torch.from_numpy(f_tgt_np).float().unsqueeze(1).to(device)
-
-        # Train/test split
-        n_total = len(u_tgt_np)
-        n_train = int(n_total * train_split)
-        perm = torch.randperm(n_total)
-        tr_idx, te_idx = perm[:n_train], perm[n_train:]
 
         if dual:
             if use_force_channel:
                 train_dataset = TensorDataset(
-                    meas_t[tr_idx],
-                    coords_t[tr_idx],
-                    u_tgt_t[tr_idx],
-                    v_tgt_t[tr_idx],
-                    f_tgt_t[tr_idx],
+                    meas_t,
+                    coords_t,
+                    u_tgt_t,
+                    v_tgt_t,
+                    f_tgt_t,
                 )
             else:
-                train_dataset = TensorDataset(meas_t[tr_idx], coords_t[tr_idx], u_tgt_t[tr_idx], v_tgt_t[tr_idx])
-            test_meas = meas_t[te_idx]
-            test_coords = coords_t[te_idx]
-            test_u_tgt = u_tgt_t[te_idx]
-            test_v_tgt = v_tgt_t[te_idx]
+                train_dataset = TensorDataset(meas_t, coords_t, u_tgt_t, v_tgt_t)
         else:
-            train_dataset = TensorDataset(meas_t[tr_idx], coords_t[tr_idx], u_tgt_t[tr_idx])
-            test_meas = meas_t[te_idx]
-            test_coords = coords_t[te_idx]
-            test_u_tgt = u_tgt_t[te_idx]
+            train_dataset = TensorDataset(meas_t, coords_t, u_tgt_t)
 
         train_loader = DataLoader(train_dataset, batch_size=config['batch_size'], shuffle=True)
     
@@ -1281,7 +1390,7 @@ def train_deeponet_joint(
     if dual and rollout_enabled:
         print(f"\nTraining: {len(train_sample_ids)} samples, Testing: {len(test_sample_ids)} samples")
     else:
-        print(f"\nTraining: {len(tr_idx)} points, Testing: {len(te_idx)} points")
+        print(f"\nTraining: {len(train_data['u'])} points, Testing: {len(test_data['u'])} points")
     print(f"Logging DeepONet losses every {log_every} epoch(s)")
     print("Starting training...\n")
     

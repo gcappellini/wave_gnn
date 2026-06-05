@@ -286,8 +286,7 @@ def _build_sumup_latex(metrics_rows: list[StageMetrics], val_times: list[float],
 
 def generate_curriculum_table(
     max_samples: int | None = None,
-    sample_fraction: float = 0.2,
-    sample_seed: int = 42,
+    split_file: str | None = None,
 ):
     root = Path(__file__).parent
     config_path = root / "configs" / "constant_force" / "curriculum_total.yaml"
@@ -307,21 +306,34 @@ def generate_curriculum_table(
         v_fom = np.array(f["V_data"]).T
         f_fom = np.array(f["F_data"]).T if "F_data" in f else None
 
-    if not (0.0 < float(sample_fraction) <= 1.0):
-        raise ValueError(f"sample_fraction must be in (0, 1], got {sample_fraction}")
-
     total_samples = int(u_fom.shape[-1])
-    n_subset = max(1, int(round(total_samples * float(sample_fraction))))
-    rng = np.random.default_rng(int(sample_seed))
-    subset_indices = np.sort(rng.choice(total_samples, size=n_subset, replace=False))
+    if split_file is None:
+        split_path = root / "data" / "splits" / "merged_train80_test20_seed42.npz"
+    else:
+        split_path = Path(split_file).expanduser()
+        if not split_path.is_absolute():
+            split_path = (root / split_path).resolve()
 
-    u_fom = u_fom[..., subset_indices]
-    v_fom = v_fom[..., subset_indices]
+    if not split_path.exists():
+        raise FileNotFoundError(f"Split file not found: {split_path}")
+
+    split_data = np.load(split_path, allow_pickle=True)
+    test_key = 'test_indices' if 'test_indices' in split_data else 'test_idx'
+    if test_key not in split_data:
+        raise ValueError(f"Invalid split file {split_path}: missing test_indices")
+    test_indices = np.array(split_data[test_key], dtype=np.int64).reshape(-1)
+    if test_indices.size == 0:
+        raise ValueError(f"Split file {split_path} has empty test indices")
+    if test_indices.min() < 0 or test_indices.max() >= total_samples:
+        raise ValueError(f"Split file {split_path} has out-of-range test indices")
+
+    u_fom = u_fom[..., test_indices]
+    v_fom = v_fom[..., test_indices]
     if f_fom is not None:
         if f_fom.ndim == 3:
-            f_fom = f_fom[..., subset_indices]
+            f_fom = f_fom[..., test_indices]
         elif f_fom.ndim == 4:
-            f_fom = f_fom[..., subset_indices]
+            f_fom = f_fom[..., test_indices]
 
     if max_samples is not None:
         max_samples = int(max_samples)
@@ -351,18 +363,50 @@ def generate_curriculum_table(
     problem_type = "merged"
 
     print("=" * 70)
-    print("CURRICULUM STAGE EVALUATION (FULL DATASET)")
+    print("CURRICULUM STAGE EVALUATION (TEST SPLIT)")
     print("=" * 70)
     print(f"Device: {device}")
-    print(f"Dataset shape after sampling: U{u_fom.shape}, V{v_fom.shape}")
-    print(
-        f"Sampling config: fraction={sample_fraction:.3f}, seed={sample_seed}, "
-        f"selected={u_fom.shape[-1]}/{total_samples}"
-    )
+    print(f"Split file: {split_path}")
+    print(f"Dataset shape on test split: U{u_fom.shape}, V{v_fom.shape}")
+    print(f"Test samples selected: {u_fom.shape[-1]}/{total_samples}")
     print(f"Validation indices: {val_indices} -> {[float(t_vals[idx]) for idx in val_indices]}")
     print(f"Rollout indices: {rollout_indices} -> {[float(t_vals[idx]) for idx in rollout_indices]}")
 
     metrics_rows: list[StageMetrics] = []
+
+    baseline_ckpt = models_dir / f"deeponet_{problem_type}.pth"
+    if baseline_ckpt.exists():
+        print("-" * 70)
+        print("Baseline: trunk+branch SVD initialization")
+        print(f"Checkpoint: {baseline_ckpt.name}")
+        baseline_metrics = _evaluate_checkpoint(
+            checkpoint_path=baseline_ckpt,
+            problem_type=problem_type,
+            u_fom=u_fom,
+            v_fom=v_fom,
+            f_fom=f_fom,
+            t_vals=t_vals,
+            val_indices=val_indices,
+            rollout_indices=rollout_indices,
+            device=device,
+        )
+        metrics_rows.append(
+            StageMetrics(
+                stage=-1,
+                step_name="baseline_trunk_branch_svd",
+                description="Baseline trunk+branch SVD",
+                checkpoint=baseline_ckpt.name,
+                avg_u_val=baseline_metrics["avg_u_val"],
+                std_u_val=baseline_metrics["std_u_val"],
+                avg_v_val=baseline_metrics["avg_v_val"],
+                std_v_val=baseline_metrics["std_v_val"],
+                avg_u_roll=baseline_metrics["avg_u_roll"],
+                std_u_roll=baseline_metrics["std_u_roll"],
+                avg_v_roll=baseline_metrics["avg_v_roll"],
+                std_v_roll=baseline_metrics["std_v_roll"],
+            )
+        )
+
     for stage_idx, step in enumerate(steps):
         ckpt_path = models_dir / f"step_{stage_idx}_deeponet_{problem_type}.pth"
         if not ckpt_path.exists():
@@ -455,23 +499,16 @@ if __name__ == "__main__":
         "--max-samples",
         type=int,
         default=None,
-        help="Optional cap for quick smoke tests. By default evaluates all samples.",
+        help="Optional cap for quick smoke tests after applying test split.",
     )
     parser.add_argument(
-        "--sample-fraction",
-        type=float,
-        default=0.2,
-        help="Random fraction of dataset samples to evaluate (default: 0.2).",
-    )
-    parser.add_argument(
-        "--sample-seed",
-        type=int,
-        default=42,
-        help="Random seed for subset sampling (default: 42).",
+        "--split-file",
+        type=str,
+        default=None,
+        help="Path to split .npz file with train_indices/test_indices (defaults to data/splits/merged_train80_test20_seed42.npz).",
     )
     args = parser.parse_args()
     generate_curriculum_table(
         max_samples=args.max_samples,
-        sample_fraction=args.sample_fraction,
-        sample_seed=args.sample_seed,
+        split_file=args.split_file,
     )
