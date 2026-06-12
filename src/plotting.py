@@ -8,6 +8,7 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
+from matplotlib.lines import Line2D
 import torch
 import torch.nn as nn
 from pathlib import Path
@@ -196,7 +197,7 @@ def plot_validation_basic(
     print("\n" + "=" * 70)
     print("VALIDATION SUMMARY")
     print("=" * 70)
-    print(f"SVD Reconstruction MSE: {svd_error:.6e}")
+    print("SVD Reconstruction MSE: n/a")
     print("=" * 70)
     print("✓ Validation plots complete")
     print("=" * 70)
@@ -459,6 +460,9 @@ def plot_branch_validation(
         mode_errors = np.mean((coeffs_true - coeffs_pred) ** 2, axis=0)
         sorted_mode_indices = np.argsort(mode_errors)
 
+        for ax in panel_axes.flat:
+            ax.tick_params(axis='both', labelsize=18)
+
         selected_modes = []
         selected_mode_specs = [
             ('Best', int(sorted_mode_indices[0]), 'tab:green'),
@@ -483,17 +487,18 @@ def plot_branch_validation(
                 alpha=0.6,
                 s=1,
                 color=color,
-                label=f'{role_name} (Mode {mode_idx})',
+                label='_nolegend_',
             )
         coeff_range_plot = [
             min(coeffs_true[:, plotted_indices].min(), coeffs_pred[:, plotted_indices].min()),
             max(coeffs_true[:, plotted_indices].max(), coeffs_pred[:, plotted_indices].max()),
         ]
-        ax.plot(coeff_range_plot, coeff_range_plot, 'k--', linewidth=2, label='Perfect')
-        ax.set_xlabel('SVD Coefficients (True, physical)', fontsize=11)
-        ax.set_ylabel('Branch Predictions (physical)', fontsize=11)
-        ax.set_title(f'{label_name} Branch vs SVD Coefficients', fontsize=12)
-        ax.legend(fontsize=9)
+        perfect_line = Line2D([0], [0], color='k', linestyle='--', linewidth=2, label='Perfect')
+        ax.plot(coeff_range_plot, coeff_range_plot, 'k--', linewidth=2)
+        ax.set_xlabel('SVD Coefficients (True, physical)', fontsize=15)
+        ax.set_ylabel('Branch Predictions (physical)', fontsize=15)
+        ax.set_title(f'{label_name} Branch vs SVD Coefficients', fontsize=20, fontweight='bold')
+        ax.legend(handles=[perfect_line], fontsize=18)
         ax.grid(True, alpha=0.3)
 
         # 2) Error by mode
@@ -503,59 +508,64 @@ def plot_branch_validation(
             bar_colors[mode_idx] = color
         ax.bar(range(output_dim), mode_errors, color=bar_colors, alpha=0.8)
         ax.xaxis.set_major_locator(mticker.MaxNLocator(integer=True))
-        ax.set_xlabel('Mode Index', fontsize=11)
-        ax.set_ylabel('MSE', fontsize=11)
-        ax.set_title(f'{label_name} Branch Error by Mode', fontsize=12)
+        ax.set_xlabel('Mode Index', fontsize=22)
+        ax.set_ylabel('MSE', fontsize=22)
+        ax.set_title(f'{label_name} Branch Error by Mode', fontsize=18, fontweight='bold')
+        legend_handles = [
+            Line2D([0], [0], marker='s', linestyle='None', markersize=10, markerfacecolor=color, markeredgecolor=color, label=f'{role_name} Mode {mode_idx}')
+            for role_name, mode_idx, color in selected_modes
+        ]
+        ax.legend(handles=legend_handles, fontsize=18)
         ax.grid(True, alpha=0.3, axis='y')
 
         # 3) Coefficient histogram for one of the selected ranked modes
         ax = panel_axes[1, 0]
+        if label_name == 'u':
+            mode_label = 'Deformation'
+        else:
+            mode_label = 'Velocity'
         ax.hist(
             coeffs_true[:, histogram_mode_idx],
             bins=30,
             alpha=0.6,
-            label=f'SVD {label_name} ({histogram_role_name} Mode {histogram_mode_idx})',
+            label=f'SVD {mode_label}',
             color='blue',
         )
         ax.hist(
             coeffs_pred[:, histogram_mode_idx],
             bins=30,
             alpha=0.6,
-            label=f'Branch {label_name} ({histogram_role_name} Mode {histogram_mode_idx})',
+            label=f'Branch {mode_label}',
             color='red',
         )
-        ax.set_xlabel('Coefficient Value (physical)', fontsize=11)
-        ax.set_ylabel('Count', fontsize=11)
-        ax.set_title(
-            f'{label_name} Coefficient Distribution ({histogram_role_name} Mode {histogram_mode_idx})',
-            fontsize=12,
-        )
-        ax.legend(fontsize=9)
+        ax.set_xlabel('Coefficient Value (physical)', fontsize=15)
+        ax.set_ylabel('Count', fontsize=15)
+        ax.set_title('Worst Mode distribution', fontsize=20, fontweight='bold')
+        ax.legend(fontsize=18)
         ax.grid(True, alpha=0.3)
 
         # 4) Error by sample
         ax = panel_axes[1, 1]
         sample_errors = np.mean((coeffs_true - coeffs_pred) ** 2, axis=1)
         ax.plot(sample_errors, 'o-', color='steelblue', markersize=4, linewidth=1.5)
-        ax.set_xlabel('Sample Index', fontsize=11)
-        ax.set_ylabel('MSE', fontsize=11)
-        ax.set_title(f'{label_name} Branch Error by Sample', fontsize=12)
+        ax.set_xlabel('Sample Index', fontsize=15)
+        ax.set_ylabel('MSE', fontsize=15)
+        ax.set_title(f'{label_name} Branch Error by Sample', fontsize=18, fontweight='bold')
         ax.grid(True, alpha=0.3)
 
     if dual:
         fig, axes = plt.subplots(4, 2, figsize=(12, 20))
-        _plot_coeff_panel(axes[0:2, :], coeffs_true_u, coeffs_pred_u, 'Deformation')
-        _plot_coeff_panel(axes[2:4, :], coeffs_true_v, coeffs_pred_v, 'Velocity')
-        fig.suptitle('Branch Validation: Deformation and Velocity Coefficients', fontsize=14, y=0.995)
+        _plot_coeff_panel(axes[0:2, :], coeffs_true_u, coeffs_pred_u, 'u')
+        _plot_coeff_panel(axes[2:4, :], coeffs_true_v, coeffs_pred_v, 'v')
     else:
         fig, axes = plt.subplots(2, 2, figsize=(12, 10))
-        _plot_coeff_panel(axes, coeffs_true_u, coeffs_pred_u, 'Deformation')
+        _plot_coeff_panel(axes, coeffs_true_u, coeffs_pred_u, 'u')
 
     plt.tight_layout()
-    save_path = os.path.join(output_dir, 'validation_branch_coefficients.png')
+    save_path = os.path.join(output_dir, 'validation_branch_coefficients.pdf')
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
     plt.close()
-    print(f"  ✓ Saved: validation_branch_coefficients.png")
+    print(f"  ✓ Saved: validation_branch_coefficients.pdf")
 
     # --- Per-sample σ·coefficient comparison plot ---
     if sample_idx >= N_samples:
@@ -568,36 +578,43 @@ def plot_branch_validation(
         if dual:
             fig2, axes2 = plt.subplots(2, 1, figsize=(12, 8))
             for ax2, c_true, c_pred, label_name in [
-                (axes2[0], coeffs_true_u, coeffs_pred_u, 'Deformation'),
-                (axes2[1], coeffs_true_v, coeffs_pred_v, 'Velocity'),
+                (axes2[0], coeffs_true_u, coeffs_pred_u, 'u'),
+                (axes2[1], coeffs_true_v, coeffs_pred_v, 'v'),
             ]:
                 ax2.bar(modes_axis - bar_width / 2, c_true[sample_idx],
                         width=bar_width, alpha=0.7, label='True (σ·coeff)', color='steelblue')
                 ax2.bar(modes_axis + bar_width / 2, c_pred[sample_idx],
                         width=bar_width, alpha=0.7, label='Predicted (σ·coeff)', color='tomato')
-                ax2.set_xlabel('Mode Index', fontsize=11)
-                ax2.set_ylabel('σ · coefficient', fontsize=11)
-                ax2.set_title(f'{label_name}: True vs Predicted σ·Coefficients (Sample {sample_idx})', fontsize=12)
-                ax2.legend(fontsize=9)
+                ax2.set_xlabel('Mode Index', fontsize=15)
+                ax2.set_ylabel('σ · coefficient', fontsize=15)
+                ax2.set_title(
+                    f'{label_name}: True vs Predicted σ·Coefficients (Sample {sample_idx})',
+                    fontsize=18,
+                    fontweight='bold',
+                )
+                ax2.legend(fontsize=14)
                 ax2.grid(True, alpha=0.3, axis='y')
-            fig2.suptitle(f'Branch Validation: Per-Sample σ·Coefficients (Sample {sample_idx})', fontsize=14)
         else:
             fig2, ax2 = plt.subplots(figsize=(12, 4))
             ax2.bar(modes_axis - bar_width / 2, coeffs_true_u[sample_idx],
                     width=bar_width, alpha=0.7, label='True (σ·coeff)', color='steelblue')
             ax2.bar(modes_axis + bar_width / 2, coeffs_pred_u[sample_idx],
                     width=bar_width, alpha=0.7, label='Predicted (σ·coeff)', color='tomato')
-            ax2.set_xlabel('Mode Index', fontsize=11)
-            ax2.set_ylabel('σ · coefficient', fontsize=11)
-            ax2.set_title(f'Deformation: True vs Predicted σ·Coefficients (Sample {sample_idx})', fontsize=12)
-            ax2.legend(fontsize=9)
+            ax2.set_xlabel('Mode Index', fontsize=15)
+            ax2.set_ylabel('σ · coefficient', fontsize=15)
+            ax2.set_title(
+                f'{label_name}: True vs Predicted σ·Coefficients (Sample {sample_idx})',
+                fontsize=18,
+                fontweight='bold',
+            )
+            ax2.legend(fontsize=14)
             ax2.grid(True, alpha=0.3, axis='y')
 
         plt.tight_layout()
-        sample_save_path = os.path.join(output_dir, f'validation_branch_sample{sample_idx}_coefficients.png')
+        sample_save_path = os.path.join(output_dir, f'validation_branch_sample{sample_idx}_coefficients.pdf')
         plt.savefig(sample_save_path, dpi=150, bbox_inches='tight')
         plt.close()
-        print(f"  ✓ Saved: validation_branch_sample{sample_idx}_coefficients.png")
+        print(f"  ✓ Saved: validation_branch_sample{sample_idx}_coefficients.pdf")
 
     print(f"  ✓ Branch validation complete")
 
@@ -858,7 +875,7 @@ def plot_trunk_validation(
             ax_trunk = axes[row, 2*pair]
             im = ax_trunk.imshow(trunk_mode, cmap='seismic', origin='lower',
                                 vmin=vmin_global, vmax=vmax_global)
-            ax_trunk.set_title(f'Trunk Mode {mode_idx}', fontsize=9)
+            ax_trunk.set_title(f'Trunk Mode {mode_idx}', fontsize=24, fontweight='bold')
             ax_trunk.set_xticks([])
             ax_trunk.set_yticks([])
             
@@ -867,25 +884,23 @@ def plot_trunk_validation(
             ax_svd = axes[row, 2*pair + 1]
             ax_svd.imshow(svd_mode, cmap='seismic', origin='lower',
                          vmin=vmin_global, vmax=vmax_global)
-            ax_svd.set_title(f'SVD Mode {mode_idx}', fontsize=9)
+            ax_svd.set_title(f'SVD Mode {mode_idx}', fontsize=24, fontweight='bold')
             ax_svd.set_xticks([])
             ax_svd.set_yticks([])
             
             mode_idx += 1
     
     # Add colorbar
-    fig.subplots_adjust(right=0.92, hspace=0.3, wspace=0.2)
+    fig.subplots_adjust(right=0.92, hspace=0.15, wspace=0.06)
     cbar_ax = fig.add_axes([0.94, 0.15, 0.015, 0.7])
-    fig.colorbar(im, cax=cbar_ax, label='Mode Value')
+    cbar = fig.colorbar(im, cax=cbar_ax)
+    # cbar.set_label('Mode Value', fontsize=28, fontweight='bold')
+    cbar.ax.tick_params(labelsize=32)
     
-    plt.suptitle(f'Trunk Network vs SVD Modes Comparison (t={t_actual:.2f})\\n'
-                 f'Left: Trunk Prediction | Right: SVD Ground Truth',
-                 fontsize=14, y=0.995)
-    
-    save_path = os.path.join(output_dir, f'validation_trunk_vs_svd_modes.png')
+    save_path = os.path.join(output_dir, 'validation_trunk_vs_svd_modes.pdf')
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
     plt.close()
-    print(f"  ✓ Saved: validation_trunk_vs_svd_modes.png")
+    print("  ✓ Saved: validation_trunk_vs_svd_modes.pdf")
     
     # Compute error metrics
     print("\\n  Error metrics for each mode:")
@@ -944,7 +959,7 @@ def plot_trunk_validation(
                     vmin=vmin_global_v,
                     vmax=vmax_global_v,
                 )
-                ax_trunk_v.set_title(f'Trunk V Mode {mode_idx}', fontsize=9)
+                ax_trunk_v.set_title(f'Trunk Mode {mode_idx}', fontsize=24, fontweight='bold')
                 ax_trunk_v.set_xticks([])
                 ax_trunk_v.set_yticks([])
 
@@ -957,27 +972,22 @@ def plot_trunk_validation(
                     vmin=vmin_global_v,
                     vmax=vmax_global_v,
                 )
-                ax_svd_v.set_title(f'SVD V Mode {mode_idx}', fontsize=9)
+                ax_svd_v.set_title(f'SVD Mode {mode_idx}', fontsize=24, fontweight='bold')
                 ax_svd_v.set_xticks([])
                 ax_svd_v.set_yticks([])
 
                 mode_idx += 1
 
-        fig_v.subplots_adjust(right=0.92, hspace=0.3, wspace=0.2)
+        fig_v.subplots_adjust(right=0.92, hspace=0.15, wspace=0.06)
         cbar_ax_v = fig_v.add_axes([0.94, 0.15, 0.015, 0.7])
-        fig_v.colorbar(im_v, cax=cbar_ax_v, label='Mode Value')
+        cbar_v = fig_v.colorbar(im_v, cax=cbar_ax_v)
+        # cbar_v.set_label('Mode Value', fontsize=28, fontweight='bold')
+        cbar_v.ax.tick_params(labelsize=32)
 
-        plt.suptitle(
-            f'Velocity Trunk Network vs SVD Modes Comparison (t={t_actual:.2f})\n'
-            f'Left: Trunk Prediction | Right: SVD Ground Truth',
-            fontsize=14,
-            y=0.995,
-        )
-
-        save_path_v = os.path.join(output_dir, 'validation_trunk_vs_svd_modes_velocity.png')
+        save_path_v = os.path.join(output_dir, 'validation_trunk_vs_svd_modes_velocity.pdf')
         plt.savefig(save_path_v, dpi=150, bbox_inches='tight')
         plt.close()
-        print("  ✓ Saved: validation_trunk_vs_svd_modes_velocity.png")
+        print("  ✓ Saved: validation_trunk_vs_svd_modes_velocity.pdf")
 
         print("\n  Velocity error metrics for each mode:")
         total_l2_v = 0.0

@@ -1,0 +1,146 @@
+defaults:
+  - config
+  - _self_
+
+# Smoke-test curriculum: identical stage structure to curriculum_total but
+# every epoch count is set to 1 and sample counts are capped.
+# Purpose: verify the full pipeline runs end-to-end without errors before
+# committing GPU hours to the extended run.
+
+curriculum:
+  initial_pretrained_models_dir: models
+  save_default_config_summary: false
+  run_validation_each_step: false
+  run_validation_last_step: false
+  sample_split:
+    train_fraction: 0.8
+    seed: 42
+    path: null
+  steps:
+    - name: step_0_pretrain_trunk_branch
+      overrides:
+        training:
+          trunk_n_epochs: 1
+          branch_n_epochs: 1
+          deeponet_n_epochs: 0
+          finetune_deeponet: false
+          use_pinn_loss: false
+          max_deeponet_samples: 50
+          deeponet_rollout:
+            enabled: false
+
+    - name: step_1_joint_supervised
+      overrides:
+        training:
+          trunk_n_epochs: 0
+          branch_n_epochs: 0
+          deeponet_n_epochs: 1
+          finetune_deeponet: true
+          use_pinn_loss: false
+          max_deeponet_samples: 50
+          deeponet_rollout:
+            enabled: false
+
+    - name: step_2_branch_noise
+      overrides:
+        training:
+          trunk_n_epochs: 0
+          branch_n_epochs: 0
+          deeponet_n_epochs: 1
+          finetune_deeponet: true
+          use_pinn_loss: false
+          max_deeponet_samples: 50
+          deeponet_branch_input_noise:
+            enabled: true
+            std: 0.05
+            apply_to_force: false
+            clip_min: -1.0
+            clip_max: 1.0
+
+    - name: step_3_rollout_h2_r1
+      overrides:
+        training:
+          trunk_n_epochs: 0
+          branch_n_epochs: 0
+          deeponet_n_epochs: 1
+          finetune_deeponet: true
+          use_pinn_loss: true
+          pde_loss_weight: 0.02
+          pde_loss_weight_uv: 1.0
+          pde_loss_weight_wave: 0.0
+          pde_loss_weight_start_factor: 0.01
+          pde_loss_weight_end_factor: 1.0
+          pde_loss_weight_warmup_epochs: 1
+          pde_loss_weight_schedule: linear
+          rollout_pi_use_all_samples: true
+          max_deeponet_samples: 50
+          deeponet_rollout:
+            enabled: true
+            horizon: 2
+            step_stride: 1
+
+    - name: step_4_rollout_h3_r1_r2
+      overrides:
+        training:
+          trunk_n_epochs: 0
+          branch_n_epochs: 0
+          deeponet_n_epochs: 1
+          finetune_deeponet: true
+          use_pinn_loss: true
+          pde_loss_weight: 0.05
+          pde_loss_weight_uv: 1.0
+          pde_loss_weight_wave: 0.05
+          pde_loss_weight_start_factor: 0.01
+          pde_loss_weight_end_factor: 1.0
+          pde_loss_weight_warmup_epochs: 1
+          pde_loss_weight_schedule: linear
+          rollout_pi_use_all_samples: true
+          max_deeponet_samples: 50
+          deeponet_rollout:
+            enabled: true
+            horizon: 3
+            step_stride: 1
+
+    - name: step_5_rollout_h5_r1_r2
+      overrides:
+        training:
+          trunk_n_epochs: 0
+          branch_n_epochs: 0
+          deeponet_n_epochs: 1
+          finetune_deeponet: true
+          use_pinn_loss: true
+          pde_loss_weight: 0.1
+          pde_loss_weight_uv: 1.0
+          pde_loss_weight_wave: 0.2
+          pde_loss_weight_start_factor: 0.01
+          pde_loss_weight_end_factor: 1.0
+          pde_loss_weight_warmup_epochs: 1
+          pde_loss_weight_schedule: linear
+          rollout_pi_use_all_samples: true
+          max_deeponet_samples: 50
+          deeponet_rollout:
+            enabled: true
+            horizon: 5
+            step_stride: 1
+
+    - name: step_6_rollout_h5_r1_r2
+      overrides:
+        training:
+          trunk_n_epochs: 0
+          branch_n_epochs: 0
+          deeponet_n_epochs: 1
+          finetune_deeponet: true
+          use_pinn_loss: true
+          pde_loss_weight: 0.2
+          pde_loss_weight_uv: 1.0
+          pde_loss_weight_wave: 0.5
+          pde_loss_weight_start_factor: 0.01
+          pde_loss_weight_end_factor: 1.0
+          pde_loss_weight_warmup_epochs: 1
+          pde_loss_weight_schedule: linear
+          rollout_pi_use_all_samples: true
+          max_deeponet_samples: 50
+          deeponet_rollout:
+            enabled: true
+            horizon: 5
+            step_stride: 1

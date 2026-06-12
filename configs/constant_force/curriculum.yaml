@@ -22,65 +22,65 @@ curriculum:
           deeponet_rollout:
             enabled: false
 
-    - name: step_4_rollout_h3_r1_r2
-      overrides:
-        training:
-          trunk_n_epochs: 0
-          branch_n_epochs: 0
-          deeponet_n_epochs: 50
-          finetune_deeponet: true
-          use_pinn_loss: true
-          pde_loss_weight: 0.05
-          pde_loss_weight_uv: 1.0
-          pde_loss_weight_wave: 0.05
-          pde_loss_weight_start_factor: 0.01
-          pde_loss_weight_end_factor: 1.0
-          pde_loss_weight_warmup_epochs: 30
-          pde_loss_weight_schedule: linear
-          rollout_pi_use_all_samples: true
-          deeponet_rollout:
-            enabled: true
-            horizon: 3
-            step_stride: 1
+    # - name: step_4_rollout_h3_r1_r2
+    #   overrides:
+    #     training:
+    #       trunk_n_epochs: 0
+    #       branch_n_epochs: 0
+    #       deeponet_n_epochs: 50
+    #       finetune_deeponet: true
+    #       use_pinn_loss: true
+    #       pde_loss_weight: 0.05
+    #       pde_loss_weight_uv: 1.0
+    #       pde_loss_weight_wave: 0.05
+    #       pde_loss_weight_start_factor: 0.01
+    #       pde_loss_weight_end_factor: 1.0
+    #       pde_loss_weight_warmup_epochs: 30
+    #       pde_loss_weight_schedule: linear
+    #       rollout_pi_use_all_samples: true
+    #       deeponet_rollout:
+    #         enabled: true
+    #         horizon: 3
+    #         step_stride: 1
 
-    - name: step_5_rollout_h5_r1_r2
-      overrides:
-        training:
-          trunk_n_epochs: 0
-          branch_n_epochs: 0
-          deeponet_n_epochs: 50
-          finetune_deeponet: true
-          use_pinn_loss: true
-          pde_loss_weight: 0.1
-          pde_loss_weight_uv: 1.0
-          pde_loss_weight_wave: 0.2
-          pde_loss_weight_start_factor: 0.01
-          pde_loss_weight_end_factor: 1.0
-          pde_loss_weight_warmup_epochs: 30
-          pde_loss_weight_schedule: linear
-          rollout_pi_use_all_samples: true
-          deeponet_rollout:
-            enabled: true
-            horizon: 5
-            step_stride: 1
+    # - name: step_5_rollout_h5_r1_r2
+    #   overrides:
+    #     training:
+    #       trunk_n_epochs: 0
+    #       branch_n_epochs: 0
+    #       deeponet_n_epochs: 50
+    #       finetune_deeponet: true
+    #       use_pinn_loss: true
+    #       pde_loss_weight: 0.1
+    #       pde_loss_weight_uv: 1.0
+    #       pde_loss_weight_wave: 0.2
+    #       pde_loss_weight_start_factor: 0.01
+    #       pde_loss_weight_end_factor: 1.0
+    #       pde_loss_weight_warmup_epochs: 30
+    #       pde_loss_weight_schedule: linear
+    #       rollout_pi_use_all_samples: true
+    #       deeponet_rollout:
+    #         enabled: true
+    #         horizon: 5
+    #         step_stride: 1
 
-    - name: step_6_rollout_h5_r1_r2
-      overrides:
-        training:
-          trunk_n_epochs: 0
-          branch_n_epochs: 0
-          deeponet_n_epochs: 50
-          finetune_deeponet: true
-          use_pinn_loss: true
-          pde_loss_weight: 0.2
-          pde_loss_weight_uv: 1.0
-          pde_loss_weight_wave: 0.5
-          pde_loss_weight_start_factor: 0.01
-          pde_loss_weight_end_factor: 1.0
-          pde_loss_weight_warmup_epochs: 30
-          pde_loss_weight_schedule: linear
-          rollout_pi_use_all_samples: true
-          deeponet_rollout:
-            enabled: true
-            horizon: 5
-            step_stride: 1
+    # - name: step_6_rollout_h5_r1_r2
+    #   overrides:
+    #     training:
+    #       trunk_n_epochs: 0
+    #       branch_n_epochs: 0
+    #       deeponet_n_epochs: 50
+    #       finetune_deeponet: true
+    #       use_pinn_loss: true
+    #       pde_loss_weight: 0.2
+    #       pde_loss_weight_uv: 1.0
+    #       pde_loss_weight_wave: 0.5
+    #       pde_loss_weight_start_factor: 0.01
+    #       pde_loss_weight_end_factor: 1.0
+    #       pde_loss_weight_warmup_epochs: 30
+    #       pde_loss_weight_schedule: linear
+    #       rollout_pi_use_all_samples: true
+    #       deeponet_rollout:
+    #         enabled: true
+    #         horizon: 5
+    #         step_stride: 1
