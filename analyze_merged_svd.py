@@ -12,6 +12,7 @@ import os
 import sys
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.ticker import MaxNLocator
 from pathlib import Path
 from sklearn.utils.extmath import randomized_svd
 from datetime import datetime
@@ -229,6 +230,7 @@ def visualize_svd_analysis(
             output_dir=output_dir,
             n_modes=n_modes,
             raw_data=V_data,
+            color='mediumseagreen',
         )
 
 
@@ -244,13 +246,15 @@ def _visualize_field_svd(
     output_dir: str,
     n_modes: int = None,
     raw_data: np.ndarray = None,
+    color: str = 'blue',
 ):
     """Generate SVD plots for one field (u or v)."""
     
-    title_fs = 14
-    label_fs = 12
-    tick_fs = 10
-    suptitle_fs = 18
+    title_fs = 32
+    label_fs = 28
+    tick_fs = 24
+    legend_fs = 28
+    suptitle_fs = 36
     
     actual_modes = basis.shape[1]
     k_modes = actual_modes if n_modes is None else min(int(n_modes), actual_modes)
@@ -258,28 +262,30 @@ def _visualize_field_svd(
     # Plot 1: Energy decay
     cumulative_energy = np.cumsum(sigma**2) / np.sum(sigma**2)
     
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5), constrained_layout=True)
+    fig, axes = plt.subplots(1, 2, figsize=(20, 8), constrained_layout=True)
     
-    axes[0].semilogy(sigma)
+    axes[0].semilogy(sigma, linewidth=4, color=color)
     axes[0].set_title("Singular Values Decay", fontsize=title_fs)
     axes[0].set_xlabel("Mode Index", fontsize=label_fs)
-    axes[0].set_ylabel("Sigma (Log Scale)", fontsize=label_fs)
+    axes[0].set_ylabel("Sigma", fontsize=label_fs)
     axes[0].tick_params(labelsize=tick_fs)
+    axes[0].xaxis.set_major_locator(MaxNLocator(integer=True))
     axes[0].grid(True, which="both", ls="--")
     
-    axes[1].plot(cumulative_energy * 100, linewidth=2)
-    axes[1].axhline(y=90, color='r', linestyle='--', label='90% energy')
-    axes[1].axhline(y=99, color='orange', linestyle='--', label='99% energy')
+    axes[1].plot(cumulative_energy * 100, linewidth=4, color=color)
+    axes[1].axhline(y=90, color='r', linestyle='--', label='90% Energy')
+    axes[1].axhline(y=99, color='orange', linestyle='--', label='99% Energy')
     axes[1].set_title("Cumulative Energy Captured", fontsize=title_fs)
     axes[1].set_xlabel("Number of Modes", fontsize=label_fs)
     axes[1].set_ylabel("Energy (%)", fontsize=label_fs)
     axes[1].tick_params(labelsize=tick_fs)
+    axes[1].xaxis.set_major_locator(MaxNLocator(integer=True))
     axes[1].grid(True, alpha=0.3)
-    axes[1].legend()
+    axes[1].legend(fontsize=legend_fs)
     axes[1].set_ylim([0, 105])
     
-    energy_plot = os.path.join(output_dir, f'svd_{field_prefix}_energy_decay.png')
-    fig.savefig(energy_plot, dpi=150, bbox_inches='tight')
+    energy_plot = os.path.join(output_dir, f'svd_{field_prefix}_energy_decay.pdf')
+    fig.savefig(energy_plot, bbox_inches='tight')
     plt.close()
     print(f"    ✓ {energy_plot}")
     
@@ -522,6 +528,41 @@ def main():
     )
     
     print(f"\n✓ All figures saved to {data_dir}/")
+
+
+    # svd_merged = np.load(os.path.join("data", "svd_merged.npy"), allow_pickle=True).item()
+    # output_dir = "data"
+
+    # Nt, Nx, Ny = U_data.shape[1], U_data.shape[2], U_data.shape[3]
+    # grid_shape = np.array(svd_merged.get('grid_shape', np.array([Nt, Nx, Ny]))).astype(int)
+    # Nt, Nx, Ny = int(grid_shape[0]), int(grid_shape[1]), int(grid_shape[2])
+
+    # result = {
+    #     'basis_u': svd_merged['basis'],
+    #     'singular_values_u': svd_merged['singular_values'],
+    #     'coefficients_u': svd_merged['coefficients'],
+    #     'grid_shape': grid_shape,
+    # }
+
+    # if 'basis_v' in svd_merged and 'singular_values_v' in svd_merged and 'coefficients_v' in svd_merged:
+    #     result['basis_v'] = svd_merged['basis_v']
+    #     result['singular_values_v'] = svd_merged['singular_values_v']
+    #     result['coefficients_v'] = svd_merged['coefficients_v']
+
+    # n_modes = int(result['basis_u'].shape[1])
+
+    # visualize_svd_analysis(
+    #     svd_data=result,
+    #     output_dir=output_dir,
+    #     n_modes=n_modes,
+    #     U_data=U_data,
+    #     V_data=V_data,
+    #     Nt=Nt,
+    #     Nx=Nx,
+    #     Ny=Ny,
+    # )
+    
+    # print(f"\n✓ All figures saved to {data_dir}/")
 
 
 if __name__ == "__main__":

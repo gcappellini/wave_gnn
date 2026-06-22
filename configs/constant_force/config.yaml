@@ -18,7 +18,7 @@ problem:
     fourier_modes_l: 4
 svd:
   n_modes: 18
-  visualize: false
+  visualize: true
   magnitude_summary:
     raw_u:
       min: -0.209636
