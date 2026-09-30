@@ -49,6 +49,8 @@ pi-operator/*.npz
 pi-operator/*.png
 train.dat
 ground_truth.npz
+data/*.gif
+data/*.png
 
 
 # IDE
