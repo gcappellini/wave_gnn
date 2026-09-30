@@ -4,7 +4,9 @@ Validation and Visualization Functions
 Generates comparison plots and validation metrics for DeepONet models.
 """
 
+import logging
 import os
+import h5py
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
@@ -14,6 +16,8 @@ import torch.nn as nn
 from pathlib import Path
 
 from .models import MLP, DualHeadMLP, DualHeadSensorBranch, DeepONet
+
+logger = logging.getLogger("wave_gnn")
 
 
 def plot_validation_basic(

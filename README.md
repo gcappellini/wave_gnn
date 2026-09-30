@@ -1,10 +1,10 @@
-# DeepONet 2D Wave Equation Experiments
+# Autoregressive DeepONet 2D Wave Equation Experiments
 
 This branch aims at backup the code for the paper "Physics-Informed Autoregressive DeepONet Surrogate for Real-Time Interactive Simulation of Deformable Membranes".
-Only the strict code necessary to this imlementation will be kept in this branch, organized in order to build on it subsequent implementations and developments.
+Only the strict code necessary to this implementation will be kept in this branch, organized in order to build on it subsequent implementations and developments.
 
 
-## Project Structure
+## Actual project Structure
 
 ```
 wave_gnn/
@@ -14,19 +14,12 @@ wave_gnn/
 │   ├── training.py                    # MLP, DeepONet, training loops
 │   └── plotting.py                    # Validation plots
 │   └── models.py                      # All the models
-├── configs/                            # Hydra configuration per problem
-│   ├── free_evolution/
-│   │   └── config.yaml                # Free evolution hyperparameters
-│   └── constant_force/
-│       └── config.yaml                # Constant force hyperparameters
-├── data/                               # Simulation data and SVD results
-│   ├── free_evolution.mat
-│   ├── svd_free_evolution.npy
-│   ├── constant_force.mat
-│   └── svd_constant_force.npy
+├── configs/                           # Hydra configuration per problem
+│   ├── config.yaml                    # General hyperparameters
+│   └── curriculum.yaml                # Training-specific hyperparameters
+├── data/                              # Scripts to generate the dataset
+│   └── ...
 ├── models/                             # Trained model checkpoints
-│   ├── trunk_svd_free_evolution.pth
-│   ├── branch_svd_free_evolution.pth
 │   └── ...
 ├── outputs/                            # Hydra timestamped outputs
 │   └── YYYY-MM-DD/
@@ -44,6 +37,11 @@ wave_gnn/
 └── README.md
 ```
 
+## Target project Structure
+
+In the main folder I would like to have only one script, main.py. all the curriculum wrapping, plotting scripts, pipeline scripts, and table geenrators should be moved in src and distributed in the existing / new scripts that should logically pertain to.
+The entire experiment should be set from config files. 
+Also MATLAB dataset generation scripts should load parameters from this yaml file, to keep a better trace overall.
 
 ## Configuration System
 
