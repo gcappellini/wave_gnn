@@ -45,6 +45,11 @@ best_model.pt
 # Figures and data
 figures/
 matlab/
+pi-operator/*.npz
+pi-operator/*.png
+train.dat
+ground_truth.npz
+
 
 # IDE
 .vscode/
