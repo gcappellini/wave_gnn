@@ -2,6 +2,14 @@ defaults:
   - config
   - _self_
 
+pipeline:
+  generate_dataset: false
+  analyze_dataset: true
+  run_curriculum: true
+  generate_tables: true
+  table_max_samples: 5
+  generate_rollout_plots: false
+
 # Smoke-test curriculum: identical stage structure to curriculum_total but
 # every epoch count is set to 1 and sample counts are capped.
 # Purpose: verify the full pipeline runs end-to-end without errors before

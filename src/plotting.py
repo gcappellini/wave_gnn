@@ -1969,3 +1969,209 @@ def plot_deeponet_test(
     plt.close()
     print(f"  ✓ Saved: validation_deeponet_test_{problem_type}.png")
     print("  ✓ DeepONet test complete")
+
+
+def _snapshot_indices(nt: int, n_snapshots: int = 4) -> list[int]:
+    if nt < 2:
+        raise ValueError("Need Nt >= 2 for rollout snapshots")
+    indices = np.linspace(1, nt - 1, n_snapshots, dtype=int)
+    return sorted(set(int(index) for index in indices))
+
+
+def _plot_publication_sample(
+    u_gt_snapshots: list[np.ndarray],
+    u_pred_snapshots: list[np.ndarray],
+    t_snapshots: list[float],
+    sample_id_global: int,
+    out_path: Path,
+):
+    n_rows = len(t_snapshots)
+    fig, axes = plt.subplots(n_rows, 3, figsize=(18, 4.8 * n_rows))
+    if n_rows == 1:
+        axes = axes[np.newaxis, :]
+
+    u_all = [image for pair in zip(u_gt_snapshots, u_pred_snapshots) for image in pair]
+    u_vmin = min(image.min() for image in u_all)
+    u_vmax = max(image.max() for image in u_all)
+    err_list = [np.abs(pred - gt) for gt, pred in zip(u_gt_snapshots, u_pred_snapshots)]
+    err_vmax = max(max(float(err.max()) for err in err_list), 1e-12)
+
+    tick_fs = 20
+    for row, (gt, pred, err, t_val) in enumerate(
+        zip(u_gt_snapshots, u_pred_snapshots, err_list, t_snapshots)
+    ):
+        im0 = axes[row, 0].imshow(pred, cmap="seismic", origin="lower", vmin=u_vmin, vmax=u_vmax)
+        axes[row, 0].set_title(f"Prediction (t={t_val:.3f})", fontsize=24, fontweight="bold")
+        axes[row, 0].set_xticks([])
+        axes[row, 0].set_yticks([])
+
+        axes[row, 1].imshow(gt, cmap="seismic", origin="lower", vmin=u_vmin, vmax=u_vmax)
+        axes[row, 1].set_title(f"Ground Truth (t={t_val:.3f})", fontsize=24, fontweight="bold")
+        axes[row, 1].set_xticks([])
+        axes[row, 1].set_yticks([])
+
+        im2 = axes[row, 2].imshow(err, cmap="YlOrRd", origin="lower", vmin=0.0, vmax=err_vmax)
+        l2_rel = np.linalg.norm(pred - gt) / (np.linalg.norm(gt) + 1e-12)
+        axes[row, 2].set_title(f"|Error| (rel L2={l2_rel:.2e})", fontsize=24, fontweight="bold")
+        axes[row, 2].set_xticks([])
+        axes[row, 2].set_yticks([])
+
+    fig.suptitle(f"Sample {sample_id_global}", fontsize=34, fontweight="bold", y=0.995)
+    plt.tight_layout(rect=[0.0, 0.0, 0.86, 0.975])
+
+    cbar_x, cbar_w, cbar_h = 0.87, 0.04, 0.38
+    cax_u = fig.add_axes([cbar_x, 0.52, cbar_w, cbar_h])
+    cb_u = fig.colorbar(im0, cax=cax_u)
+    cb_u.set_label("Deformation u", fontsize=22, fontweight="bold")
+    cb_u.ax.tick_params(labelsize=tick_fs)
+
+    cax_err = fig.add_axes([cbar_x, 0.10, cbar_w, cbar_h])
+    cb_err = fig.colorbar(im2, cax=cax_err)
+    cb_err.set_label("Absolute Error", fontsize=22, fontweight="bold")
+    cb_err.ax.tick_params(labelsize=tick_fs)
+
+    fig.savefig(out_path, dpi=180, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_publication_rollout(
+    script_dir: Path,
+    output_dir: Path,
+    stage: int = 4,
+    n_samples_plot: int = 4,
+    split_file: str | None = None,
+    random_seed: int = 1234,
+    sample_ids: list[int] | None = None,
+) -> Path:
+    """Generate deformation-only rollout plots for selected curriculum samples."""
+
+    script_dir = Path(script_dir)
+    output_dir = Path(output_dir) / "stage4_publication_rollout"
+    models_dir = script_dir / "models"
+    data_dir = script_dir / "data"
+    checkpoint = models_dir / f"step_{stage}_deeponet_merged.pth"
+    merged_mat = data_dir / "merged.mat"
+    if not checkpoint.exists():
+        raise FileNotFoundError(f"Checkpoint not found: {checkpoint}")
+    if not merged_mat.exists():
+        raise FileNotFoundError(f"Missing dataset: {merged_mat}")
+
+    selected_split = Path(split_file).expanduser() if split_file else None
+    if selected_split is not None and not selected_split.is_absolute():
+        selected_split = (script_dir / selected_split).resolve()
+    if selected_split is None:
+        candidates = [
+            data_dir / "splits" / "merged_train80_test19_seed42.npz",
+            data_dir / "splits" / "merged_train80_test20_seed42.npz",
+        ]
+        selected_split = next((path for path in candidates if path.exists()), candidates[0])
+    if not selected_split.exists():
+        raise FileNotFoundError(f"Split file not found: {selected_split}")
+
+    with h5py.File(merged_mat, "r") as data:
+        u_all = np.array(data["U_data"]).T
+        v_all = np.array(data["V_data"]).T
+        f_all = np.array(data["F_data"]).T if "F_data" in data else None
+
+    split_data = np.load(selected_split, allow_pickle=True)
+    test_key = "test_indices" if "test_indices" in split_data else "test_idx"
+    if test_key not in split_data:
+        raise ValueError(f"Split file missing test indices: {selected_split}")
+    test_indices = np.array(split_data[test_key], dtype=np.int64).reshape(-1)
+    if test_indices.size == 0:
+        raise ValueError("No test indices available")
+
+    if sample_ids:
+        requested = np.asarray(sample_ids, dtype=np.int64)
+        n_total = u_all.shape[-1]
+        if np.any(requested < 0) or np.any(requested >= n_total):
+            raise ValueError(f"Requested sample ids must be in [0, {n_total - 1}]")
+        chosen_ids = requested
+    else:
+        rng = np.random.default_rng(random_seed)
+        chosen_ids = rng.choice(test_indices, size=min(n_samples_plot, test_indices.size), replace=False)
+
+    u_fom = u_all[..., chosen_ids]
+    v_fom = v_all[..., chosen_ids]
+    f_fom = f_all[..., chosen_ids] if f_all is not None else None
+    nx, ny, nt, n_local = u_fom.shape
+    _, _, t_vals = _load_grid_from_mat(merged_mat, nx, ny, nt)
+    snapshot_ids = _snapshot_indices(nt)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    deeponet, n_sensors, normalization = _load_deeponet_from_checkpoint(
+        str(checkpoint), device, "merged"
+    )
+    raw_u_min = float(normalization.get("raw_u_min", 0.0))
+    raw_u_max = float(normalization.get("raw_u_max", 1.0))
+    raw_v_min = float(normalization.get("raw_v_min", 0.0))
+    raw_v_max = float(normalization.get("raw_v_max", 1.0))
+    raw_f_min = float(normalization.get("raw_f_min", 0.0))
+    raw_f_max = float(normalization.get("raw_f_max", 1.0))
+    sensor_x = np.linspace(0, nx - 1, n_sensors, dtype=int)
+    sensor_y = np.linspace(0, ny - 1, n_sensors, dtype=int)
+    input_channels = int(getattr(getattr(deeponet, "branch_ic", None), "input_channels", 2))
+    x = np.linspace(0.0, 1.0, nx)
+    y = np.linspace(0.0, 1.0, ny)
+    X, Y = np.meshgrid(x, y, indexing="ij")
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    summary_lines = [
+        f"stage={stage}",
+        f"checkpoint={checkpoint}",
+        f"split_file={selected_split}",
+        f"random_seed={random_seed}",
+        f"chosen_global_ids={chosen_ids.tolist()}",
+        f"snapshot_indices={snapshot_ids}",
+        f"snapshot_times={[float(t_vals[index]) for index in snapshot_ids]}",
+    ]
+
+    for local_idx in range(n_local):
+        sample_global_id = int(chosen_ids[local_idx])
+        current_u = u_fom[:, :, 0, local_idx].astype(np.float32, copy=True)
+        current_v = v_fom[:, :, 0, local_idx].astype(np.float32, copy=True)
+        prev_idx = 0
+        pred_by_tidx = {}
+
+        for t_idx in range(1, nt):
+            local_dt = float(t_vals[t_idx] - t_vals[prev_idx])
+            coords_local = np.stack(
+                [X.flatten("F"), Y.flatten("F"), np.full((nx * ny,), local_dt, dtype=np.float32)],
+                axis=1,
+            )
+            measurements = _build_branch_measurement_tensor(
+                u_field=current_u,
+                v_field=current_v,
+                f_fom=f_fom,
+                sample_idx=local_idx,
+                sensor_x=sensor_x,
+                sensor_y=sensor_y,
+                raw_u_min=raw_u_min,
+                raw_u_max=raw_u_max,
+                raw_v_min=raw_v_min,
+                raw_v_max=raw_v_max,
+                raw_f_min=raw_f_min,
+                raw_f_max=raw_f_max,
+                input_channels=input_channels,
+                n_sensors=n_sensors,
+                device=device,
+            )
+            u_pred, v_pred = _run_deeponet_inference(
+                deeponet, measurements, coords_local, nx, ny, device, True
+            )
+            pred_by_tidx[t_idx] = u_pred
+            current_u = u_pred.astype(np.float32, copy=True)
+            current_v = v_pred.astype(np.float32, copy=True)
+            prev_idx = t_idx
+
+        _plot_publication_sample(
+            u_gt_snapshots=[u_fom[:, :, index, local_idx] for index in snapshot_ids],
+            u_pred_snapshots=[pred_by_tidx[index] for index in snapshot_ids],
+            t_snapshots=[float(t_vals[index]) for index in snapshot_ids],
+            sample_id_global=sample_global_id,
+            out_path=output_dir / f"sample_{sample_global_id}_rollout_u_pub.pdf",
+        )
+
+    (output_dir / "selection_summary.txt").write_text("\n".join(summary_lines) + "\n", encoding="utf-8")
+    logger.info(f"Saved publication rollout plots to: {output_dir}")
+    return output_dir

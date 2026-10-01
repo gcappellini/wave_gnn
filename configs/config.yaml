@@ -1,21 +1,123 @@
 problem:
   name: merged
   description: 2D wave equation on merged dataset (constant_force + forced_sine + free_evolution)
-  matlab:
-    script: wave_2D_matlab_reference.m
+pipeline:
+  generate_dataset: false
+  generate_contact_dataset: false
+  analyze_dataset: true
+  run_curriculum: false
+  force_retrain: false
+  generate_tables: false
+  generate_rollout_plots: false
+  table_max_samples: null
+  table_split_file: null
+  rollout:
+    stage: 4
+    n_samples: 4
+    split_file: null
+    random_seed: 1234
+    sample_ids: null
+datasets:
+  constant_force:
+    domain_length: 1.0
     t_final: 1.0
     nt_time_steps: 10
+    n_samples: 5000
     nx: 100
     ny: 100
-    n_samples: 5000
+    wave_speed: 1.0
+    damping: 20.0
+    mass: 0.1
+    reaction_coefficient: 0.0
+    source_radius: 0.15
+    source_amplitude: 10.0
+    default_source_center_x: 0.5
+    default_source_center_y: 0.5
+    default_source_sign: 1
+  free_evolution:
+    domain_length: 1.0
+    t_final: 1.0
+    nt_time_steps: 10
+    n_samples: 128
+    nx: 100
+    ny: 100
     wave_speed: 1.0
     damping: 1.0
-    forcing_amplitude: 1.0
+    mass: 1.0
+    reaction_coefficient: 0.0
     source_center_x: 0.35
     source_center_y: 0.65
     source_width: 0.3
+    source_amplitude: 0.0
     fourier_modes_k: 4
     fourier_modes_l: 4
+    fourier_coefficient_min: -1.0
+    fourier_coefficient_max: 1.0
+    fourier_decay_power: 2
+  mixed_force_ic:
+    domain_length: 1.0
+    t_final: 1.0
+    nt_time_steps: 10
+    n_samples: 5000
+    nx: 100
+    ny: 100
+    fourier_modes_k: 4
+    fourier_modes_l: 4
+    wave_speed: 1.0
+    damping: 20.0
+    mass: 0.1
+    reaction_coefficient: 0.0
+    source_radius: 0.15
+    source_amplitude: 10.0
+    default_source_center_x: 0.5
+    default_source_center_y: 0.5
+    default_source_sign: 1
+    fourier_coefficient_min: -1.0
+    fourier_coefficient_max: 1.0
+    fourier_decay_power: 2
+  contact:
+    domain_length: 1.0
+    nx: 90
+    ny: 90
+    wave_speed: 1.0
+    damping: 50.0
+    tool_size: 0.09
+    contact_margin: 0.095
+    input_velocity_filter: 1.0
+    duration: 10.0
+    dt_fixed: 0.02
+    sub_steps: 50
+    dt: 0.0004
+    num_frames: 500
+    n_samples: 5000
+    dataset_dir: Dataset_DeepONet
+    output_file: contact_dataset.mat
+    saved_precision: single
+    fourier_modes:
+      min: 1
+      max: 3
+    fourier_amplitude_factor: 0.1
+    contact_center_range:
+      min: 0.095
+      max: 0.905
+    trajectory_timing:
+      t_down:
+        min: 1.0
+        max: 2.5
+      delta_t_hold:
+        min: 2.0
+        max: 5.0
+      delta_t_up:
+        min: 1.0
+        max: 2.5
+    trajectory_depth_offset:
+      min: -0.20
+      max: -0.05
+    trajectory_air_offset: 0.1
+    contact_thresholds:
+      release_elevation: 0.002
+      min_reaction_force: 0.0005
+      min_release_velocity: 0.01
 svd:
   n_modes: 18
   visualize: true

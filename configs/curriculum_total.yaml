@@ -2,6 +2,13 @@ defaults:
   - config
   - _self_
 
+pipeline:
+  generate_dataset: false
+  analyze_dataset: true
+  run_curriculum: true
+  generate_tables: true
+  generate_rollout_plots: true
+
 curriculum:
   # If null, stage 0 starts from script_dir/models.
   initial_pretrained_models_dir: null

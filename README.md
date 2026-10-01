@@ -4,48 +4,49 @@ This branch aims at backup the code for the paper "Physics-Informed Autoregressi
 Only the strict code necessary to this implementation will be kept in this branch, organized in order to build on it subsequent implementations and developments.
 
 
-## Actual project Structure
+## Project Structure
 
 ```
 wave_gnn/
-├── src/                               # Reusable modules
-│   ├── ground_truth_generation.py     # MATLAB wrapper, .mat loading
-│   ├── svd_analysis.py                # POD basis extraction, visualization
-│   ├── training.py                    # MLP, DeepONet, training loops
-│   └── plotting.py                    # Validation plots
-│   └── models.py                      # All the models
-├── configs/                           # Hydra configuration per problem
-│   ├── config.yaml                    # General hyperparameters
-│   └── curriculum.yaml                # Training-specific hyperparameters
-├── data/                              # Scripts to generate the dataset
-│   └── ...
-├── models/                             # Trained model checkpoints
-│   └── ...
-├── outputs/                            # Hydra timestamped outputs
-│   └── YYYY-MM-DD/
-│       └── HH-MM-SS/
-│           ├── .hydra/                # Config snapshots
-│           ├── *.log                  # Training logs
-│           ├── *_training_curves.png  # Loss curves
-│           └── validation_*.png       # Validation plots
-├── curriculum_wrapper.py              # Pipeline entire curriculum training
-├── run_free_evolution.py              # Pipeline: Free evolution
-├── generate_curriculum_table_detailed.py # Some code for plot
-├── main_ssh.ipynb                     # Notebook to run on gpu ssh
-├── requirements.txt                   
-├── run_constant_force.py              # Pipeline: Constant force
+├── main.py                    # Hydra entrypoint for the complete experiment
+├── configs/
+│   ├── config.yaml             # Experiment, pipeline, and MATLAB parameters
+│   ├── curriculum_total.yaml   # Publication curriculum
+│   └── curriculum_smoke_test.yaml
+├── src/
+│   ├── curriculum.py           # Staged training and checkpoint reuse
+│   ├── ground_truth_generation.py
+│   ├── logging_utils.py        # Console and file logging
+│   ├── models.py               # DeepONet model definitions
+│   ├── pipeline.py             # Merged-dataset training pipeline
+│   ├── plotting.py             # Validation and publication plots
+│   ├── reporting.py            # Curriculum metrics and tables
+│   ├── svd_analysis.py         # POD basis extraction and analysis
+│   └── training.py             # Model training loops
+├── data/                       # MATLAB generators and dataset utilities
+├── models/                     # Published checkpoints
+├── outputs/                    # Timestamped Hydra runs and logs
+├── main_ssh.ipynb              # Remote run launcher and monitoring
+├── requirements.txt
 └── README.md
 ```
 
-## Target project Structure
-
-In the main folder I would like to have only one script, main.py. all the curriculum wrapping, plotting scripts, pipeline scripts, and table geenrators should be moved in src and distributed in the existing / new scripts that should logically pertain to.
-The entire experiment should be set from config files. 
-Also MATLAB dataset generation scripts should load parameters from this yaml file, to keep a better trace overall.
-
 ## Configuration System
 
-Hydra manages all hyperparameters via YAML configs.
+Hydra manages experiment parameters and pipeline stages via YAML. MATLAB dataset
+generators read their per-dataset parameters from `configs/config.yaml` using
+MATLAB's `readyaml` function.
+
+Run the publication curriculum or its smoke test through the single entrypoint:
+
+```bash
+python main.py --config-name curriculum_total
+python main.py --config-name curriculum_smoke_test
+```
+
+The `pipeline` section controls dataset generation, analysis, curriculum
+training, table generation, and publication rollout plots. Existing stage
+checkpoints in `models/` are reused unless `pipeline.force_retrain=true`.
 
 ## Output Structure
 

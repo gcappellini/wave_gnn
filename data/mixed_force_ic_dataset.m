@@ -2,38 +2,43 @@ clear all
 close all
 clc
 
+script_dir = fileparts(mfilename('fullpath'));
+cfg = readyaml(fullfile(script_dir, '..', 'configs', 'config.yaml'));
+p = cfg.datasets.mixed_force_ic;
+Lx = p.domain_length;
+
 % Simulation setup
-t_f = 1;
-tlist = linspace(0, t_f, 10);   % Nt time steps
+t_f = p.t_final;
+tlist = linspace(0, t_f, p.nt_time_steps);
 Nt = numel(tlist);
 
 % Dataset parameters
-N_samples = 5000;                  % randomized forcing + randomized ICs
-Nx = 100; Ny = 100;               % uniform query grid
-K = 4; L = 4;                     % Fourier modes for IC synthesis
+N_samples = p.n_samples;
+Nx = p.nx; Ny = p.ny;
+K = p.fourier_modes_k; L = p.fourier_modes_l;
 
 % Grids for storage and visualization
-x_grid = linspace(0, 1, Nx);
-y_grid = linspace(0, 1, Ny);
+x_grid = linspace(0, Lx, Nx);
+y_grid = linspace(0, Lx, Ny);
 [Xq, Yq] = meshgrid(x_grid, y_grid);
 
 % PDE coefficients
 global source_radius source_amp source_center_x source_center_y source_sign
-wave_speed = 1;
-d = 20;
-a = 0;
-m = 0.1;
-source_radius = 0.15;
-source_amp = 10.0;
+wave_speed = p.wave_speed;
+d = p.damping;
+a = p.reaction_coefficient;
+m = p.mass;
+source_radius = p.source_radius;
+source_amp = p.source_amplitude;
 assert(source_radius > 0 && source_radius < 0.5, 'source_radius must lie in (0, 0.5).');
 % Defaults so coefficient evaluation works before per-sample overrides
-source_center_x = 0.5;
-source_center_y = 0.5;
-source_sign = 1;
+source_center_x = p.default_source_center_x;
+source_center_y = p.default_source_center_y;
+source_sign = p.default_source_sign;
 
 % Build geometry and mesh once
 model = createpde(1);
-R1 = [3, 4, 0, 1, 1, 0, 0, 0, 1, 1];
+R1 = [3, 4, 0, Lx, Lx, 0, 0, 0, Lx, Lx];
 g = decsg(R1);
 geometryFromEdges(model, g);
 
@@ -68,7 +73,8 @@ for sample_id = 1:N_samples
     F_data(:, :, sample_id) = (source_sign * source_amp * double(radial_mask));
 
     % Random sine-series initial conditions.
-    [u0_fun, ut0_fun] = generate_random_ic(K, L);
+    [u0_fun, ut0_fun] = generate_random_ic( ...
+        K, L, p.fourier_coefficient_min, p.fourier_coefficient_max, p.fourier_decay_power);
     setInitialConditions(model, u0_fun, ut0_fun);
 
     % Solve PDE for this forcing and initial condition pair.
@@ -104,10 +110,10 @@ for sample_id = 1:N_samples
     fprintf('Finished sample %d/%d\n', sample_id, N_samples);
 end
 cpu_time_end = cputime - cpu_time_start
+fprintf('Total CPU time: %.2f seconds\n', cpu_time_end);
 
 % Save dataset to script directory
-script_dir = fileparts(mfilename('fullpath'));
-save(fullfile(script_dir, 'data', 'forced_sine_dataset.mat'), 'U_data', 'V_data', 'F_data', 'source_centers', 'source_signs', 'x_grid', 'y_grid', 'tlist', '-v7.3');
+save(fullfile(script_dir, 'force_ic_dataset.mat'), 'U_data', 'V_data', 'F_data', 'source_centers', 'source_signs', 'x_grid', 'y_grid', 'tlist', '-v7.3');
 
 % Visualize three random samples at mid time (displacement and force)
 mid_idx = 1;
@@ -118,7 +124,7 @@ tiledlayout(2, 3);
 % Row 1: Displacement at mid time
 for k = 1:3
     nexttile;
-    surf(Xq, Yq, U_data(:, :, mid_idx, pick_ids(k))');
+    surf(Xq, Yq, U_data(:, :, mid_idx, pick_ids(k)));
     shading interp;
     xlabel('x'); ylabel('y'); zlabel('u');
     title(sprintf('Sample %d: Displacement at t=%.3f', pick_ids(k), tlist(mid_idx)));
@@ -140,22 +146,18 @@ function fcoeff = force(location, state)
     fcoeff = source_sign * source_amp * double(inside_circle);
 end
 
-function [u0_fun, ut0_fun] = generate_random_ic(K, L)
-    if nargin < 1
-        K = 4; L = 4;
-    end
-
-    u_coeffs = make_coeffs(K, L);
-    v_coeffs = make_coeffs(K, L);
+function [u0_fun, ut0_fun] = generate_random_ic(K, L, coefficient_min, coefficient_max, decay_power)
+    u_coeffs = make_coeffs(K, L, coefficient_min, coefficient_max, decay_power);
+    v_coeffs = make_coeffs(K, L, coefficient_min, coefficient_max, decay_power);
 
     u0_fun = @(location) fourier_field(location.x, location.y, u_coeffs);
     ut0_fun = @(location) fourier_field(location.x, location.y, v_coeffs);
 end
 
-function coeffs = make_coeffs(K, L)
-    raw = -1 + 2 * rand(K, L);
+function coeffs = make_coeffs(K, L, coefficient_min, coefficient_max, decay_power)
+    raw = coefficient_min + (coefficient_max - coefficient_min) * rand(K, L);
     [k_idx, l_idx] = ndgrid(1:K, 1:L);
-    decay = 1 ./ (k_idx.^2 + l_idx.^2);
+    decay = 1 ./ (k_idx.^2 + l_idx.^2).^decay_power;
     coeffs = raw .* decay;
 end
 

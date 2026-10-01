@@ -139,8 +139,17 @@ def run_curriculum(cfg: DictConfig, script_dir: Path, root_output_dir: Path) -> 
         published_ckpt = models_dir / f"step_{stage_idx}_deeponet_merged.pth"
 
         if published_ckpt.exists() and not force_retrain:
-            logger.info(f"Curriculum step {stage_idx}: {step_name} — skipping (checkpoint exists: {published_ckpt})")
-            current_pretrained_dir = models_dir
+            logger.info(f"Curriculum step {stage_idx}: {step_name} - skipping (checkpoint exists: {published_ckpt})")
+            stage_ckpt_dir = stage_dir / "checkpoints"
+            stage_ckpt_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(published_ckpt, stage_ckpt_dir / "deeponet_merged.pth")
+            for checkpoint_name in ("trunk_svd_merged.pth", "branch_svd_merged.pth"):
+                source_checkpoint = current_pretrained_dir / checkpoint_name
+                if not source_checkpoint.exists():
+                    source_checkpoint = models_dir / checkpoint_name
+                if source_checkpoint.exists():
+                    shutil.copy2(source_checkpoint, stage_ckpt_dir / checkpoint_name)
+            current_pretrained_dir = stage_ckpt_dir
             continue
 
         overrides = step.get('overrides', {})

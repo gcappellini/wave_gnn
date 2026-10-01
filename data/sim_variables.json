@@ -1,0 +1,64 @@
+{
+  "grid_and_domain": {
+    "Lx": 1.0,
+    "N": 90,
+    "dx": 0.011235955056179775
+  },
+  "physics": {
+    "wave_speed_c": 1.0,
+    "c2": 1.0,
+    "damping_kappa": 50.0
+  },
+  "tool": {
+    "toolSize": 0.09,
+    "halfTool": 0.045,
+    "margin": 0.095
+  },
+  "time_discretization": {
+    "duration_sec": 10.0,
+    "dt_fixed_sec": 0.02,
+    "subSteps": 50,
+    "dt_sec": 0.0004,
+    "num_frames": 500
+  },
+  "dataset_config": {
+    "num_simulations": 5000,
+    "dataset_dir": "Dataset_DeepONet",
+    "saved_precision": "single",
+    "saved_variables": [
+      "U_hist",
+      "V_hist",
+      "Force",
+      "Contact",
+      "CenterX",
+      "CenterZ",
+      "ToolY_hist",
+      "Time"
+    ],
+    "output_shapes": {
+      "U_hist": [90, 90, 500],
+      "V_hist": [90, 90, 500],
+      "Force": [500, 1],
+      "Contact": [500, 1],
+      "ToolY_hist": [500, 1],
+      "Time": [500, 1]
+    }
+  },
+  "random_ic_ranges": {
+    "fourier_modes_n_m": [1, 3],
+    "fourier_amplitude_factor": 0.1,
+    "contact_center_range": [0.095, 0.905],
+    "trajectory_timing": {
+      "t_down": [1.0, 2.5],
+      "delta_t_hold": [2.0, 5.0],
+      "delta_t_up": [1.0, 2.5]
+    },
+    "trajectory_depth_offset": [-0.20, -0.05],
+    "trajectory_air_offset": 0.1
+  },
+  "contact_thresholds": {
+    "release_elevation_threshold": 0.002,
+    "min_reaction_force_threshold": 0.0005,
+    "min_release_velocity_threshold": 0.01
+  }
+}

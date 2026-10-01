@@ -286,6 +286,7 @@ def run_constant_force_pipeline(
     canonical_models_dir = script_dir / "models"
 
     problem_type = cfg.problem.name
+    force_retrain = bool(cfg.get("pipeline", {}).get("force_retrain", False))
 
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(data_dir, exist_ok=True)
@@ -409,7 +410,7 @@ def run_constant_force_pipeline(
 
     trunk_checkpoint = pretrained_models_dir / f"trunk_svd_{problem_type}.pth"
 
-    if cfg.training.trunk_n_epochs > 0 and not trunk_checkpoint.exists():
+    if cfg.training.trunk_n_epochs > 0 and (force_retrain or not trunk_checkpoint.exists()):
         if 'magnitude_summary' not in cfg.svd:
             raise ValueError(
                 "cfg.svd.magnitude_summary is missing. "
@@ -464,7 +465,7 @@ def run_constant_force_pipeline(
 
     branch_checkpoint = pretrained_models_dir / f"branch_svd_{problem_type}.pth"
 
-    if cfg.training.branch_n_epochs > 0 and not branch_checkpoint.exists():
+    if cfg.training.branch_n_epochs > 0 and (force_retrain or not branch_checkpoint.exists()):
         branch_svd_magnitude_summary = compute_svd_magnitude_summary(
             svd_data=svd_data,
             n_modes=cfg.svd.n_modes,
@@ -548,7 +549,7 @@ def run_constant_force_pipeline(
     finetune_deeponet = bool(cfg.training.get('finetune_deeponet', False))
     deeponet_init_ckpt = deeponet_checkpoint if deeponet_checkpoint.exists() else None
 
-    if deeponet_checkpoint.exists() and not finetune_deeponet:
+    if deeponet_checkpoint.exists() and not finetune_deeponet and not force_retrain:
         logger.info("Loading pre-trained DeepONet model...")
         logger.info(f"Loaded: {deeponet_checkpoint}")
     elif cfg.training.deeponet_n_epochs > 0:
