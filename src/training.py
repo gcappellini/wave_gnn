@@ -492,7 +492,7 @@ def train_trunk(
         print(f"  Using MLP trunk (single head, {n_modes} modes)")
 
     optimizer = optim.Adam(trunk.parameters(), lr=config['learning_rate'])
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=50, verbose=False)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=50)
     criterion = nn.MSELoss()
     
     # Training loop
@@ -766,7 +766,7 @@ def train_branch(
     ).to(device)
 
     optimizer = optim.Adam(branch.parameters(), lr=config['learning_rate'])
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=50, verbose=False)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=50)
     criterion = nn.MSELoss()
 
     # Training loop
@@ -1303,7 +1303,7 @@ def train_deeponet_joint(
         train_loader = DataLoader(train_dataset, batch_size=config['batch_size'], shuffle=True)
     
     optimizer = optim.Adam(deeponet.parameters(), lr=config.get('learning_rate', 1e-3))
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=50, verbose=False)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=50)
     criterion = nn.MSELoss()
 
     # Optional Gaussian noise on branch inputs (applied only during DeepONet training).

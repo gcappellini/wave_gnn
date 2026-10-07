@@ -4,7 +4,7 @@ defaults:
 
 pipeline:
   generate_dataset: false
-  analyze_dataset: true
+  analyze_dataset: false
   run_curriculum: true
   generate_tables: true
   table_max_samples: 5

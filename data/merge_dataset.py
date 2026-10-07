@@ -34,7 +34,7 @@ def main() -> None:
 
     dataset_specs: list[tuple[str, Path]] = [
         ("constant_force",  base / "constant_force.mat"),
-        ("forced_sine",     base / "forced_sine_dataset.mat"),
+        ("force_ic",     base / "force_ic.mat"),
         ("free_evolution",  base / "free_evolution.mat"),
     ]
 

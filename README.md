@@ -37,12 +37,26 @@ Hydra manages experiment parameters and pipeline stages via YAML. MATLAB dataset
 generators read their per-dataset parameters from `configs/config.yaml` using
 MATLAB's `readyaml` function.
 
+Start a persistent session:
+```bash
+tmux new -s wave_test
+```
+
 Run the publication curriculum or its smoke test through the single entrypoint:
 
 ```bash
 python main.py --config-name curriculum_total
 python main.py --config-name curriculum_smoke_test
 ```
+
+Detach in a new terminal with
+
+```bash
+tmux detach-client -s wave_test
+```
+
+You can then close the SSH connection.
+Reattach later with tmux attach -t wave_test.
 
 The `pipeline` section controls dataset generation, analysis, curriculum
 training, table generation, and publication rollout plots. Existing stage
