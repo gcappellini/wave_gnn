@@ -22,7 +22,7 @@ datasets:
     domain_length: 1.0
     t_final: 1.0
     nt_time_steps: 10
-    n_samples: 5000
+    n_samples: 128
     nx: 100
     ny: 100
     wave_speed: 1.0
@@ -58,7 +58,7 @@ datasets:
     domain_length: 1.0
     t_final: 1.0
     nt_time_steps: 10
-    n_samples: 5000
+    n_samples: 128
     nx: 100
     ny: 100
     fourier_modes_k: 4

@@ -32,6 +32,7 @@ logs_*/
 
 data_old/
 z_*/
+legacy/
 # Checkpoints and models
 checkpoints/
 *.pt

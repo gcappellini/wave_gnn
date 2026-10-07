@@ -3,7 +3,9 @@ close all
 clc
 
 script_dir = fileparts(mfilename('fullpath'));
+addpath(genpath('/Users/guglielmocappellini/Desktop/research/code/readyaml'));
 cfg = readyaml(fullfile(script_dir, '..', 'configs', 'config.yaml'));
+
 p = cfg.datasets.free_evolution;
 Lx = p.domain_length;
 
@@ -35,7 +37,7 @@ source_amp = p.source_amplitude;
 
 % Build geometry and mesh once
 model = createpde(1);
-R1 = [3, 4, 0, Lx, Lx, 0, 0, 0, Lx, Lx];
+R1 = [3; 4; 0; Lx; Lx; 0; 0; 0; Lx; Lx];
 g = decsg(R1);
 geometryFromEdges(model, g);
 
