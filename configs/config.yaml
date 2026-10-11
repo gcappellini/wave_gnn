@@ -7,12 +7,13 @@ pipeline:
   analyze_dataset: true
   run_curriculum: false
   force_retrain: false
-  generate_tables: false
-  generate_rollout_plots: false
+  generate_tables: true
+  generate_rollout_plots: true
   table_max_samples: null
   table_split_file: null
   rollout:
-    stage: 4
+    stage: p90_u_roll_rel  # stage index, or a metric name (e.g. p90_u_roll_rel) to pick the stage with the lowest value
+    metrics_file: null  # optional curriculum_stage_metrics_robust.json; default: latest found
     n_samples: 4
     split_file: null
     random_seed: 1234
@@ -90,7 +91,6 @@ datasets:
     dt: 0.0004
     num_frames: 500
     n_samples: 5000
-    dataset_dir: Dataset_DeepONet
     output_file: contact_dataset.mat
     saved_precision: single
     fourier_modes:

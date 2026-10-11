@@ -4,6 +4,7 @@ Validation and Visualization Functions
 Generates comparison plots and validation metrics for DeepONet models.
 """
 
+import json
 import logging
 import os
 import h5py
@@ -2034,19 +2035,69 @@ def _plot_publication_sample(
     plt.close(fig)
 
 
+def _resolve_rollout_stage(
+    stage: int | str, script_dir: Path, output_dir: Path, metrics_file: str | None
+) -> int:
+    """Return a stage index; metric names select the stage with the lowest metric value."""
+
+    if not isinstance(stage, str):
+        return int(stage)
+    if stage.strip().lstrip("-").isdigit():
+        return int(stage)
+
+    metric = stage.strip()
+    name = "curriculum_stage_metrics_robust.json"
+    if metrics_file:
+        path = Path(metrics_file).expanduser()
+        if not path.is_absolute():
+            path = (script_dir / path).resolve()
+    else:
+        path = output_dir / "curriculum_metrics" / name
+        if not path.exists():
+            found = sorted((script_dir / "outputs").glob(f"**/{name}"), key=lambda q: q.stat().st_mtime)
+            if not found:
+                raise FileNotFoundError(
+                    f"Cannot select stage by '{metric}': no {name} found. Run pipeline.generate_tables "
+                    "first or set pipeline.rollout.metrics_file."
+                )
+            path = found[-1]
+    if not path.exists():
+        raise FileNotFoundError(f"Metrics file not found: {path}")
+
+    with open(path, "r", encoding="utf-8") as f:
+        rows = json.load(f)
+    # Baseline (stage -1) has no step checkpoint.
+    candidates = [r for r in rows if int(r["stage"]) >= 0]
+    if not candidates or metric not in candidates[0]:
+        valid = sorted(k for k, v in (candidates[0] if candidates else {}).items() if isinstance(v, float))
+        raise ValueError(f"Unknown rollout stage metric '{metric}'. Valid metrics: {valid}")
+    candidates = [r for r in candidates if np.isfinite(r[metric])]
+    if not candidates:
+        raise ValueError(f"No finite values for metric '{metric}' in {path}")
+    best = min(candidates, key=lambda r: r[metric])
+    logger.info(f"Selected stage {best['stage']} with lowest {metric}={best[metric]:.6g} ({path})")
+    return int(best["stage"])
+
+
 def plot_publication_rollout(
     script_dir: Path,
     output_dir: Path,
-    stage: int = 4,
+    stage: int | str = 4,
     n_samples_plot: int = 4,
     split_file: str | None = None,
     random_seed: int = 1234,
     sample_ids: list[int] | None = None,
+    metrics_file: str | None = None,
 ) -> Path:
-    """Generate deformation-only rollout plots for selected curriculum samples."""
+    """Generate deformation-only rollout plots for selected curriculum samples.
+
+    `stage` is either a stage index or a StageMetrics field name (e.g. "p90_u_roll_rel");
+    in the latter case the stage with the lowest value of that metric is used.
+    """
 
     script_dir = Path(script_dir)
-    output_dir = Path(output_dir) / "stage4_publication_rollout"
+    stage = _resolve_rollout_stage(stage, script_dir, Path(output_dir), metrics_file)
+    output_dir = Path(output_dir) / f"stage{stage}_publication_rollout"
     models_dir = script_dir / "models"
     data_dir = script_dir / "data"
     checkpoint = models_dir / f"step_{stage}_deeponet_merged.pth"

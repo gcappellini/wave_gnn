@@ -40,7 +40,7 @@ def main(cfg: DictConfig) -> None:
 
     if bool(cfg.pipeline.get("generate_contact_dataset", False)):
         contact_cfg = cfg.datasets.contact
-        contact_output = data_dir / str(contact_cfg.dataset_dir) / str(contact_cfg.output_file)
+        contact_output = data_dir / str(contact_cfg.output_file)
         if contact_output.exists():
             logger.info(f"Contact dataset exists; skipping MATLAB generation: {contact_output}")
         else:
@@ -88,11 +88,12 @@ def main(cfg: DictConfig) -> None:
         plot_publication_rollout(
             script_dir=script_dir,
             output_dir=output_dir,
-            stage=int(rollout_cfg.stage),
+            stage=rollout_cfg.stage,
             n_samples_plot=int(rollout_cfg.n_samples),
             split_file=rollout_cfg.get("split_file"),
             random_seed=int(rollout_cfg.random_seed),
             sample_ids=rollout_cfg.get("sample_ids"),
+            metrics_file=rollout_cfg.get("metrics_file"),
         )
 
     logger.info("EXPERIMENT COMPLETE")

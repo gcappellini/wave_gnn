@@ -56,7 +56,11 @@ tmux detach-client -s wave_test
 ```
 
 You can then close the SSH connection.
-Reattach later with tmux attach -t wave_test.
+Reattach later with 
+```bash
+tmux attach -t wave_test
+```
+
 
 The `pipeline` section controls dataset generation, analysis, curriculum
 training, table generation, and publication rollout plots. Existing stage
