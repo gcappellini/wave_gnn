@@ -5,6 +5,7 @@ Defines:
 - MLP: Simple feedforward network (single output head)
 - DualHeadMLP: Shared backbone with two independent output heads (for u and v)
 - DeepONet: Operator network (trunk + branch)
+- ContactDeepONet: DeepONet extension with contact inputs and force output
 """
 
 import torch
@@ -275,3 +276,102 @@ class DeepONet(nn.Module):
             residual = residual - force_field
         
         return residual
+
+
+class ContactDeepONet(nn.Module):
+    """Contact-aware extension of the merged-dataset dual-head DeepONet.
+
+    Reuses the pretrained trunk (x, y, t) -> (modes_u, modes_v) and sensor branch
+    ([u, v, f] sensor grids -> coefficients) of ``DeepONet`` and adds:
+
+      * a contact encoder mapping [Contact, CenterX, CenterZ, ToolY] to the
+        sensor-encoder feature space. Its last layer is zero-initialised, so
+        at initialisation the model reproduces the pretrained u/v predictions.
+      * a force output: a new branch head on the shared branch representation
+        and a new time-only trunk, F(t) = sum_i trunk_f_i(t) * branch_f_i.
+
+    Parameter names ``trunk.*`` and ``branch_ic.*`` match ``DeepONet`` so that
+    the pretrained state dict loads directly.
+    """
+
+    CONTACT_NEW_PREFIXES = ('contact_encoder.', 'force_head.', 'force_trunk.')
+
+    def __init__(
+        self,
+        trunk: DualHeadMLP,
+        branch_ic: DualHeadSensorBranch,
+        n_contact_inputs: int = 4,
+        contact_hidden_dim: int = 64,
+        force_trunk_hidden_dim: int = 64,
+        force_trunk_n_layers: int = 3,
+        force_output_scale: float = 1.0,
+    ):
+        super().__init__()
+        self.trunk = trunk
+        self.branch_ic = branch_ic
+        self.n_contact_inputs = int(n_contact_inputs)
+
+        mlp = branch_ic.mlp
+        n_modes = mlp.head_u.out_features
+        hidden_dim = mlp.head_u.in_features
+        feature_dim = mlp.backbone[0].in_features
+
+        self.contact_encoder = nn.Sequential(
+            nn.Linear(self.n_contact_inputs, contact_hidden_dim),
+            nn.Tanh(),
+            nn.Linear(contact_hidden_dim, feature_dim),
+        )
+        nn.init.zeros_(self.contact_encoder[-1].weight)
+        nn.init.zeros_(self.contact_encoder[-1].bias)
+
+        self.force_head = nn.Linear(hidden_dim, n_modes)
+        self.force_trunk = MLP(1, force_trunk_hidden_dim, n_modes, force_trunk_n_layers)
+        self.register_buffer('force_output_scale', torch.tensor(float(force_output_scale), dtype=torch.float32))
+
+    def new_parameters(self):
+        return [p for n, p in self.named_parameters() if n.startswith(self.CONTACT_NEW_PREFIXES)]
+
+    def pretrained_parameters(self):
+        return [p for n, p in self.named_parameters() if not n.startswith(self.CONTACT_NEW_PREFIXES)]
+
+    def branch_coefficients(self, sensors: torch.Tensor, contact: torch.Tensor):
+        """sensors: (B, C, S, S); contact: (B, n_contact_inputs) -> three (B, n_modes) tensors."""
+        branch = self.branch_ic
+        features = branch.encoder(sensors).flatten(start_dim=1)
+        features = features + self.contact_encoder(contact)
+        mlp = branch.mlp
+        hidden = mlp.backbone(features * mlp.input_scale)
+        coeff_u = mlp.head_u(hidden) * mlp.u_output_scale
+        coeff_v = mlp.head_v(hidden) * mlp.v_output_scale
+        coeff_f = self.force_head(hidden)
+        return coeff_u, coeff_v, coeff_f
+
+    def forward(self, sensors: torch.Tensor, contact: torch.Tensor, coords: torch.Tensor):
+        """Evaluate fields and force at per-sample query points.
+
+        Args:
+            sensors: (B, C, S, S) normalised [u, v, f] sensor grids.
+            contact: (B, n_contact_inputs) normalised [Contact, CenterX, CenterZ, ToolY].
+            coords:  (B, Q, 3) query points (x, y, t).
+
+        Returns:
+            u, v, force: each (B, Q). Force depends on t only.
+        """
+        coeff_u, coeff_v, coeff_f = self.branch_coefficients(sensors, contact)
+        bsz, n_points, _ = coords.shape
+        flat = coords.reshape(-1, 3)
+
+        trunk_u, trunk_v = self.trunk(flat)
+        trunk_u = trunk_u.view(bsz, n_points, -1)
+        trunk_v = trunk_v.view(bsz, n_points, -1)
+        u = torch.einsum('bqm,bm->bq', trunk_u, coeff_u)
+        v = torch.einsum('bqm,bm->bq', trunk_v, coeff_v)
+
+        x, y = coords[..., 0], coords[..., 1]
+        boundary_mask = x * (1.0 - x) * y * (1.0 - y) * 16.0
+        u = u * boundary_mask
+        v = v * boundary_mask
+
+        trunk_f = self.force_trunk(coords[..., 2].reshape(-1, 1)).view(bsz, n_points, -1)
+        force = torch.einsum('bqm,bm->bq', trunk_f, coeff_f) * self.force_output_scale
+        return u, v, force

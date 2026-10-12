@@ -11,6 +11,7 @@ import numpy as np
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf
 
+from src.contact_training import run_contact_pipeline
 from src.curriculum import run_curriculum
 from src.ground_truth_generation import run_matlab_dataset_generation
 from src.logging_utils import setup_logging
@@ -49,6 +50,11 @@ def main(cfg: DictConfig) -> None:
                 output_mat_file=str(contact_output),
                 script_dir=str(data_dir),
             )
+
+    if bool(cfg.pipeline.get("run_contact_training", False)):
+        if "contact_training" not in cfg:
+            raise ValueError("contact_training section is missing from the selected config")
+        run_contact_pipeline(cfg, script_dir, output_dir)
 
     requires_merged_dataset = any(
         bool(cfg.pipeline.get(name, False))

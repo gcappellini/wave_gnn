@@ -1,0 +1,20 @@
+defaults:
+  - contact_training
+  - _self_
+
+# Quick end-to-end check (writes to models/contact_smoke_test.pth, not the real checkpoint).
+contact_training:
+  output_checkpoint: models/contact_smoke_test.pth
+  max_train_samples: 8
+  max_test_samples: 4
+  n_epochs: 3
+  steps_per_epoch: 5
+  batch_size: 8
+  points_per_step: 128
+  freeze_pretrained_epochs: 1
+  horizon_warmup_epochs: 1
+  rollout_eval_samples: 8
+  log_every: 1
+
+pipeline:
+  force_retrain: true

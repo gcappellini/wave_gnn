@@ -4,6 +4,7 @@ problem:
 pipeline:
   generate_dataset: false
   generate_contact_dataset: false
+  run_contact_training: false  # contact DeepONet fine-tuning (see contact_training section / configs/contact_training.yaml)
   analyze_dataset: true
   run_curriculum: false
   force_retrain: false
@@ -205,3 +206,41 @@ validation:
   rollout_dt: null
 sensors:
   n_sensors: 8
+contact_training:
+  # Fine-tunes ContactDeepONet on data/contact_dataset.mat starting from a merged-dataset DeepONet.
+  # Existing merged-dataset checkpoints are never modified; results go to output_checkpoint.
+  pretrained_checkpoint: models/step_4_deeponet_merged.pth  # null = train from scratch
+  output_checkpoint: models/contact_deeponet.pth
+  seed: 42
+  domain_length: 1.0
+  dt_fixed: 0.02          # seconds between stored frames
+  time_scale: 1.0         # seconds mapped to t=1 in the trunk (same as merged datasets: t_final=1)
+  frame_stride: 5         # frames per autoregressive jump (5 * 0.02 s = 0.1 s)
+  split:
+    train_fraction: 0.8
+    seed: 42
+  max_train_samples: 500  # simulations kept in memory (each is ~65 MB for u and v)
+  max_test_samples: 120
+  model:
+    contact_hidden_dim: 64
+    force_trunk_hidden_dim: 64
+    force_trunk_n_layers: 3
+  n_epochs: 200
+  steps_per_epoch: 100
+  batch_size: 64
+  points_per_step: 512
+  learning_rate: 0.001
+  pretrained_lr_factor: 0.1      # lr multiplier for pretrained trunk/branch weights
+  freeze_pretrained_epochs: 5    # warm-up: only contact encoder and force heads are trained
+  rollout_horizon: 3
+  horizon_warmup_epochs: 10      # horizon 1 for the first epochs, then rollout_horizon
+  eval_horizon: 3
+  rollout_eval_samples: 16       # test simulations for the final full-trajectory rollout
+  input_noise_std: 0.05
+  grad_clip: 1.0
+  scheduler_patience: 10
+  log_every: 5
+  loss_weights:
+    u: 1.0
+    v: 1.0
+    force: 1.0

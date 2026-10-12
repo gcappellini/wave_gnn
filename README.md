@@ -66,6 +66,23 @@ The `pipeline` section controls dataset generation, analysis, curriculum
 training, table generation, and publication rollout plots. Existing stage
 checkpoints in `models/` are reused unless `pipeline.force_retrain=true`.
 
+## Contact Training (ContactDeepONet)
+
+Separate pipeline step for `data/contact_dataset.mat` (cube pressing on the
+membrane); merged-dataset checkpoints and results are untouched.
+
+- `ContactDeepONet` (`src/models.py`) reuses the DeepONet `trunk`/`branch_ic`
+  (loaded from `models/step_6_deeponet_merged.pth`) and adds branch inputs
+  `Contact`, `CenterX`, `CenterZ`, `ToolY` (zero-initialised encoder, so it
+  starts as the pretrained model) plus a `Force` output head.
+- Training lives in `src/contact_training.py` (autoregressive unrolled loss on
+  u, v, Force; new heads warm up first). Settings: `contact_training:` in
+  `configs/config.yaml`.
+- Run: `python main.py --config-name contact_training`
+  (`pipeline.run_contact_training`). Quick check: `--config-name contact_smoke_test`.
+- Output: `models/contact_deeponet.pth`, plus `contact_metrics.json` and
+  `validation_contact_rollout_sample*.png`, `validation_contact_rollout_metrics.png` and `validation_contact_force.png`, `contact_training_curves.png` in the Hydra output directory.
+
 ## Output Structure
 
 All outputs are timestamped under `outputs/YYYY-MM-DD/HH-MM-SS/`:

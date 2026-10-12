@@ -1,0 +1,19 @@
+defaults:
+  - config
+  - _self_
+
+# Contact development step: only trains ContactDeepONet on contact_dataset.mat.
+# Merged-dataset results (curriculum, tables, rollout plots) are untouched and
+# remain reproducible with --config-name curriculum_total.
+problem:
+  name: contact
+  description: Cube pressing on the membrane (contact_dataset), ContactDeepONet fine-tuned from the merged DeepONet
+
+pipeline:
+  generate_dataset: false
+  generate_contact_dataset: false
+  analyze_dataset: false
+  run_curriculum: false
+  run_contact_training: true
+  generate_tables: false
+  generate_rollout_plots: false
